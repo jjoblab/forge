@@ -90,8 +90,11 @@ vers le SDK comme d'habitude.
 - [x] Phase 4, étapes 1-7 — squelette Gradle, contrat `api` + moteur factice en processus
   séparé, installateur vérifié (manifeste signé, reprise, installation atomique), chargement réel, moteur de
   tâches, exécuteur borné annulable, empreintes et magasin persistant.
-- [ ] Phase 4, étapes 8-13 — pipeline Java (ECJ), résolveur, pipeline Android (aapt2, dex,
-  signature), diagnostics/console, packaging et publication CI, import Gradle optionnel.
+- [x] Phase 4, étapes 8-13 — pipeline Java (ECJ, jar déterministe), résolveur Maven
+  (intégrité, conflits, hors ligne), pipeline Android jusqu'à l'**APK signé v1+v2**
+  (aapt2 borné, d8, packaging déterministe), diagnostics/rédaction de secrets/trace
+  exportable + écran de build dans la coquille, chaîne de publication (composants dexés,
+  manifeste signé, clé de production épinglée, job CI de release), import Gradle statique.
 - [ ] Vérification sur appareil réel (ART) — voir `docs/limites-et-suite.md`.
 
 ## Licence

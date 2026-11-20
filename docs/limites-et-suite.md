@@ -11,7 +11,7 @@ tout écart est consigné ici.
 | 1 — Analyse | **Fait** | [`analyse-moteur-build.md`](analyse-moteur-build.md) (13 sections, cartographie avec REF-xxx). |
 | 2 — Revue critique | **Fait** | [`revue-moteur-build.md`](revue-moteur-build.md) (4 axes, 46 constats numérotés, compatibilité Android, comparaison Gradle). |
 | 3 — Conception | **Fait** (2026-11-20) | [`conception.md`](conception.md) (12 décisions D-01..D-12 justifiées, registre des améliorations priorisées, ordre d'implémentation) et [`distribution.md`](distribution.md) (Play exclu, GitHub Releases + F-Droid, clés, licences, guidance appareil). |
-| 4 — Implémentation | **En cours** (étapes 1-7 faites, 8-13 restantes) | Détail ci-dessous. |
+| 4 — Implémentation | **Fait** (étapes 1-13, 2026-11-20) | Détail ci-dessous ; moteur Java ET Android jusqu'à l'APK signé, chaîne de publication complète. |
 
 ### Phase 4 : détail par étape
 
@@ -29,9 +29,9 @@ tout écart est consigné ici.
 | 10. Pipeline Android | **Fait** | Chaîne `application` complète jusqu'à l'**APK signé v1+v2 vérifié par apksig**, testée avec de VRAIS outils (aapt2 officiel extrait du dépôt Maven, android.jar API 34, d8 et apksig en processus) : `processResources` (aapt2 borné 5 min, annulation par destruction, autotest, diagnostics localisés), `compileJava` (R générées au chemin des sources, `android.jar` au classpath), `dex` (d8 en processus, diagnostics par l'API, classes emballées en jar déterministe), `packageApk` (déterministe, arsc STORED, noms traversants refusés), `signApk` (clé de débogage générée par keytool borné, aucun secret en ligne de commande) ; `android-library` v1 = classes+jar contre android.jar (ressources/AAR non livrés, consigné) ; incrémentalité testée (source modifiée → ressources à jour ; ressource modifiée → chaîne aval relancée) ; exemple `examples/application-android`. |
 | 11. Diagnostics et console | **Fait** | Rédaction de secrets au point de sortie (D-09, heuristique consignée), parseur générique de sortie d'outils (repli sans API), journal circulaire borné par build (P-7), trace JSON exportable par build sous `.forge/traces/` (A-13, atomique, testée), écran de build complet dans la coquille (chemin du projet, progression, journal + diagnostics en flux, annulation, installation de l'APK avec confirmation système). |
 | 12. Packaging et publication | **Fait** | Chaîne complète : `PackagerComposants` (setup) assemble les six composants dexés (engine-core 93 Ko, java-compiler 1,2 Mo, dexeur 3,2 Mo, signeur 165 Ko, aapt2-arm64-v8a 2,2 Mo, platform-34 24 Mo) en zips déterministes + manifeste JSON via le codec de l'installateur ; signature ECDSA P-256 du manifeste (outil `OutilManifeste` : génération, signature, vérification — round-trip testé avec le vérificateur de la coquille) ; **clé de production générée et épinglée** (publique : `ClesForge` dans la coquille ; privée : jeton CI `FORGE_MANIFEST_KEY`, posé par l'API GitHub, jamais versionnée) ; tâche `:engine:composants` ; job CI `release` sur étiquette `vX.Y.Z` (assemblage, signature, vérification contre la clé épinglée, version GitHub). La chaîne a été exécutée en entier dans le bac à sable : signature vérifiée VALIDE. |
-| 13. Import Gradle statique (optionnel) | À faire | Lecteur statique vers `forge.json`. |
+| 13. Import Gradle statique (optionnel) | **Fait** | Lecteur STATIQUE des scripts Groovy (aucun code évalué — même limite que la référence, assumée) : `include` du settings, plugins, dépôts (`google()`, `mavenCentral()`), dépendances (portées Gradle, notation `g:a:v` et `project(':x')`), bloc `android` (namespace, applicationId, min/target/compileSdk) ; blocs sur une ligne normalisés ; constructions inconnues ignorées AVEC avertissement ; le modèle produit passe le codec officiel (testé) ; application sans namespace refusée avec message actionnable. |
 
-## Manques et limites constatés (Phases 3-4, étapes 1-12)
+## Manques et limites constatés (Phases 3-4, étapes 1-13)
 
 - **Écarts du pipeline Java avec le moteur de référence** (détail dans la section
   « Comparaison après implémentation » de [`REFERENCES.md`](REFERENCES.md)) :
@@ -80,7 +80,7 @@ tout écart est consigné ici.
 - **Écarts assumés avec le moteur de référence** (voir la section « Comparaison après
   implémentation » de [`REFERENCES.md`](REFERENCES.md)) : pas de `mustRunAfter`/
   `mustRunBefore`, pas de statut `NO-SOURCE`, pas d'arêtes inférées producteur→consommateur
-  (refus délibéré, constat C-5). À combler selon les besoins des pipelines (étapes 8-10).
+  (refus délibéré, constat C-5) — les pipelines livrés n'en ont pas eu besoin.
 - **Le serveur de build réel est câblé depuis l'étape 8** : `EngineMain` lance par défaut le
   `BuildEngineServer` (modèle `forge.json` → pipeline → graphe → exécuteur → trames) ; le moteur
   factice reste accessible par l'option `--fake` (tests de contrat du canal).
@@ -116,16 +116,20 @@ tout écart est consigné ici.
    `1b1a3052168a52f38a91ea03c87831a0d94c1fff`, jamais copié ni référencé hors de
    `docs/REFERENCES.md`.
 
-## Prochaines étapes (ordre proposé)
+## Prochaines étapes (après la Phase 4)
 
-1. **Étape 8 — pipeline Java** : intégrer ECJ (compilation en travailleur, `--release`
-   configurable, processeurs d'annotation), normalisation du classpath pour l'empreinte,
-   Jar déterministe ; câbler le premier build réel dans un `BuildEngineServer` remplaçant
-   le moteur factice.
-2. **Étape 9 — résolveur** de dépendances (POM durci, médiation, intégrité, hors ligne).
-3. **Étape 10 — pipeline Android** (aapt2 via `NativeResourceCompiler`, dex d8, signature
-   apksig, packaging, installation) + registre des processus enfants + watchdogs.
-4. **Assistant d'installation complet** et écran de build (étape 11), puis packaging et
-   publication CI (étape 12).
-5. Vérification sur appareil réel (liste au début de cette section) et benchmark
-   complet vs incrémental sur un projet multi-modules (modèle REF-152).
+1. **Vérification sur appareil réel (ART)** — la grande inconnue restante (liste au
+   début de la section « Manques ») : `app_process` + `CLASSPATH`, jars dexés en
+   lecture seule, exécution du binaire aapt2 téléchargé (W^X, `targetSdk` 28),
+   tueur de processus Android 12+, installation par PackageInstaller.
+2. **Assistant d'installation câblé sur `setup`** dans la coquille (la logique
+   testable existe ; il manque les écrans — listes, tailles, avertissement données
+   mobiles, progression, reprise).
+3. **Câbler `AndroidToolsLocator` au moteur installé** (composants par ABI/API) pour
+   que le build sur appareil trouve aapt2 et android.jar du moteur — le localisateur
+   est prêt, l'installateur pose les composants, la jonction est à faire.
+4. Améliorations priorisées restantes du registre de la conception : A-8 (cache de
+   sorties par contenu), A-9 (ressources incrémentales par fichier), A-10 (empreintes
+   d'ABI), signature de production, AAR, multidex.
+5. Premier benchmark sur projet Android complet + publication d'une étiquette `v0.2.0`
+   de test (le job `release` signera le manifeste avec le jeton CI).

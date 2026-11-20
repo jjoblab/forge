@@ -41,6 +41,8 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // Le dexeur (d8) tourne EN PROCESSUS dans certains tests : lui laisser la place.
+    maxHeapSize = '2g'
     testLogging {
         events 'failed', 'skipped'
         exceptionFormat 'full'

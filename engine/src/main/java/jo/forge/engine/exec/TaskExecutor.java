@@ -247,6 +247,23 @@ public final class TaskExecutor {
                     "Échec de " + task.name() + " : " + cause);
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
                     false);
+        } catch (java.lang.Error erreurGrave) {
+            // Un Error (mémoire saturée du dexeur en particulier) ne doit JAMAIS
+            // rompre le comptage silencieusement : la tâche échoue proprement, la
+            // cause est journalisée, le build se termine avec un diagnostic lisible
+            // (correctif du constat « erreurs avalées » appliqué aux erreurs graves).
+            String cause = erreurGrave.getMessage() == null
+                    ? erreurGrave.getClass().getSimpleName() : erreurGrave.getMessage();
+            events.tacheEchouee(task.name());
+            events.taskState(new BuildEvent.TaskStateEvent(buildId,
+                    System.currentTimeMillis(), task.name(),
+                    BuildEvent.TaskState.FAILED, System.currentTimeMillis() - debut));
+            events.log(BuildEvent.LogEvent.LogLevel.ERROR,
+                    "Erreur grave dans " + task.name() + " (" + cause + ")"
+                            + " — probablement un manque de mémoire :"
+                            + " réessayez en mode basse mémoire");
+            terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
+                    false);
         } finally {
             cancellation.unregisterCurrent();
         }
