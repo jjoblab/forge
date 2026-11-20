@@ -23,6 +23,7 @@ import java.io.DataInputStream;
 import java.io.IOException;
 import java.io.PipedInputStream;
 import java.io.PipedOutputStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -56,6 +57,12 @@ class BuildEngineServerTest {
                                     && t.state() == BuildEvent.TaskState.SUCCEEDED
                                     && t.taskName().equals("core:compileJava")),
                     "la compilation de core doit réussir");
+            // Trace exportable (A-13) : écrite à la racine du projet, atomique.
+            assertTrue(Files.isRegularFile(temporaire.resolve(".forge/traces/b1.json")),
+                    "la trace du premier build doit exister");
+            assertTrue(Files.readString(temporaire.resolve(".forge/traces/b1.json"))
+                            .contains("core:compileJava"),
+                    "la trace contient les tâches");
 
             // Second build sans changement : tout à jour, toujours par le canal.
             List<BuildEvent> second = session.build(temporaire);

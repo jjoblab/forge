@@ -12,6 +12,32 @@
     <string name="section_engine">Moteur</string>
     <string name="action_test_engine">Tester le moteur installé</string>
 
+    <!-- Écran de build (étape 11). -->
+    <string name="section_build">Construire un projet</string>
+    <string name="build_project_path_hint">Chemin du projet (contient forge.json)</string>
+    <string name="action_build">Construire</string>
+    <string name="action_cancel_build">Annuler</string>
+    <string name="action_install_apk">Installer l\'APK</string>
+    <string name="build_starting">Démarrage du moteur…</string>
+    <string name="build_started">Build %1$s lancé</string>
+    <string name="build_finished_ok">Build réussi en %1$d ms</string>
+    <string name="build_finished_ko">Build échoué à la tâche %1$s : %2$s</string>
+    <string name="build_error_no_path">Indiquez le chemin du projet (répertoire
+        contenant forge.json).</string>
+    <string name="build_error">Échec : %1$s</string>
+    <string name="build_diagnostic_line">⚠ %1$s:%2$d — %3$s</string>
+    <string name="build_task_line">▸ %1$s : %2$s</string>
+    <string name="task_state_started">démarrée</string>
+    <string name="task_state_succeeded">réussie</string>
+    <string name="task_state_failed">échouée</string>
+    <string name="task_state_skipped">sautée</string>
+    <string name="task_state_up_to_date">à jour</string>
+    <string name="install_started">Installation proposée : %1$s (confirmez dans la
+        boîte système)</string>
+    <string name="install_error_no_apk">Aucun APK construit à installer — construisez
+        d\'abord un projet avec un module application.</string>
+    <string name="install_error">Installation impossible : %1$s</string>
+
     <!-- Service hôte. -->
     <string name="host_notification_channel">Supervision du moteur</string>
     <string name="host_notification_title">Forge</string>

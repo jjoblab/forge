@@ -36,6 +36,7 @@ import java.io.InputStream;
 import java.io.OutputStream;
 import java.io.PrintStream;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
@@ -180,9 +181,9 @@ public final class BuildEngineServer {
     private void runBuild(BuildRequest request, CancellationFlag cancellation) {
         String buildId = request.buildId();
         long debut = System.currentTimeMillis();
-        EvenementsVersTrames events = new EvenementsVersTrames(buildId);
+        Path root = Path.of(request.projectRoot());
+        EvenementsVersTrames events = new EvenementsVersTrames(buildId, root);
         try {
-            Path root = Path.of(request.projectRoot());
             events.log(BuildEvent.LogEvent.LogLevel.INFO,
                     "build de " + request.projectRoot());
 
@@ -247,16 +248,24 @@ public final class BuildEngineServer {
     }
 
     /**
-     * Adaptateur événements d'exécuteur → trames du canal (avec conversion des
-     * diagnostics internes).
+     * Adaptateur événements d'exécuteur → trames du canal : conversion des
+     * diagnostics internes, rédaction des secrets (D-09), journal borné (P-7) et
+     * trace exportable (A-13).
      */
     private final class EvenementsVersTrames implements TaskExecutor.BuildEvents {
 
         private final String buildId;
+        private final Path racineProjet;
         private final AtomicReference<String> premierEchec = new AtomicReference<>();
+        private final JournalBorné journal = new JournalBorné(JournalBorné.CAPACITÉ_PAR_DÉFAUT);
+        private final Map<String, BuildEvent.TaskStateEvent> étatsTâches =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        private final Map<String, Long> diagnosticsParSévérité =
+                new java.util.concurrent.ConcurrentHashMap<>();
 
-        EvenementsVersTrames(String buildId) {
+        EvenementsVersTrames(String buildId, Path racineProjet) {
             this.buildId = buildId;
+            this.racineProjet = racineProjet;
         }
 
         @Override
@@ -266,13 +275,16 @@ public final class BuildEngineServer {
 
         @Override
         public void taskState(BuildEvent.TaskStateEvent event) {
+            étatsTâches.put(event.taskName(), event);
             event(BuildEvent.TaskStateEvent.class, event);
         }
 
         @Override
         public void log(BuildEvent.LogEvent.LogLevel level, String message) {
+            String nettoyé = jo.forge.engine.diag.SecretRedactor.rédiger(message);
+            journal.ajouter(level + " " + nettoyé);
             event(BuildEvent.LogEvent.class, new BuildEvent.LogEvent(buildId,
-                    System.currentTimeMillis(), level, message));
+                    System.currentTimeMillis(), level, nettoyé));
         }
 
         @Override
@@ -283,15 +295,35 @@ public final class BuildEngineServer {
 
         @Override
         public void diagnostic(Diagnostic diagnostic) {
+            diagnosticsParSévérité.merge(diagnostic.severity().name(), 1L, Long::sum);
             event(BuildEvent.DiagnosticEvent.class, new BuildEvent.DiagnosticEvent(buildId,
                     System.currentTimeMillis(), diagnostic.severity(), diagnostic.file(),
                     diagnostic.line(), diagnostic.column(), diagnostic.code(),
-                    diagnostic.message(), diagnostic.tool()));
+                    jo.forge.engine.diag.SecretRedactor.rédiger(diagnostic.message()),
+                    diagnostic.tool()));
         }
 
         @Override
         public void buildFinished(BuildEvent.BuildFinished finished) {
             event(BuildEvent.BuildFinished.class, finished);
+            // Trace exportable : après l'événement de fin pour le canal, mais
+            // l'écriture du FICHIER ne traverse pas le canal (ordre du canal préservé).
+            try {
+                List<BuildTrace.Tâche> tâches = new ArrayList<>();
+                étatsTâches.values().stream()
+                        .sorted(java.util.Comparator.comparing(
+                                BuildEvent.TaskStateEvent::taskName))
+                        .forEach(état -> tâches.add(new BuildTrace.Tâche(
+                                état.taskName(), état.state().name(), état.durationMs())));
+                new BuildTrace(buildId, racineProjet.toString(), EngineVersion.CURRENT,
+                        tâches, new java.util.LinkedHashMap<>(diagnosticsParSévérité),
+                        journal.copie())
+                        .écrire(racineProjet.resolve(".forge").resolve("traces"),
+                                finished.durationMs(), finished.success());
+            } catch (IOException e) {
+                diagnostics.println("Trace de build non écrite (" + buildId + ") : "
+                        + e.getMessage());
+            }
         }
 
         @Override

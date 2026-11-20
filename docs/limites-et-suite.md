@@ -27,11 +27,11 @@ tout écart est consigné ici.
 | 8. Pipeline Java | **Fait** | Modèle déclaratif `forge.json` strict (codec testé), ECJ en processus avec diagnostics par l'API (fichier/ligne/colonne/code), tâches `compileJava`/`jar` câblées par portées (fermeture `api`), jar déterministe (testé octet par octet), **vrai serveur de build** câblé dans `EngineMain` (défaut ; `--fake` garde le moteur scripté pour les tests de contrat), exemple `examples/multi-modules-java`, benchmark complet vs incrémental (première mesure : 6/6 → 4/6 tâches). Parseur JSON extrait dans le module `json/` partagé. |
 | 9. Résolveur | **Fait** | Résolution Maven complète : POM effectifs (parents, propriétés, gestion, nomenclatures importées, relogements), exclusions, optionnelles, médiation trois politiques (échec-sur-conflit réel, chemins cités), comparateur aligné Maven, cache réplique à écritures atomiques + cache négatif TTL, intégrité sha1, HTTPS strict (boucle locale pour les tests), bornes avec diagnostic, hors ligne, convergence en deux passes ; tâche `resolveDependencies` câblée dans le pipeline (le classpath résolu est une entrée d'empreinte de la compilation) ; 16 tests sur un vrai dépôt HTTP local. **Bonus : correction d'une course réelle dans l'exécuteur** (double soumission d'une tâche par la boucle des racines, détectée par le benchmark incrémental, corrigée et re-vérifiée 5 fois). |
 | 10. Pipeline Android | **Fait** | Chaîne `application` complète jusqu'à l'**APK signé v1+v2 vérifié par apksig**, testée avec de VRAIS outils (aapt2 officiel extrait du dépôt Maven, android.jar API 34, d8 et apksig en processus) : `processResources` (aapt2 borné 5 min, annulation par destruction, autotest, diagnostics localisés), `compileJava` (R générées au chemin des sources, `android.jar` au classpath), `dex` (d8 en processus, diagnostics par l'API, classes emballées en jar déterministe), `packageApk` (déterministe, arsc STORED, noms traversants refusés), `signApk` (clé de débogage générée par keytool borné, aucun secret en ligne de commande) ; `android-library` v1 = classes+jar contre android.jar (ressources/AAR non livrés, consigné) ; incrémentalité testée (source modifiée → ressources à jour ; ressource modifiée → chaîne aval relancée) ; exemple `examples/application-android`. |
-| 11. Diagnostics et console | À faire | Rédaction de secrets, tampon borné, trace exportable, écran de build dans la coquille. |
+| 11. Diagnostics et console | **Fait** | Rédaction de secrets au point de sortie (D-09, heuristique consignée), parseur générique de sortie d'outils (repli sans API), journal circulaire borné par build (P-7), trace JSON exportable par build sous `.forge/traces/` (A-13, atomique, testée), écran de build complet dans la coquille (chemin du projet, progression, journal + diagnostics en flux, annulation, installation de l'APK avec confirmation système). |
 | 12. Packaging et publication | À faire | CI de construction des composants, dexage, manifeste signé, artefacts de release. |
 | 13. Import Gradle statique (optionnel) | À faire | Lecteur statique vers `forge.json`. |
 
-## Manques et limites constatés (Phases 3-4, étapes 1-10)
+## Manques et limites constatés (Phases 3-4, étapes 1-11)
 
 - **Écarts du pipeline Java avec le moteur de référence** (détail dans la section
   « Comparaison après implémentation » de [`REFERENCES.md`](REFERENCES.md)) :
@@ -60,6 +60,12 @@ tout écart est consigné ici.
 - **Résolution des outils Android (aapt2, android.jar)** : propriétés de test ou SDK
   de la machine ; le câblage au moteur INSTALLÉ (composants par ABI et par API,
   `AndroidToolsLocator` prêt) attend l'étape 12 (packaging des composants).
+- **Écran de build et installation** : l'installation par PackageInstaller et le
+  lancement `app_process` du moteur ne sont PAS vérifiés sur appareil réel ; la
+  rédaction de secrets est heuristique (étiquettes usuelles FR/EN, porteurs) — un
+  secret sans étiquette passe (limite consignée) ; l'assistant d'installation
+  complet (listes, tailles, avertissement mobile — §2.2) reste à câbler sur `setup`
+  (la logique testable existe depuis l'étape 3).
 
 - **Rien n'a été vérifié sur appareil réel (ART)**. Tout est testé sur JVM (dont des tests
   d'intégration avec de vrais processus séparés `java`). Les points spécifiquement à
