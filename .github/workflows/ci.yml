@@ -50,6 +50,11 @@ jobs:
   build:
     name: Build et tests (JDK 17)
     runs-on: ubuntu-latest
+    env:
+      # Le SDK Android est préinstallé sur les exécutants GitHub (ubuntu-latest) :
+      # pas besoin d'action tierce, qui casse sur l'acceptation des licences.
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - uses: actions/checkout@v4
 
@@ -59,11 +64,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Configurer le SDK Android
-        uses: android-actions/setup-android@v3
-
       - name: Installer les composants SDK requis
-        run: yes | sdkmanager --licenses > /dev/null && sdkmanager --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          # Licences déjà acceptées sur l'image ; on tolère un code de retour non nul
+          # du pipage « yes » avec les cmdline-tools récents.
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
       - name: Tests JVM (api, client, setup, engine)
         run: ./gradlew --no-daemon :api:test :client:test :setup:test :engine:test --stacktrace
