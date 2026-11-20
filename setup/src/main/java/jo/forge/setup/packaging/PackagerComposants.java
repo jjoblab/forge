@@ -12,9 +12,12 @@ import java.nio.file.StandardCopyOption;
 import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.Base64;
+import java.util.Comparator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -38,6 +41,18 @@ import java.util.zip.ZipOutputStream;
  * aapt2 en {@code components/aapt2-&lt;abi&gt;/aapt2} et la plate-forme en
  * {@code components/platform-&lt;api&gt;/android.jar} (chemins attendus par la session
  * de la coquille et par le localisateur d'outils du moteur).</p>
+ *
+ * <p><b>Ressources conservées à côté du dex</b> (correctif v0.2.4) : d8 ne convertit
+ * que les classes — les autres entrées des jars sources (messages localisés, tables du
+ * parseur) étaient perdues au dexage, et ECJ mourait sur l'appareil au premier message
+ * compilé ({@code Can't find bundle for base name …batch.messages} : un
+ * {@link java.util.ResourceBundle} ne trouve que ce que le classloader sert). Or sur
+ * ART le classpath de la VM moteur est fait de zips, et le {@code findResource} de
+ * {@code DexPathList} sert les entrées zip d'un jar du classpath (API 28+) :
+ * les jars dexés embarquent donc aussi, à côté de {@code classes.dex}, toute entrée
+ * non-classe des jars sources — sauf manifeste et signatures, sans valeur une fois
+ * fusionnés. {@code about.html} d'ECJ est conservé : c'est la notice EPL-2.0 exigée
+ * à la redistribution (distribution.md §7).</p>
  *
  * <p>Usage :</p>
  * <pre>
@@ -190,7 +205,7 @@ public final class PackagerComposants {
             throw new IOException("composant " + id + " : d8 n'a pas produit de dex");
         }
         Path archive = sortie.resolve(id + "-" + version + ".zip");
-        emballerJarDexe(dex, archive, cheminDexe(id));
+        emballerJarDexe(dex, archive, cheminDexe(id), jars);
         System.out.println("[composant " + id + "] " + archive.getFileName() + " ("
                 + Files.size(archive) + " octets) — " + description);
         return manifesteDe(archive, version, List.of("all"), dépendances);
@@ -229,12 +244,19 @@ public final class PackagerComposants {
     }
 
     /**
-     * Emballe un dex produit par d8 en jar (zip à entrée unique {@code classes.dex}),
-     * puis l'archive du composant avec ce jar posé à son chemin de destination.
-     * ART charge le {@code classes.dex} d'un jar exactement comme celui d'un APK.
+     * Emballe un dex produit par d8 en jar (zip : {@code classes.dex} puis, dans l'ordre
+     * alphabétique, les ressources des jars sources), puis l'archive du composant avec ce
+     * jar posé à son chemin de destination. ART charge le {@code classes.dex} d'un jar
+     * exactement comme celui d'un APK, et son classloader sert les autres entrées du zip
+     * à {@code getResource} — c'est ce qui rend les messages d'ECJ trouvables sur appareil.
+     *
+     * @param dex               fichier {@code classes.dex} produit par d8.
+     * @param archive           archive du composant à écrire ({@code <id>-<version>.zip}).
+     * @param cheminDestination chemin d'installation du jar dans le répertoire moteur.
+     * @param jarsSources       jars dexés (leurs ressources non-classe sont conservées).
      */
-    static void emballerJarDexe(Path dex, Path archive, String cheminDestination)
-            throws IOException {
+    static void emballerJarDexe(Path dex, Path archive, String cheminDestination,
+                                List<Path> jarsSources) throws IOException {
         Path travail = Files.createTempFile("forge-jar-dexe", ".jar");
         try {
             try (ZipOutputStream jar = new ZipOutputStream(
@@ -244,11 +266,86 @@ public final class PackagerComposants {
                 jar.putNextEntry(entree);
                 Files.copy(dex, jar);
                 jar.closeEntry();
+                for (Map.Entry<String, byte[]> ressource
+                        : ressourcesConservées(jarsSources).entrySet()) {
+                    ZipEntry entréeRessource = new ZipEntry(ressource.getKey());
+                    entréeRessource.setTime(HORODATAGE_FIXE);
+                    jar.putNextEntry(entréeRessource);
+                    jar.write(ressource.getValue());
+                    jar.closeEntry();
+                }
             }
             zipperFichier(archive, travail, cheminDestination);
         } finally {
             Files.deleteIfExists(travail);
         }
+    }
+
+    /**
+     * Collecte les entrées à conserver des jars sources, chemin vers contenu : toute
+     * entrée non-classe sauf répertoires, manifeste et fichiers de signature (une fois
+     * fusionnés dans notre jar, ils ne signent plus rien et tromperaient la vérification).
+     *
+     * <p>Doublons : deux jars qui portent le même chemin avec le même contenu ne
+     * l'écrivent qu'une fois ; le même chemin avec des contenus différents échoue — un
+     * composant dexé fusionné ne doit pas résoudre ses conflits de ressources au hasard
+     * de l'ordre des jars.</p>
+     *
+     * @param jarsSources jars dexés dans le même composant.
+     * @return entrées triées par chemin (déterminisme du jar produit).
+     */
+    private static SortedMap<String, byte[]> ressourcesConservées(List<Path> jarsSources)
+            throws IOException {
+        SortedMap<String, byte[]> conservées = new TreeMap<>();
+        for (Path jarSource : jarsSources) {
+            try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(
+                    jarSource.toFile())) {
+                for (ZipEntry entrée : zip.stream()
+                        .filter(e -> !e.isDirectory())
+                        .sorted(Comparator.comparing(ZipEntry::getName))
+                        .toList()) {
+                    String chemin = entrée.getName();
+                    if (!àConserver(chemin)) {
+                        continue;
+                    }
+                    byte[] contenu = zip.getInputStream(entrée).readAllBytes();
+                    byte[] précédent = conservées.putIfAbsent(chemin, contenu);
+                    if (précédent != null && !java.util.Arrays.equals(précédent, contenu)) {
+                        throw new IOException("ressource en conflit entre jars du composant : "
+                                + chemin + " (contenus différents) — fusion ambiguë, refusée");
+                    }
+                }
+            }
+        }
+        return conservées;
+    }
+
+    /**
+     * Indique si une entrée de jar doit être conservée à côté du dex : ni classe (d8
+     * l'a déjà convertie — la garder alourdirait le composant du poids mort des
+     * {@code .class}), ni répertoire (recréé à l'extraction), ni manifeste ni signature
+     * du jar d'origine (sans valeur une fois fusionnés). Tout le reste — messages
+     * localisés, tables du parseur, notices de licence, services — est servi par le
+     * classloader d'ART et doit traverser le dexage.
+     */
+    private static boolean àConserver(String chemin) {
+        if (chemin.endsWith(".class")) {
+            return false;
+        }
+        if (!chemin.startsWith("META-INF/")) {
+            return true;
+        }
+        String nomCourt = chemin.substring("META-INF/".length());
+        if (nomCourt.equalsIgnoreCase("MANIFEST.MF")) {
+            return false;
+        }
+        for (String extension : new String[] {".SF", ".RSA", ".DSA", ".EC"}) {
+            if (nomCourt.regionMatches(true, nomCourt.length() - extension.length(),
+                    extension, 0, extension.length())) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**
