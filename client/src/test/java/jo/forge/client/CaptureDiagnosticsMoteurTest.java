@@ -64,6 +64,30 @@ class CaptureDiagnosticsMoteurTest {
                 "le journal interne de la connexion porte les mêmes lignes");
     }
 
+    /**
+     * Régression constatée sur appareil (v0.2.3) : « code de sortie : inconnu (processus
+     * encore vivant ou code non encore publié) » pour un moteur pourtant mort — une
+     * sentinelle muette (interrompue, en retard) ne doit jamais faire mentir le
+     * diagnostic. {@code codeSortie()} se guérit seul : processus fini sans publication
+     * = {@code waitFor} immédiat et code publié sur place.
+     */
+    @Test
+    @Timeout(30)
+    void codePubliéMêmeQuandLaSentinelleNePublieJamais() throws Exception {
+        // Connexion NON démarrée : aucun fil ne tourne — le pire cas d'une sentinelle
+        // muette. Le processus meurt seul (code 7 du même MoteurBavard).
+        Process process = new ProcessBuilder(java(), "-cp",
+                System.getProperty("java.class.path"),
+                "jo.forge.client.fixtures.MoteurBavard").start();
+        EngineConnection connexion = new EngineConnection(process,
+                evenement -> { }, trame -> { }, () -> { }, null);
+
+        assertEquals(7, process.waitFor(),
+                "le processus témoin meurt bien de son code volontaire");
+        assertEquals(Integer.valueOf(7), connexion.codeSortie(),
+                "codeSortie doit publier le code d'un processus fini, même sans sentinelle");
+    }
+
     @Test
     @Timeout(30)
     void journalBorneAuxDernièresLignes() {

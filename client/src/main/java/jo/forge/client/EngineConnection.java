@@ -203,10 +203,23 @@ public final class EngineConnection {
      * <p>Convention Unix : 0 = arrêt propre ; négatif = mort par signal (le tueur de
      * mémoire du noyau donne -9) ; positif = sortie explicite du moteur.</p>
      *
-     * @return le code, ou {@code null} tant que le processus n'est pas fini (la
-     *         publication suit l'EOF de quelques instants au plus).
+     * <p>Auto-guérison : si la sentinelle n'a pas encore publié alors que le processus
+     * est fini (interruption du fil, latence de publication), {@code waitFor} retourne
+     * immédiatement — le code est publié ici plutôt que de laisser le diagnostic
+     * dire « inconnu » d'un processus déjà mort (constat v0.2.3 sur appareil).</p>
+     *
+     * @return le code, ou {@code null} tant que le processus vit.
      */
     public Integer codeSortie() {
+        Integer code = codeSortie.get();
+        if (code == null && !process.isAlive()) {
+            try {
+                code = process.waitFor();
+                codeSortie.compareAndSet(null, code);
+            } catch (InterruptedException attente) {
+                Thread.currentThread().interrupt();
+            }
+        }
         return codeSortie.get();
     }
 

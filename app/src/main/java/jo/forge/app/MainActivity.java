@@ -516,7 +516,13 @@ public class MainActivity extends Activity {
                 EngineClient moteur = EngineSession.launchInstalled(
                         new DeviceVmLauncher(), forgeHome(), installe, versionCoquille(),
                         événements,
-                        () -> exécuteur.submit(() -> publierMortMoteur(génération)),
+                        // Mort du moteur sur son PROPRE fil : le sondage du code de sortie
+                        // peut durer 2,5 s — sur la file mono-fil de la coquille, il
+                        // retardait l'arrêt du moteur (l'arrêt est mis en file APRÈS la
+                        // fin du build, donc APRÈS ce sondage) et le diagnostic lisait
+                        // « processus encore vivant » d'un moteur jamais prié de partir.
+                        () -> new Thread(() -> publierMortMoteur(génération),
+                                "forge-mort-moteur").start(),
                         false, journal::ajouter);
                 moteurCourant.set(moteur);
                 dernierClient.set(moteur);
@@ -592,8 +598,12 @@ public class MainActivity extends Activity {
         List<String> queue = journalMoteur.dernières(40);
         runOnUiThread(() -> {
             afficherRésumé(getString(R.string.host_engine_dead));
-            ajouterLigne(getString(R.string.logs_engine_exit_line,
-                    RapportDiagnostic.décrireCodeSortie(codeFinal)));
+            ajouterLigne(codeFinal == null
+                    // Canal fermé mais processus vivant : le dire tel quel, sans
+                    // inventer un code ni prétendre que le moteur s'est arrêté.
+                    ? getString(R.string.logs_engine_channel_closed)
+                    : getString(R.string.logs_engine_exit_line,
+                            RapportDiagnostic.décrireCodeSortie(codeFinal)));
             if (!queue.isEmpty()) {
                 ajouterLigne(getString(R.string.logs_engine_stderr_tail_header));
                 queue.forEach(this::ajouterLigne);
