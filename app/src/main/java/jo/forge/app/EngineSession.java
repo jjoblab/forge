@@ -104,8 +104,35 @@ public final class EngineSession {
                                                InstalledState state, String shellVersion,
                                                Consumer<BuildEvent> eventConsumer,
                                                Runnable onDead, boolean lowMemory) {
+        return launchInstalled(launcher, home, state, shellVersion, eventConsumer,
+                onDead, lowMemory, null);
+    }
+
+    /**
+     * Lance le moteur installé en écoutant, en plus, son journal de diagnostics :
+     * chaque ligne que le processus écrit sur stderr (traces d'écroulement, exceptions
+     * non attrapées) part vers le consommateur — la coquille le conserve pour
+     * déboguer une mort du moteur sur appareil.
+     *
+     * @param launcher      stratégie de lancement (appareil : app_process ; test : java).
+     * @param home          racine Forge.
+     * @param state         état d'installation.
+     * @param shellVersion  version de la coquille (journal côté moteur).
+     * @param eventConsumer consommateur des événements de build.
+     * @param onDead        rappel de mort du moteur.
+     * @param lowMemory     mode basse mémoire (tas réduit).
+     * @param journalMoteur consommateur des lignes de stderr du moteur (null : aucun) ;
+     *                      appelé depuis le fil de drainage — rapide, jamais bloquant.
+     * @return le client connecté, protocole négocié.
+     */
+    public static EngineClient launchInstalled(VmLauncher launcher, ForgeHome home,
+                                               InstalledState state, String shellVersion,
+                                               Consumer<BuildEvent> eventConsumer,
+                                               Runnable onDead, boolean lowMemory,
+                                               Consumer<String> journalMoteur) {
         VmSpec spec = specFor(home, state,
                 lowMemory ? HEAP_LOW_MEMORY_MB : HEAP_DEFAULT_MB);
-        return EngineClient.launch(launcher, spec, shellVersion, eventConsumer, onDead);
+        return EngineClient.launch(launcher, spec, shellVersion, eventConsumer, onDead,
+                journalMoteur);
     }
 }

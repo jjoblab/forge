@@ -78,6 +78,17 @@
         chemin de l\'exemple Java prérempli.</string>
     <string name="import_error">Import impossible : %1$s</string>
 
+    <!-- Diagnostic : copie et partage des journaux (build, moteur, trace). -->
+    <string name="action_copy_logs">Copier les journaux</string>
+    <string name="action_share_logs">Partager</string>
+    <string name="logs_clip_label">Journaux Forge</string>
+    <string name="logs_share_title">Journaux Forge</string>
+    <string name="logs_copied">Journaux copiés (%1$d caractères)</string>
+    <string name="logs_engine_exit_line">— processus du moteur arrêté (code de sortie :
+        %1$s)</string>
+    <string name="logs_engine_stderr_tail_header">— dernières lignes du journal du
+        moteur :</string>
+
     <!-- Service hôte. -->
     <string name="host_notification_channel">Supervision du moteur</string>
     <string name="host_notification_title">Forge</string>

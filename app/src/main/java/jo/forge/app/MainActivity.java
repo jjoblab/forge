@@ -2,6 +2,8 @@ package jo.forge.app;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.Intent;
 import android.os.Build;
 import android.os.Bundle;
@@ -10,15 +12,19 @@ import android.widget.Button;
 import android.widget.EditText;
 import android.widget.ProgressBar;
 import android.widget.TextView;
+import android.widget.Toast;
 
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
@@ -28,6 +34,7 @@ import jo.forge.api.BuildRequest;
 import jo.forge.api.BuildStarted;
 import jo.forge.client.DeviceVmLauncher;
 import jo.forge.client.EngineClient;
+import jo.forge.client.JournalMoteur;
 import jo.forge.setup.download.CancellationToken;
 import jo.forge.setup.download.InstallCancelledException;
 import jo.forge.setup.install.ArchiveExtractor;
@@ -41,8 +48,10 @@ import jo.forge.setup.manifest.EngineManifest;
 
 /**
  * Écran principal de la coquille : état du moteur (installé et version, ou absent
- * avec ses explications) et écran de build (étape 11) — chemin du projet, lancement,
- * progression, journal en flux, diagnostics, installation de l'APK produit.
+ * avec ses explications), écran de build (étape 11) — chemin du projet, lancement,
+ * progression, journal en flux, diagnostics, installation de l'APK produit — et
+ * diagnostic exportable (étape de débogage sur appareil) : copie et partage du
+ * journal de build, du journal du moteur (stderr) et de la dernière trace.
  *
  * <p>Cette activité ne contient aucune logique de construction : tout part dans le
  * moteur, processus séparé. Les textes viennent des ressources (jamais en dur).</p>
@@ -66,6 +75,8 @@ public class MainActivity extends Activity {
     private Button construireButton;
     private Button annulerButton;
     private Button installerButton;
+    private Button boutonCopierJournaux;
+    private Button boutonPartagerJournaux;
     private ProgressBar progression;
     private TextView journalBuild;
     private TextView résuméBuild;
@@ -81,6 +92,18 @@ public class MainActivity extends Activity {
 
     private final ExecutorService exécuteur = Executors.newSingleThreadExecutor();
     private final AtomicReference<EngineClient> moteurCourant = new AtomicReference<>();
+
+    /** Dernier moteur lancé (jamais remis à zéro : le rapport lit ses diagnostics). */
+    private final AtomicReference<EngineClient> dernierClient = new AtomicReference<>();
+
+    /** Génération du moteur courant : incrémentée à chaque arrêt attendu, pour
+     * distinguer la mort attendue d'un moteur remplacé de la mort inattendue
+     * du moteur en cours (seule la seconde doit alarmer l'utilisateur). */
+    private final AtomicLong générationMoteur = new AtomicLong();
+
+    /** Journal de diagnostics du moteur en cours (stderr capturé) ; remplacé à chaque
+     * build — l'ancien moteur peut encore écrire dans l'ancien tampon, sans gêne. */
+    private JournalMoteur journalMoteur = new JournalMoteur(JournalMoteur.CAPACITÉ_PAR_DÉFAUT);
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -122,6 +145,8 @@ public class MainActivity extends Activity {
         boutonImporterExemples.setOnClickListener(vue -> importerExemples());
         annulerButton.setOnClickListener(vue -> annulerBuild());
         installerButton.setOnClickListener(vue -> installerDernierApk());
+        boutonCopierJournaux.setOnClickListener(vue -> copierJournaux());
+        boutonPartagerJournaux.setOnClickListener(vue -> partagerJournaux());
     }
 
     @Override
@@ -446,7 +471,9 @@ public class MainActivity extends Activity {
 
     /**
      * Lance le build du projet indiqué dans le moteur installé (processus séparé) et
-     * affiche le flux d'événements au fil de l'eau.
+     * affiche le flux d'événements au fil de l'eau. Le moteur du build précédent est
+     * arrêté d'abord : un moteur oisif par build finirait par épuiser la mémoire de
+     * l'appareil et attirer le tueur de processus au pire moment.
      */
     private void lancerBuild() {
         String chemin = cheminProjet.getText().toString().trim();
@@ -471,13 +498,17 @@ public class MainActivity extends Activity {
                 runOnUiThread(() -> afficherÉvénement(événement));
         exécuteur.submit(() -> {
             try {
+                arrêterMoteurCourant();
+                long génération = générationMoteur.get();
+                JournalMoteur journal = new JournalMoteur(JournalMoteur.CAPACITÉ_PAR_DÉFAUT);
+                journalMoteur = journal;
                 EngineClient moteur = EngineSession.launchInstalled(
                         new DeviceVmLauncher(), forgeHome(), installe, versionCoquille(),
-                        événements, () -> runOnUiThread(() -> {
-                            afficherRésumé(getString(R.string.host_engine_dead));
-                            réinitialiserBoutons();
-                        }), false);
+                        événements,
+                        () -> exécuteur.submit(() -> publierMortMoteur(génération)),
+                        false, journal::ajouter);
                 moteurCourant.set(moteur);
+                dernierClient.set(moteur);
                 String buildId = "app-" + System.currentTimeMillis();
                 dernierBuildId = buildId;
                 BuildRequest requête = new BuildRequest(buildId, chemin,
@@ -495,6 +526,68 @@ public class MainActivity extends Activity {
                     réinitialiserBoutons();
                 });
             }
+        });
+    }
+
+    /**
+     * Arrête proprement le moteur du build en cours (accusé puis mort naturelle) ; le
+     * détruit en secours s'il n'accuse pas. La génération est avancée : la mort qui
+     * suit est attendue, elle ne doit pas alarmer l'écran.
+     */
+    private void arrêterMoteurCourant() {
+        EngineClient moteur = moteurCourant.getAndSet(null);
+        if (moteur == null) {
+            return;
+        }
+        générationMoteur.incrementAndGet();
+        try {
+            moteur.shutdown().get(3, TimeUnit.SECONDS);
+        } catch (Exception injoignable) {
+            moteur.kill();
+        }
+    }
+
+    /**
+     * Mort du moteur : publie le code de sortie et la queue de son journal stderr
+     * dans le journal affiché — c'est l'unique trace d'un écroulement (mémoire
+     * saturée, signal du noyau, exception non attrapée). Silencieux si la mort est
+     * attendue (moteur remplacé ou arrêté après la fin du build).
+     *
+     * @param génération génération du moteur mort (comparée à la courante).
+     */
+    private void publierMortMoteur(long génération) {
+        if (générationMoteur.get() != génération) {
+            return; // Mort attendue : moteur déjà arrêté ou remplacé.
+        }
+        EngineClient moteur = dernierClient.get();
+        Integer code = null;
+        if (moteur != null) {
+            // La sentinelle peut publier le code quelques instants après l'EOF.
+            long fin = System.currentTimeMillis() + 2500;
+            while (System.currentTimeMillis() < fin) {
+                code = moteur.codeSortie();
+                if (code != null) {
+                    break;
+                }
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException interruption) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        Integer codeFinal = code;
+        List<String> queue = journalMoteur.dernières(40);
+        runOnUiThread(() -> {
+            afficherRésumé(getString(R.string.host_engine_dead));
+            ajouterLigne(getString(R.string.logs_engine_exit_line,
+                    RapportDiagnostic.décrireCodeSortie(codeFinal)));
+            if (!queue.isEmpty()) {
+                ajouterLigne(getString(R.string.logs_engine_stderr_tail_header));
+                queue.forEach(this::ajouterLigne);
+            }
+            réinitialiserBoutons();
         });
     }
 
@@ -539,7 +632,8 @@ public class MainActivity extends Activity {
 
     /**
      * Affiche un événement de build dans le journal ; à la fin, rétablit les boutons
-     * et propose l'installation si un APK a été produit.
+     * et propose l'installation si un APK a été produit, puis libère la VM du moteur
+     * (un build terminé n'a plus besoin d'un processus de 512 Mo qui traîne).
      */
     private void afficherÉvénement(BuildEvent événement) {
         if (événement instanceof BuildEvent.LogEvent journal) {
@@ -565,6 +659,97 @@ public class MainActivity extends Activity {
                             fin.message()));
             réinitialiserBoutons();
             installerButton.setEnabled(fin.success() && dernierApkConstruit() != null);
+            exécuteur.submit(this::arrêterMoteurCourant);
+        }
+    }
+
+    /**
+     * Copie le rapport de diagnostic complet (contexte, journal de build, journal du
+     * moteur, dernière trace) dans le presse-papiers.
+     */
+    private void copierJournaux() {
+        boutonCopierJournaux.setEnabled(false);
+        exécuteur.submit(() -> {
+            String rapport = composerRapport();
+            runOnUiThread(() -> {
+                ClipboardManager pressePapiers = getSystemService(ClipboardManager.class);
+                if (pressePapiers != null) {
+                    pressePapiers.setPrimaryClip(ClipData.newPlainText(
+                            getString(R.string.logs_clip_label), rapport));
+                }
+                Toast.makeText(this, getString(R.string.logs_copied, rapport.length()),
+                        Toast.LENGTH_SHORT).show();
+                boutonCopierJournaux.setEnabled(true);
+            });
+        });
+    }
+
+    /**
+     * Partage le même rapport par une application au choix (courriel, dépôt de notes,
+     * messagerie) — le chemin le plus court pour sortir un journal de l'appareil.
+     */
+    private void partagerJournaux() {
+        exécuteur.submit(() -> {
+            String rapport = composerRapport();
+            runOnUiThread(() -> {
+                Intent envoi = new Intent(Intent.ACTION_SEND);
+                envoi.setType("text/plain");
+                envoi.putExtra(Intent.EXTRA_TEXT, rapport);
+                envoi.putExtra(Intent.EXTRA_TITLE, getString(R.string.logs_share_title));
+                startActivity(Intent.createChooser(envoi,
+                        getString(R.string.logs_share_title)));
+            });
+        });
+    }
+
+    /**
+     * Assemble le rapport : contexte de l'appareil et des versions, journal de build
+     * affiché, journal stderr du moteur capturé, dernière trace JSON du projet.
+     */
+    private String composerRapport() {
+        EngineInstaller lecteur = new EngineInstaller(forgeHome(), null, null);
+        InstalledState installe = lecteur.currentState();
+        EngineClient moteur = dernierClient.get();
+        RapportDiagnostic.Contexte contexte = new RapportDiagnostic.Contexte(
+                versionCoquille(), versionCodeCoquille(),
+                installe == null ? "non installé" : installe.engineVersion(),
+                moteur == null ? null : moteur.codeSortie(),
+                "Android " + Build.VERSION.RELEASE, Build.VERSION.SDK_INT,
+                abiPrincipale(), mémoireTotaleMo(), Build.MODEL,
+                cheminProjet.getText().toString().trim(),
+                résuméBuild.getText().toString());
+        List<String> lignesBuild = journalBuild.getText().toString().lines().toList();
+        return RapportDiagnostic.composer(contexte, lignesBuild,
+                journalMoteur.copie(), dernièreTrace());
+    }
+
+    /**
+     * Dernière trace JSON écrite par le moteur sous {@code <projet>/.forge/traces},
+     * la plus récente par date de modification (null si aucune).
+     */
+    private RapportDiagnostic.TraceDernière dernièreTrace() {
+        String chemin = cheminProjet.getText().toString().trim();
+        if (chemin.isEmpty()) {
+            return null;
+        }
+        Path traces = Path.of(chemin, ".forge", "traces");
+        if (!Files.isDirectory(traces)) {
+            return null;
+        }
+        try (var parcours = Files.walk(traces, 1)) {
+            Path dernière = parcours.filter(Files::isRegularFile)
+                    .filter(p -> p.getFileName().toString().endsWith(".json"))
+                    .max(Comparator.comparingLong(p -> p.toFile().lastModified()))
+                    .orElse(null);
+            if (dernière == null) {
+                return null;
+            }
+            return new RapportDiagnostic.TraceDernière(
+                    dernière.getFileName().toString(),
+                    new String(Files.readAllBytes(dernière),
+                            java.nio.charset.StandardCharsets.UTF_8));
+        } catch (Exception echec) {
+            return null;
         }
     }
 

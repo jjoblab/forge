@@ -226,5 +226,27 @@
             android:scrollbars="vertical"
             android:textAppearance="@android:style/TextAppearance.Material.Caption"
             android:textSize="12sp" />
+
+        <!-- Diagnostic : exporter les journaux (build, moteur, trace) pour déboguer
+             sur appareil — copie dans le presse-papiers ou partage direct. -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:orientation="horizontal">
+
+            <Button
+                android:id="@+id/action_copy_logs"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/action_copy_logs" />
+
+            <Button
+                android:id="@+id/action_share_logs"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/action_share_logs" />
+        </LinearLayout>
     </LinearLayout>
 </ScrollView>
