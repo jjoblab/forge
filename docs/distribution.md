@@ -87,8 +87,9 @@ des `targetSdk` antérieurs à 23).
 
 1. **CI** (livrée, étape 12) : à chaque étiquette `vX.Y.Z`, la CI exécute la chaîne
    complète — tests, assemblage des composants dexés (`:engine:composants` :
-   engine-core, java-compiler, dexeur, signeur, platform-34 ; aapt2-arm64-v8a attend
-   sa construction AOSP, voir §7),
+   engine-core, java-compiler, dexeur, signeur, platform-34 et aapt2-arm64-v8a
+   depuis v0.2.8 — le prébuilt Android de ReVanced/aapt2 téléchargé à l'exécution,
+   voir §7),
    signature du manifeste avec le secret `FORGE_MANIFEST_KEY`, **vérification de la
    signature contre la clé publique épinglée** (prouve que le jeton CI et la coquille
    parlent de la même paire), publication d'une version GitHub avec tous les
@@ -166,10 +167,17 @@ moteur figé entre deux mises à jour de l'application, perte de l'installation 
   tracée (§9.2) si le propriétaire du dépôt préfère s'y rabattre. Sans ce
   composant, AUCUNE compilation ne résout `java.lang.Object` sur ART (ECJ ne peut
   pas lire la plate-forme dex/oat de l'appareil — correctif v0.2.7).
-- **`aapt2` (omis)** : le prébuilt des build-tools est x86_64/Linux, inutilisable sur
-  un appareil arm64 ; sa publication attend une construction AOSP arm64
-  (évolution consignée dans `limites-et-suite.md`). Les modules `application`
-  Android échouent proprement avec un message actionnable en attendant.
+- **`aapt2` (composant `aapt2-arm64-v8a`, publié depuis v0.2.8)** : binaire compilé
+  pour Android/arm64 par le projet **ReVanced/aapt2** (source : AOSP, Apache-2.0 —
+  redistribution d'un binaire libre validée le 2026-11-20 ; c'est la pratique de la
+  référence, qui embarque ce même prébuilt dans son APK). Les segments LOAD sont
+  alignés 16 Ko : le binaire se charge sur les appareils à pages de 4 Ko ET de 16 Ko
+  (un binaire aligné 4 Ko est tué par SIGSEGV dès `exec` sur un appareil 16 Ko). Le
+  prébuilt x86_64 des build-tools Google ne quitte jamais la chaîne de publication
+  (développement et tests JVM seulement). La CI le télécharge à l'exécution avec
+  gardes (magie ELF, taille minimale) et le distributeur de composants ne le propose
+  qu'aux appareils `arm64-v8a` ; les autres ABI suivront à la demande. Exécution
+  depuis le stockage privé permise par le `targetSdk 28` de la coquille (D-04).
 
 ## 8. Guidance appareil (à inclure dans l'application et la FAQ)
 
