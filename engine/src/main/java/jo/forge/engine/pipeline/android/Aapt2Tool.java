@@ -29,6 +29,12 @@ import java.util.regex.Pattern;
  * les erreurs non localisées deviennent des diagnostics sans position. À l'échec, un
  * <em>autotest</em> ({@code aapt2 version}) distingue « le binaire ne s'exécute pas
  * sur cette machine » (ABI, noyau) de « les entrées sont fausses ».</p>
+ *
+ * <p>Bit exécutable : l'installateur pose {@code +x} sur tout le contenu du moteur
+ * ({@code EngineInstaller.poserLectureSeule}), mais un binaire pointé par la
+ * propriété {@code forge.aapt2} ou copié à la main peut ne pas l'être — la première
+ * exécution répare le droit (échec propre et lisible s'il ne peut pas l'être) au
+ * lieu d'un {@code Permission denied} nu de {@code ProcessBuilder}.</p>
  */
 public final class Aapt2Tool {
 
@@ -43,6 +49,9 @@ public final class Aapt2Tool {
             "^(.+?):(\\d+)(?::(\\d+))?(?:-\\d+(?::\\d+)?)?:\\s*(error|warning):\\s*(.*)$");
 
     private final Path binaire;
+
+    /** Bit exécutable déjà assuré pour ce binaire (une seule tentative par outil). */
+    private boolean exécutableAssuré;
 
     /**
      * Crée l'outil.
@@ -86,6 +95,23 @@ public final class Aapt2Tool {
             Thread.currentThread().interrupt();
             return List.of("[diagnostic] aapt2 version interrompu (annulation du build)");
         }
+    }
+
+    /**
+     * Répare le bit exécutable avant la première exécution (voir la javadoc de
+     * classe) ; idempotent, jamais fatal deux fois.
+     */
+    private void assurerExécutable() throws IOException {
+        if (exécutableAssuré) {
+            return;
+        }
+        if (Files.isRegularFile(binaire) && !Files.isExecutable(binaire)
+                && !binaire.toFile().setExecutable(true, true)) {
+            throw new IOException("aapt2 n'est pas exécutable et le droit ne peut pas "
+                    + "être posé : " + binaire
+                    + " (réinstallez le composant aapt2 ou posez +x à la main)");
+        }
+        exécutableAssuré = true;
     }
 
     /**
@@ -150,6 +176,7 @@ public final class Aapt2Tool {
      * Exécute une commande aapt2 avec délai et interruption.
      */
     private Résultat exécuter(List<String> arguments) throws IOException, InterruptedException {
+        assurerExécutable();
         List<String> commande = new ArrayList<>();
         commande.add(binaire.toString());
         commande.addAll(arguments);

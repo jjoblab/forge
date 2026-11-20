@@ -63,4 +63,24 @@ class Aapt2ToolTest {
         List<String> tampon = new ArrayList<>();
         assertTrue(lignes.get(0).contains("[diagnostic]"));
     }
+
+    @Test
+    void binaireSansBitExécutableEstRéparé() throws Exception {
+        // Le composant installé reçoit +x de l'installateur, mais un binaire
+        // copié à la main ou pointé par forge.aapt2 peut perdre le droit : la
+        // première exécution doit le poser plutôt qu'échouer d'un Permission
+        // denied nu. Vrai binaire (Maven) : la réparation se prouve en exécutant.
+        java.nio.file.Path binaire = jo.forge.engine.testutil.OutilsAndroidDeTest
+                .extraireAapt2();
+        org.junit.jupiter.api.Assumptions.assumeTrue(binaire != null,
+                "binaire aapt2 de test absent du classpath");
+        assertTrue(binaire.toFile().setExecutable(false, false),
+                "le test sait retirer le droit d'exécution");
+        Aapt2Tool outil = new Aapt2Tool(binaire);
+        List<String> lignes = outil.autotest();
+        assertTrue(java.nio.file.Files.isExecutable(binaire),
+                "le droit est réparé par la première exécution");
+        assertTrue(lignes.get(0).contains("aapt2 version répond"),
+                "le binaire s'exécute après réparation : " + lignes);
+    }
 }
