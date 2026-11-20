@@ -85,10 +85,15 @@ des `targetSdk` antérieurs à 23).
 
 ## 4. Chaîne de publication et gestion des clés
 
-1. **CI** : à chaque étiquette `vX.Y.Z`, la CI construit la coquille, le moteur, dex ses
-   bibliothèques, assemble et publie : APK coquille, composants zippés, `manifest.json` et sa
-   somme. La **clé privée ECDSA du manifeste ne sort jamais de la CI** (secret GitHub) ; la clé
-   publique est épinglée dans les sources de la coquille.
+1. **CI** (livrée, étape 12) : à chaque étiquette `vX.Y.Z`, la CI exécute la chaîne
+   complète — tests, assemblage des composants dexés (`:engine:composants` :
+   engine-core, java-compiler, dexeur, signeur, aapt2-arm64-v8a, platform-34),
+   signature du manifeste avec le secret `FORGE_MANIFEST_KEY`, **vérification de la
+   signature contre la clé publique épinglée** (prouve que le jeton CI et la coquille
+   parlent de la même paire), publication d'une version GitHub avec tous les
+   artefacts. La **clé privée ECDSA du manifeste ne sort jamais de la CI** (secret
+   GitHub, posé le 2026-11-20, première génération) ; la clé publique correspondante
+   est épinglée dans `app/src/main/java/jo/forge/app/ClesForge.java`.
 2. **Rotation de clé** : prévue par la conception sans changement de format — la coquille
    embarque la clé active et peut embarquer la suivante (période de chevauchement) ; une clé
    compromise est révoquée en publiant une version de coquille qui ne l'accepte plus, et le

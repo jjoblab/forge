@@ -46,3 +46,66 @@ tasks.named('test') {
         exceptionFormat 'full'
     }
 }
+
+// ---------------------------------------------------------------------------
+// Publication (étape 12) : assemblage des composants du moteur et du manifeste.
+// ---------------------------------------------------------------------------
+
+def versionComposants = '0.2.0'
+
+tasks.register('composants', JavaExec) {
+    group = 'publication'
+    description = 'Assemble les composants dexés du moteur et le manifeste (signé si FORGE_CLE_PRIVEE pointe la clé privée).'
+    dependsOn ':api:jar', ':json:jar', ':client:jar', ':engine:jar'
+
+    def cheminAndroidJar = {
+        def force = System.getenv('FORGE_ANDROID_JAR')
+        if (force) return force
+        def sdk = System.getenv('ANDROID_HOME') ?: System.getenv('ANDROID_SDK_ROOT')
+        if (sdk) {
+            def candidat = new File(sdk, 'platforms/android-34/android.jar')
+            if (candidat.isFile()) return candidat.absolutePath
+        }
+        return null
+    }()
+    def cheminAapt2 = {
+        def force = System.getenv('FORGE_AAPT2')
+        if (force) return force
+        def sdk = System.getenv('ANDROID_HOME') ?: System.getenv('ANDROID_SDK_ROOT')
+        if (sdk) {
+            def outils = new File(sdk, 'build-tools/34.0.0/aapt2')
+            if (outils.isFile()) return outils.absolutePath
+        }
+        return null
+    }()
+
+    def r8Jar = configurations.runtimeClasspath.find { it.name.startsWith('r8-') }
+    def ecjJar = configurations.runtimeClasspath.find { it.name.startsWith('ecj-') }
+    def apksigJar = configurations.runtimeClasspath.find { it.name.startsWith('apksig-') }
+
+    classpath = project(':setup').sourceSets.main.runtimeClasspath
+    mainClass = 'jo.forge.setup.packaging.PackagerComposants'
+
+    def arguments = ['--sortie', layout.buildDirectory.dir('composants').get().asFile.absolutePath,
+                     '--version', versionComposants,
+                     '--d8', r8Jar?.absolutePath,
+                     '--moteur',
+                     project(':api').tasks.jar.archiveFile.get().asFile.absolutePath,
+                     project(':json').tasks.jar.archiveFile.get().asFile.absolutePath,
+                     project(':client').tasks.jar.archiveFile.get().asFile.absolutePath,
+                     project(':engine').tasks.jar.archiveFile.get().asFile.absolutePath,
+                     '--compilateur', ecjJar?.absolutePath,
+                     '--dexeur', r8Jar?.absolutePath,
+                     '--signeur', apksigJar?.absolutePath]
+    if (cheminAndroidJar) {
+        arguments.addAll(['--android-jar', cheminAndroidJar])
+    }
+    if (cheminAapt2) {
+        arguments.addAll(['--aapt2', cheminAapt2, '--abi', 'arm64-v8a'])
+    }
+    def cléPrivée = System.getenv('FORGE_CLE_PRIVEE')
+    if (cléPrivée) {
+        arguments.addAll(['--clé-privée', cléPrivée])
+    }
+    args = arguments.findAll { it != null }
+}

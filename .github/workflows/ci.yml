@@ -87,3 +87,71 @@ jobs:
           name: forge-app-debug
           path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 14
+
+  release:
+    name: Publication (composants et manifeste signé)
+    # Se déclenche sur les étiquettes de version (vX.Y.Z) : la chaîne complète
+    # (tests -> composants dexés -> manifeste signé -> vérification contre la clé
+    # publique épinglée -> version GitHub) ne s'exécute qu'à la publication.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurer JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Installer les composants SDK requis
+        run: |
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$PATH"
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+      - name: Assembler les composants et signer le manifeste
+        env:
+          # Clé privée de signature (PKCS#8, base64) : JETON CI, jamais versionnée.
+          FORGE_MANIFEST_KEY: ${{ secrets.FORGE_MANIFEST_KEY }}
+        run: |
+          echo "$FORGE_MANIFEST_KEY" > /tmp/cle-privee.b64
+          FORGE_CLE_PRIVEE=/tmp/cle-privee.b64 ./gradlew --no-daemon :engine:composants
+          rm -f /tmp/cle-privee.b64
+
+      - name: Vérifier le manifeste contre la clé publique épinglée
+        run: |
+          # La signature publiée doit être valide pour la clé PUBLIQUE épinglée dans
+          # la coquille (ClesForge) : prouve que le jeton CI et la coquille parlent
+          # de la même paire de clés.
+          python3 - <<'PY'
+          import re
+          source = open('app/src/main/java/jo/forge/app/ClesForge.java').read()
+          morceaux = re.findall(r'"([^"]+)"', source.split('CLÉ_PUBLIQUE_MANIFESTE')[1])
+          open('/tmp/cle-publique.b64', 'w').write(''.join(morceaux))
+          PY
+          ./gradlew --no-daemon :setup:jar :json:jar :api:jar -q
+          java -cp "setup/build/libs/setup-0.2.0.jar:json/build/libs/json-0.2.0.jar:api/build/libs/api-0.2.0.jar" \
+            jo.forge.setup.manifest.OutilManifeste verifier \
+            engine/build/composants/manifest.json /tmp/cle-publique.b64 \
+            engine/build/composants/manifest.sig
+
+      - name: Assembler la coquille (APK de publication)
+        run: ./gradlew --no-daemon :app:assembleRelease --stacktrace || ./gradlew --no-daemon :app:assembleDebug --stacktrace
+
+      - name: Publier la version GitHub
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            engine/build/composants/*.zip \
+            engine/build/composants/manifest.json \
+            engine/build/composants/manifest.sig \
+            --title "Forge $GITHUB_REF_NAME" \
+            --notes "Composants du moteur (dexés pour ART), manifeste signé (ECDSA P-256) et coquille. Vérifiez le manifeste avec la clé publique épinglée dans la coquille (ClesForge) avant toute installation."

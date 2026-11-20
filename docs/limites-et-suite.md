@@ -28,10 +28,10 @@ tout écart est consigné ici.
 | 9. Résolveur | **Fait** | Résolution Maven complète : POM effectifs (parents, propriétés, gestion, nomenclatures importées, relogements), exclusions, optionnelles, médiation trois politiques (échec-sur-conflit réel, chemins cités), comparateur aligné Maven, cache réplique à écritures atomiques + cache négatif TTL, intégrité sha1, HTTPS strict (boucle locale pour les tests), bornes avec diagnostic, hors ligne, convergence en deux passes ; tâche `resolveDependencies` câblée dans le pipeline (le classpath résolu est une entrée d'empreinte de la compilation) ; 16 tests sur un vrai dépôt HTTP local. **Bonus : correction d'une course réelle dans l'exécuteur** (double soumission d'une tâche par la boucle des racines, détectée par le benchmark incrémental, corrigée et re-vérifiée 5 fois). |
 | 10. Pipeline Android | **Fait** | Chaîne `application` complète jusqu'à l'**APK signé v1+v2 vérifié par apksig**, testée avec de VRAIS outils (aapt2 officiel extrait du dépôt Maven, android.jar API 34, d8 et apksig en processus) : `processResources` (aapt2 borné 5 min, annulation par destruction, autotest, diagnostics localisés), `compileJava` (R générées au chemin des sources, `android.jar` au classpath), `dex` (d8 en processus, diagnostics par l'API, classes emballées en jar déterministe), `packageApk` (déterministe, arsc STORED, noms traversants refusés), `signApk` (clé de débogage générée par keytool borné, aucun secret en ligne de commande) ; `android-library` v1 = classes+jar contre android.jar (ressources/AAR non livrés, consigné) ; incrémentalité testée (source modifiée → ressources à jour ; ressource modifiée → chaîne aval relancée) ; exemple `examples/application-android`. |
 | 11. Diagnostics et console | **Fait** | Rédaction de secrets au point de sortie (D-09, heuristique consignée), parseur générique de sortie d'outils (repli sans API), journal circulaire borné par build (P-7), trace JSON exportable par build sous `.forge/traces/` (A-13, atomique, testée), écran de build complet dans la coquille (chemin du projet, progression, journal + diagnostics en flux, annulation, installation de l'APK avec confirmation système). |
-| 12. Packaging et publication | À faire | CI de construction des composants, dexage, manifeste signé, artefacts de release. |
+| 12. Packaging et publication | **Fait** | Chaîne complète : `PackagerComposants` (setup) assemble les six composants dexés (engine-core 93 Ko, java-compiler 1,2 Mo, dexeur 3,2 Mo, signeur 165 Ko, aapt2-arm64-v8a 2,2 Mo, platform-34 24 Mo) en zips déterministes + manifeste JSON via le codec de l'installateur ; signature ECDSA P-256 du manifeste (outil `OutilManifeste` : génération, signature, vérification — round-trip testé avec le vérificateur de la coquille) ; **clé de production générée et épinglée** (publique : `ClesForge` dans la coquille ; privée : jeton CI `FORGE_MANIFEST_KEY`, posé par l'API GitHub, jamais versionnée) ; tâche `:engine:composants` ; job CI `release` sur étiquette `vX.Y.Z` (assemblage, signature, vérification contre la clé épinglée, version GitHub). La chaîne a été exécutée en entier dans le bac à sable : signature vérifiée VALIDE. |
 | 13. Import Gradle statique (optionnel) | À faire | Lecteur statique vers `forge.json`. |
 
-## Manques et limites constatés (Phases 3-4, étapes 1-11)
+## Manques et limites constatés (Phases 3-4, étapes 1-12)
 
 - **Écarts du pipeline Java avec le moteur de référence** (détail dans la section
   « Comparaison après implémentation » de [`REFERENCES.md`](REFERENCES.md)) :
@@ -90,9 +90,17 @@ tout écart est consigné ici.
   logique testable existe déjà.
 - **Licence de Forge choisie : Apache-2.0** (décision propriétaire du 2026-11-20, appliquée
   au dépôt entier — fichier `LICENSE` ; voir `distribution.md` §7 pour les notices des
-  dépendances embarquées, à générer à l'étape 12).
-- **Clé publique ECDSA de production** : pas encore générée ; une clé de test est créée à
-  la volée dans les tests. À épingler à l'étape 12 (procédure `distribution.md` §4).
+  dépendances embarquées, dont la génération reste à produire à la publication).
+- **Clé de signature de manifeste** : **générée et épinglée** (étape 12) — clé
+  publique dans `ClesForge` (coquille, test de format), clé privée en jeton CI
+  `FORGE_MANIFEST_KEY` (posé le 2026-11-20 par l'API GitHub, jamais versionnée) ;
+  la rotation reste à documenter opérationnellement (`distribution.md` §4).
+- **Redistribution de `android.jar` et du binaire `aapt2`** : le composant
+  `platform-34` emballe le `android.jar` du SDK et `aapt2-arm64-v8a` le binaire des
+  build-tools ; les conditions de redistribution (`distribution.md` §7) restent à
+  valider juridiquement avant publication publique — et le binaire emballe
+  aujourd'hui est le prébuilt LINUX (développement et CI) : le prébuilt ANDROID
+  (arm64) exige une construction AOSP dédiée (écart consigné).
 
 ## Hypothèses retenues (Phases 0-3)
 
