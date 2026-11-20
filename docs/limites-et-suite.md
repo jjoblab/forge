@@ -16,6 +16,7 @@ tout écart est consigné ici.
 | Post-4 — Diagnostic sur appareil | **Fait** (2026-11-20) | Étape 15 du tableau ci-dessous : stderr du moteur capturé, journaux copiables, moteurs successifs arrêtés, publication `v0.2.2`. |
 | Post-4 — Correctif d'ouverture | **Fait** (2026-11-21) | La `v0.2.2` plantait à l'ouverture (boutons de journaux non branchés à leurs vues) ; correctif + journal d'écroulements de la coquille dans le rapport + garde de câblage des vues dans les tests + appels limités à l'API 28 (`List.of`/`String.lines`/`Files.readString` écartés), publication `v0.2.3`. |
 | Post-4 — Correctif ECJ sur ART | **Fait** (2026-11-21) | Constat `v0.2.3` (rapport de diagnostic copié depuis l'appareil) : `core:compileJava` échoue par `Can't find bundle for base name …batch.messages, locale fr_HT` — d8 ne convertit que les classes, les ressources d'ECJ (bundles de messages, tables `.rsc` du parseur et du scanner, ~1,04 Mo) étaient perdues au dexage, et sur JVM les tests ne le voyaient pas (jar complet au classpath). Correctif : les jars dexés conservent toute entrée non-classe des jars sources (manifeste et signatures du jar d'origine écartés — ils ne signent plus rien une fois fusionnés ; `about.html` d'ECJ conservé, notice EPL-2.0 exigée à la redistribution §7), car le classloader d'ART sert les entrées zip d'un jar du classpath (`DexPathList`/`ClassPathURLStreamHandler`, API 28+). Doublons identiques dédupliqués, conflits de contenu refusés, ordre et horodatages fixes (déterminisme des composants). Publication `v0.2.4`. |
+| Post-4 — Code de sortie honnête | **Fait** (2026-11-21) | Constat `v0.2.3` : le rapport disait « code de sortie : inconnu (processus encore vivant ou code non encore publié) » d'un moteur pourtant à l'arrêt. Deux causes : (1) `codeSortie()` ne publiait que ce que la sentinelle rapportait — une sentinelle muette (interrompue) laissait le code à `null` pour toujours ; il se guérit désormais seul (processus fini sans publication = `waitFor` immédiat, testé avec connexion sans aucun fil) ; (2) le sondage de mort (2,5 s) tournait sur la file mono-fil de la coquille et retardait l'arrêt du moteur mis en file derrière lui — le moteur restait vivant pendant qu'on l'attendait. La mort est publiée sur son propre fil, et un canal fermé sans code s'affiche désormais comme tel (« canal du moteur fermé, processus encore vivant ») au lieu de prétendre à un arrêt. Publication `v0.2.5`. |
 
 ### Phase 4 : détail par étape
 
@@ -145,24 +146,26 @@ tout écart est consigné ici.
    `1b1a3052168a52f38a91ea03c87831a0d94c1fff`, jamais copié ni référencé hors de
    `docs/REFERENCES.md`.
 
-## Procédure de test sur appareil (v0.2.4)
+## Procédure de test sur appareil (v0.2.5)
 
-La chaîne est testable de bout en bout depuis la publication `v0.2.4` (la `v0.2.3`
+La chaîne est testable de bout en bout depuis la publication `v0.2.5` (la `v0.2.3`
 compilait encore son premier projet Java en échec : ressources d'ECJ perdues au
-dexage, `Can't find bundle … locale fr_HT` — corrigé) :
+dexage, `Can't find bundle … locale fr_HT` — corrigé en `v0.2.4` ; le code de
+sortie du moteur est honnête depuis la `v0.2.5`) :
 
 1. **Installer la coquille** : APK signé de la clé d'essai joint à la version GitHub
-   `v0.2.4` (`app-debug.apk`), installation par chargement latéral (autoriser les
+   `v0.2.5` (`app-debug.apk`), installation par chargement latéral (autoriser les
    sources inconnues). Les versions de test successives s'installent l'une sur
    l'autre (clé d'essai stable, jetons CI) ; une installation antérieure signée
    autrement (clé de débogage éphémère d'un exécutant, comme l'APK d'artefact des
-   builds de branche) doit d'abord être désinstallée. Une `v0.2.1`-`v0.2.3` déjà
+   builds de branche) doit d'abord être désinstallée. Une `v0.2.1`-`v0.2.4` déjà
    installée se met à jour directement par-dessus.
 2. **Mettre à jour le moteur** : section *Installation du moteur* — *Charger le
    manifeste* puis *Réinstaller (mise à jour ou réparation)* : les composants Java
-   de la `v0.2.4` remplacent ceux des versions antérieures — c'est eux qui portent
-   le correctif ECJ (ressources conservées à côté du dex ; le composant
-   `java-compiler` passe d'environ 1,2 à 2,3 Mo).
+   de la `v0.2.5` remplacent ceux des versions antérieures — ceux de la `v0.2.4`
+   portent le correctif ECJ (ressources conservées à côté du dex ; le composant
+   `java-compiler` passe d'environ 1,2 à 2,3 Mo décompressés), et ceux de la
+   `v0.2.5` embarquent aussi le client au code de sortie auto-guéri.
 3. **Construire l'exemple Java** : bouton *Importer les projets d'exemple* (stockage
    privé, aucune permission), puis *Construire* — le moteur démarre dans son propre
    processus (`app_process`, tas dédié), ECJ compile sur ART, les jar sortent dans

@@ -117,11 +117,16 @@ vers le SDK comme d'habitude.
   dexage ; les jars dexés les conservent maintenant à côté du dex (servies par le
   classloader d'ART), manifeste et signatures d'origine écartés, `about.html` (notice
   EPL-2.0) conservé.
+- [x] Code de sortie honnête (`v0.2.5`) — le rapport disait « code de sortie :
+  inconnu » d'un moteur à l'arrêt : `codeSortie()` se guérit seul (sentinelle muette
+  = `waitFor` immédiat), la mort du moteur se publie hors de la file mono-fil (elle
+  retardait l'arrêt du moteur qu'elle attendait), et un canal fermé sans code
+  s'affiche comme tel.
 - [ ] Vérification sur appareil réel (ART) — procédure dans `docs/limites-et-suite.md`.
 
 ## Tester sur un appareil
 
-Depuis la publication [`v0.2.4`](https://github.com/jjoblab/forge/releases/latest) :
+Depuis la publication [`v0.2.5`](https://github.com/jjoblab/forge/releases/latest) :
 
 1. **Coquille** : installez l'APK joint à la version (chargement latéral ; clé d'essai
    stable — les versions de test successives s'installent l'une sur l'autre).
