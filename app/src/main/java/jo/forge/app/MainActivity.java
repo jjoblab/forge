@@ -232,8 +232,19 @@ public class MainActivity extends Activity {
                 }
                 manifesteCanal = lu.manifeste();
                 composantsCanal = lu.manifeste().forAbi(abiPrincipale());
+                // Quels composants sont déjà en cache ? (vérification d'intégrité
+                // locale : quelques instants d'E/S, aucun réseau — c'est l'information
+                // « déjà téléchargé » de la liste et le total RÉEL de la barre.)
+                EngineInstaller lecteurCache = new EngineInstaller(forgeHome(), null, null);
+                java.util.Set<String> enCache = new java.util.HashSet<>();
+                for (ComponentManifest composant : composantsCanal) {
+                    if (lecteurCache.composantEnCache(composant)) {
+                        enCache.add(composant.id());
+                    }
+                }
+                final java.util.Set<String> enCacheFinal = enCache;
                 runOnUiThread(() -> {
-                    afficherComposantsCanal();
+                    afficherComposantsCanal(enCacheFinal);
                     résuméInstall.setText("");
                     boutonInstaller.setEnabled(true);
                     boutonManifeste.setEnabled(true);
@@ -249,9 +260,12 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Affiche la liste des composants applicables avec tailles et total.
+     * Affiche la liste des composants applicables avec tailles et total, en signalant
+     * ceux que le cache local dispensera de télécharger (économie de données).
+     *
+     * @param enCache identifiants des composants déjà présents dans le cache local.
      */
-    private void afficherComposantsCanal() {
+    private void afficherComposantsCanal(java.util.Set<String> enCache) {
         List<ComponentManifest> composants = composantsCanal;
         EngineManifest manifeste = manifesteCanal;
         if (composants == null || manifeste == null) {
@@ -262,9 +276,22 @@ public class MainActivity extends Activity {
                 R.string.install_components_header, manifeste.engineVersion(),
                 composants.size(), tailleLisible(total)));
         for (ComponentManifest composant : composants) {
-            liste.append('\n').append(getString(R.string.install_component_line,
-                    composant.id(), composant.version(),
-                    tailleLisible(composant.size())));
+            if (enCache != null && enCache.contains(composant.id())) {
+                liste.append('\n').append(getString(
+                        R.string.install_component_line_cached,
+                        composant.id(), composant.version()));
+            } else {
+                liste.append('\n').append(getString(R.string.install_component_line,
+                        composant.id(), composant.version(),
+                        tailleLisible(composant.size())));
+            }
+        }
+        if (enCache != null && !enCache.isEmpty()) {
+            long économisés = composants.stream()
+                    .filter(composant -> enCache.contains(composant.id()))
+                    .mapToLong(ComponentManifest::size).sum();
+            liste.append('\n').append(getString(R.string.install_components_savings,
+                    tailleLisible(total - économisés), tailleLisible(économisés)));
         }
         texteComposants.setText(liste.toString());
         avertissementDonnees.setVisibility(android.view.View.VISIBLE);
@@ -290,14 +317,29 @@ public class MainActivity extends Activity {
         boutonManifeste.setEnabled(false);
         boutonDésinstaller.setEnabled(false);
         boutonAnnulerInstall.setEnabled(true);
+        // Barre de progression sur le volume RÉELLEMENT téléchargé : les composants
+        // servis par le cache local ne traversent pas le réseau (l'installateur
+        // re-vérifie l'état du cache à l'instant de l'installation).
+        EngineInstaller lecteurCache = new EngineInstaller(forgeHome(), null, null);
+        long àTélécharger = composants.stream()
+                .filter(composant -> !lecteurCache.composantEnCache(composant))
+                .mapToLong(ComponentManifest::size).sum();
         barreInstall.setMax((int) Math.min(Integer.MAX_VALUE,
-                composants.stream().mapToLong(ComponentManifest::size).sum()));
+                Math.max(1, àTélécharger)));
         barreInstall.setProgress(0);
         résuméInstall.setText(getString(R.string.install_download_started));
 
         ForgeHome home = forgeHome();
+        // Le même jeu de composants en cache sert à la barre ET au total annoncé par
+        // la source de progression : seuls les composants à télécharger comptent.
+        java.util.Set<String> enCache = new java.util.HashSet<>();
+        for (ComponentManifest composant : composants) {
+            if (lecteurCache.composantEnCache(composant)) {
+                enCache.add(composant.id());
+            }
+        }
         SourceProgressive source = new SourceProgressive(
-                new ComponentSource.Network(home.downloads()), composants,
+                new ComponentSource.Network(home.downloads()), composants, enCache,
                 (reçus, total) -> runOnUiThread(() -> {
                     barreInstall.setProgress((int) Math.min(Integer.MAX_VALUE, reçus));
                     résuméInstall.setText(getString(R.string.install_progress_line,
@@ -307,11 +349,19 @@ public class MainActivity extends Activity {
             try {
                 EngineInstaller installateur = new EngineInstaller(home, source,
                         new ArchiveExtractor());
-                InstalledState etat = installateur.install(manifeste,
-                        abiPrincipale(), null, jeton);
+                EngineInstaller.RésultatInstallation résultat = installateur.install(
+                        manifeste, abiPrincipale(), null, jeton);
                 runOnUiThread(() -> {
-                    résuméInstall.setText(getString(R.string.install_finished,
-                            etat.engineVersion()));
+                    if (résultat.octetsÉvités() > 0) {
+                        résuméInstall.setText(getString(
+                                R.string.install_finished_savings,
+                                résultat.état().engineVersion(),
+                                tailleLisible(résultat.octetsÉvités()),
+                                résultat.composantsRéutilisés().size()));
+                    } else {
+                        résuméInstall.setText(getString(R.string.install_finished,
+                                résultat.état().engineVersion()));
+                    }
                     réinitialiserBoutonsInstall();
                     rafraichirEtat();
                 });

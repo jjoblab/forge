@@ -96,7 +96,7 @@ class EngineSessionTest {
         EngineInstaller installateur = new EngineInstaller(home,
                 new ComponentSource.LocalDirectory(paquets), new ArchiveExtractor());
         InstalledState etat = installateur.install(manifeste, "arm64-v8a", null,
-                new CancellationToken());
+                new CancellationToken()).état();
         assertEquals(versionMoteur, etat.engineVersion());
         assertTrue(installateur.verify().isEmpty());
 

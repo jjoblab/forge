@@ -12,17 +12,24 @@ import java.util.List;
  *
  * @param id           identifiant stable du composant (ex. {@code engine-core},
  *                     {@code aapt2-arm64-v8a}).
- * @param version      version du composant (numérotation sémantique).
+ * @param version      version du composant (numérotation sémantique ; les composants
+ *                     d'outils la dérivent de leur contenu depuis v0.2.9 : elle ne
+ *                     bouge que quand le contenu bouge).
  * @param size         taille de l'archive en octets (contrôle avant installation).
  * @param sha256       somme SHA-256 de l'archive, hexadécimale minuscule (64 caractères).
  * @param urls         URLs de téléchargement (miroirs), au moins une.
  * @param abis         ABI concernées ({@code all} pour un composant indépendant de l'ABI).
  * @param minAppVersion version minimale de la coquille compatible.
  * @param depends      identifiants des composants requis (installation topologique).
+ * @param empreinte    empreinte de CONTENU (fichiers extraits), hexadécimale minuscule
+ *                    (64 caractères) — ou {@code null} pour les manifestes antérieurs
+ *                    à v0.2.9, qui ne peuvent pas être réutilisés par le cache local
+ *                    (l'identité du contenu n'y est pas établie). Voir
+ *                    {@link EmpreinteContenu}.
  */
 public record ComponentManifest(String id, String version, long size, String sha256,
                                 List<String> urls, List<String> abis, int minAppVersion,
-                                List<String> depends) {
+                                List<String> depends, String empreinte) {
 
     /**
      * Valide le composant.
@@ -48,6 +55,28 @@ public record ComponentManifest(String id, String version, long size, String sha
         urls = List.copyOf(urls);
         abis = abis == null ? List.of("all") : List.copyOf(abis);
         depends = depends == null ? List.of() : List.copyOf(depends);
+        if (empreinte != null && !empreinte.matches("[0-9a-f]{64}")) {
+            throw new ManifestException("Empreinte de contenu invalide pour " + id);
+        }
+    }
+
+    /**
+     * Constructeur historique sans empreinte (manifestes antérieurs à v0.2.9, tests) :
+     * le composant est valide mais jamais réutilisable par le cache local.
+     *
+     * @param id           identifiant stable du composant.
+     * @param version      version du composant.
+     * @param size         taille de l'archive en octets.
+     * @param sha256       somme SHA-256 de l'archive.
+     * @param urls         URLs de téléchargement.
+     * @param abis         ABI concernées.
+     * @param minAppVersion version minimale de la coquille.
+     * @param depends      composants requis.
+     */
+    public ComponentManifest(String id, String version, long size, String sha256,
+                             List<String> urls, List<String> abis, int minAppVersion,
+                             List<String> depends) {
+        this(id, version, size, sha256, urls, abis, minAppVersion, depends, null);
     }
 
     /**

@@ -45,6 +45,35 @@ public final class Files2 {
     }
 
     /**
+     * Calcule la somme SHA-256 d'un flux (aucun chargement complet — entrée zip
+     * d'archive de composant, par exemple).
+     *
+     * @param entree flux à hacher (fermé par l'appelant).
+     * @return la somme en hexadécimal minuscule.
+     * @throws IOException en cas d'erreur de lecture.
+     */
+    public static String sha256(InputStream entree) throws IOException {
+        MessageDigest digest = nouveauDigest();
+        byte[] tampon = new byte[64 * 1024];
+        int lus;
+        while ((lus = entree.read(tampon)) >= 0) {
+            digest.update(tampon, 0, lus);
+        }
+        return hex(digest.digest());
+    }
+
+    /**
+     * Calcule la somme SHA-256 d'octets en mémoire (textes canoniques, empreintes
+     * de contenu).
+     *
+     * @param octets octets à hacher.
+     * @return la somme en hexadécimal minuscule.
+     */
+    public static String sha256(byte[] octets) {
+        return hex(nouveauDigest().digest(octets));
+    }
+
+    /**
      * Calcule la somme SHA-256 en échouant bruyamment : un fichier momentanément
      * illisible est une erreur, jamais un hachage silencieusement vide (leçon du
      * constat C-4 de la revue — pas de digest vide sur erreur d'E/S).

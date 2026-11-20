@@ -56,6 +56,9 @@ public final class ManifestCodec {
 
     /**
      * Sérialise un manifeste (ordre des champs stable, pour la relecture et le diff).
+     * L'empreinte de contenu, présente depuis v0.2.9, n'est écrite que quand elle
+     * existe — les manifestes sans empreinte restent conformes au format lu par les
+     * coquilles antérieures (les champs inconnus sont ignorés à l'analyse).
      *
      * @param manifest manifeste à sérialiser.
      * @return le texte JSON correspondant.
@@ -63,15 +66,19 @@ public final class ManifestCodec {
     public static String write(EngineManifest manifest) {
         List<Object> composants = new ArrayList<>();
         for (ComponentManifest composant : manifest.components()) {
-            composants.add(Map.of(
-                    "id", composant.id(),
-                    "version", composant.version(),
-                    "size", composant.size(),
-                    "sha256", composant.sha256(),
-                    "urls", composant.urls(),
-                    "abis", composant.abis(),
-                    "minAppVersion", composant.minAppVersion(),
-                    "depends", composant.depends()));
+            Map<String, Object> objet = new java.util.LinkedHashMap<>();
+            objet.put("id", composant.id());
+            objet.put("version", composant.version());
+            objet.put("size", composant.size());
+            objet.put("sha256", composant.sha256());
+            objet.put("urls", composant.urls());
+            objet.put("abis", composant.abis());
+            objet.put("minAppVersion", composant.minAppVersion());
+            objet.put("depends", composant.depends());
+            if (composant.empreinte() != null) {
+                objet.put("empreinte", composant.empreinte());
+            }
+            composants.add(objet);
         }
         return Json.write(Map.of(
                 "manifestVersion", manifest.manifestVersion(),
@@ -100,8 +107,13 @@ public final class ManifestCodec {
         List<String> abis = listeDeChaines(composant.get("abis"), "abis de " + id);
         int minAppVersion = entier(composant, "minAppVersion");
         List<String> depends = listeDeChaines(composant.get("depends"), "depends de " + id);
+        // Empreinte de contenu : optionnelle (manifestes antérieurs à v0.2.9),
+        // contrôlée quand présente — une empreinte mal formée est un manifeste
+        // mal construit, pas un cas tolérable.
+        String empreinte = composant.get("empreinte") == null
+                ? null : chaine(composant, "empreinte");
         return new ComponentManifest(id, version, size, sha256, urls, abis, minAppVersion,
-                depends);
+                depends, empreinte);
     }
 
     private static String chaine(Map<?, ?> objet, String cle) {

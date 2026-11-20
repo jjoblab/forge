@@ -13,6 +13,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -111,6 +112,34 @@ class ManifestTest {
         assertThrows(ManifestException.class, () ->
                 new ComponentManifest("x", "1.0.0", 1, "court", List.of("https://x.fr/a"),
                         List.of("all"), 1, List.of()));
+    }
+
+    @Test
+    void empreinteOptionnelleMaisContrôlée() {
+        // Absente (manifeste antérieur à v0.2.9) : acceptée, jamais réutilisable.
+        ComponentManifest sansEmpreinte = new ComponentManifest("x", "1.0.0", 1,
+                "e".repeat(64), List.of("https://x.fr/a"), List.of("all"), 1, List.of());
+        assertNull(sansEmpreinte.empreinte());
+
+        // Présente et bien formée : acceptée, conservée par la ré-écriture.
+        ComponentManifest avecEmpreinte = new ComponentManifest("x", "1.0.0", 1,
+                "e".repeat(64), List.of("https://x.fr/a"), List.of("all"), 1, List.of(),
+                "f".repeat(64));
+        assertEquals("f".repeat(64), avecEmpreinte.empreinte());
+        String json = ManifestCodec.write(new EngineManifest(1, "0.1.0", 1, "date",
+                List.of(avecEmpreinte)));
+        assertTrue(json.contains("\"empreinte\""),
+                "l'empreinte est écrite dans le manifeste");
+        assertEquals("f".repeat(64),
+                ManifestCodec.parse(json).component("x").empreinte());
+        assertFalse(ManifestCodec.write(new EngineManifest(1, "0.1.0", 1, "date",
+                List.of(sansEmpreinte))).contains("empreinte"),
+                "pas de champ empreinte pour un composant qui n'en a pas");
+
+        // Mal formée : refusée net (un manifeste mal construit, pas un cas toléré).
+        assertThrows(ManifestException.class, () -> new ComponentManifest("x", "1.0.0",
+                1, "e".repeat(64), List.of("https://x.fr/a"), List.of("all"), 1,
+                List.of(), "court"));
     }
 
     @Test

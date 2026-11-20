@@ -12,6 +12,8 @@ import java.nio.file.Path;
  * forge/
  *   engines/&lt;version&gt;/          moteur installé (lecture seule)
  *   engines/.staging-&lt;uuid&gt;/     installation en cours (renommée à la fin)
+ *   cache/composants/&lt;empreinte&gt;/ composants déjà téléchargés, partagés entre
+ *                               les versions du moteur (économie de données)
  *   downloads/                    .part et archives complètes
  *   state/installed.json          pointeur d'état (écriture atomique)
  * </pre>
@@ -29,6 +31,15 @@ public record ForgeHome(Path racine) {
         if (racine == null) {
             throw new InstallException("Racine Forge manquante");
         }
+    }
+
+    /**
+     * Répertoire du cache de composants (partagé entre les versions du moteur).
+     *
+     * @return le chemin de {@code cache/composants}.
+     */
+    public Path cacheComposants() {
+        return racine.resolve("cache").resolve("composants");
     }
 
     /**

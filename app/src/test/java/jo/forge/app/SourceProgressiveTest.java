@@ -80,6 +80,27 @@ class SourceProgressiveTest {
     }
 
     @Test
+    void composantsEnCacheExclusDuTotalAnnoncé() throws IOException {
+        // v0.2.9 : platform-34 est en cache local — il ne traverse pas le réseau,
+        // le total annoncé ne compte que ce qui sera réellement téléchargé.
+        List<ComponentManifest> composants = List.of(
+                composant("engine-core", 100), composant("platform-34", 900));
+        List<long[]> rapports = new ArrayList<>();
+        Files.createDirectories(temporaire);
+        SourceProgressive source = new SourceProgressive(
+                new SourceFactice(temporaire), composants,
+                java.util.Set.of("platform-34"),
+                (reçus, total) -> rapports.add(new long[]{reçus, total}));
+
+        // Seul engine-core est demandé (le cache sert platform-34).
+        source.fetch(composants.get(0), null, new CancellationToken());
+
+        assertEquals(100, rapports.get(rapports.size() - 1)[0]);
+        assertEquals(100, rapports.get(rapports.size() - 1)[1],
+                "le total global exclut les composants servis par le cache");
+    }
+
+    @Test
     void écouteurNulAcceptéSansÉchec() throws IOException {
         List<ComponentManifest> composants = List.of(composant("engine-core", 50));
         Files.createDirectories(temporaire);

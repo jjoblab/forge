@@ -4,6 +4,7 @@ import jo.forge.setup.download.InstallCancelledException;
 import jo.forge.setup.download.InstallException;
 import jo.forge.setup.manifest.ComponentManifest;
 import jo.forge.setup.manifest.EngineManifest;
+import jo.forge.setup.manifest.EmpreinteContenu;
 import jo.forge.setup.manifest.ManifestVerifier;
 import jo.forge.setup.util.Files2;
 
@@ -27,12 +28,23 @@ import java.util.UUID;
  * puis <em>renommé</em> en {@code engines/&lt;version&gt;} ; l'état
  * ({@code installed.json}) n'est basculé qu'en dernier, atomiquement. Un échec à
  * n'importe quel pas laisse l'état précédent intact et supprime la préparation.</p>
+ *
+ * <p><b>Économie de données mobiles</b> (v0.2.9) : les composants dont l'empreinte
+ * de contenu est déjà dans le cache ({@code forge/cache/composants}) sont LIÉS
+ * depuis le cache au lieu d'être téléchargés — une mise à jour du moteur ne
+ * re-télécharge que ce qui a réellement changé. Le cache est en outre AMORCÉ depuis
+ * le moteur précédemment installé : quand un composant du nouveau manifeste a la
+ * même empreinte qu'un composant en place, ses fichiers sont mis en cache avant
+ * d'être supprimés avec l'ancien moteur (la première mise à jour vers une version
+ * à empreintes est donc elle aussi économique). Le cache survit aux mises à jour
+ * et aux désinstallations ; sa purge est explicite ({@link #purgerCache()}).</p>
  */
 public final class EngineInstaller {
 
     private final ForgeHome home;
     private final ComponentSource source;
     private final ArchiveExtractor extractor;
+    private final CacheComposants cache;
 
     /**
      * Crée l'installateur.
@@ -45,6 +57,26 @@ public final class EngineInstaller {
         this.home = home;
         this.source = source;
         this.extractor = extractor;
+        this.cache = new CacheComposants(home.cacheComposants());
+    }
+
+    /**
+     * Résultat d'une installation : l'état posé, ce qui n'a PAS été téléchargé.
+     *
+     * @param état            état installé.
+     * @param octetsÉvités    octets réseau économisés (composants réutilisés du cache).
+     * @param composantsRéutilisés identifiants des composants servis par le cache.
+     */
+    public record RésultatInstallation(InstalledState état, long octetsÉvités,
+                                       List<String> composantsRéutilisés) {
+
+        /**
+         * Valide le résultat.
+         */
+        public RésultatInstallation {
+            composantsRéutilisés = composantsRéutilisés == null
+                    ? List.of() : List.copyOf(composantsRéutilisés);
+        }
     }
 
     /**
@@ -57,26 +89,65 @@ public final class EngineInstaller {
     }
 
     /**
+     * Indique si le cache détient déjà un composant, sain et complet (affichage
+     * de la coquille AVANT installation : « déjà téléchargé — aucun octet »).
+     *
+     * @param composant composant du manifeste chargé.
+     * @return {@code true} si l'installation le servira depuis le cache.
+     */
+    public boolean composantEnCache(ComponentManifest composant) {
+        return cache.entréeSaine(composant) != null;
+    }
+
+    /**
+     * Taille du cache de composants sur disque (affichage, purge guidée).
+     *
+     * @return la taille en octets (0 si vide).
+     */
+    public long tailleCache() {
+        return cache.taille();
+    }
+
+    /**
+     * Purge le cache des composants (bouton explicite de la coquille). Ne touche
+     * ni au moteur installé, ni à son état : la prochaine installation re-téléchargera
+     * ce qu'il faut.
+     *
+     * @return {@code true} si le cache a été supprimé (ou n'existait pas).
+     */
+    public boolean purgerCache() {
+        return cache.purger();
+    }
+
+    /**
      * Installe (ou met à jour) le moteur décrit par un manifeste vérifié.
      *
-     * <p>Les composants applicables à l'ABI sont installés, dépendances d'abord. Si un
-     * moteur est déjà installé avec la même version, l'installation est refaite
-     * (réparation complète par réinstallation).</p>
+     * <p>Les composants applicables à l'ABI sont installés, dépendances d'abord,
+     * depuis le cache de composants quand leur empreinte y est déjà (aucun octet
+     * réseau), sinon par téléchargement (puis mise en cache pour les prochaines
+     * fois). Si un moteur est déjà installé avec la même version, l'installation
+     * est refaite (réparation complète — gratuite quand le cache couvre tout).</p>
      *
      * @param manifest manifeste signé, déjà vérifié par {@link ManifestVerifier}.
      * @param abi      ABI de l'appareil (ex. {@code arm64-v8a}).
      * @param progress rapporteur de progression (peut être nul).
      * @param cancel   jeton d'annulation : le partiel est conservé pour reprise.
-     * @return l'état installé.
+     * @return l'état installé et les octets économisés.
      * @throws InstallCancelledException si annulation demandée.
      * @throws InstallException          en cas d'erreur de téléchargement, de vérification
      *                                   ou d'installation.
      */
-    public InstalledState install(EngineManifest manifest, String abi,
+    public RésultatInstallation install(EngineManifest manifest, String abi,
                                   jo.forge.setup.download.Downloader.ProgressListener progress,
                                   jo.forge.setup.download.CancellationToken cancel) {
         List<ComponentManifest> ordonnes = ordonner(manifest, manifest.forAbi(abi));
         InstalledState precedent = currentState();
+
+        // Amorçage : sauver dans le cache les composants du moteur en place dont le
+        // contenu correspond à ce que le nouveau manifeste réclame — AVANT que
+        // l'ancien moteur ne soit supprimé (économie dès la première mise à jour
+        // à empreintes, ex. v0.2.8 → v0.2.9).
+        amorcerCache(ordonnes, precedent);
 
         Path staging = home.engines().resolve(".staging-" + UUID.randomUUID());
         try {
@@ -84,14 +155,31 @@ public final class EngineInstaller {
             Files.createDirectories(staging);
 
             List<InstalledState.InstalledComponent> installes = new ArrayList<>();
+            List<String> réutilisés = new ArrayList<>();
+            long octetsÉvités = 0;
             java.util.Set<String> fichiersDejaVus = new java.util.HashSet<>();
             for (ComponentManifest composant : ordonnes) {
                 cancel.check();
-                Path archive = source.fetch(composant, progress, cancel);
-                extractor.extract(archive, staging);
-                // Seuls les fichiers NOUVEAUX appartiennent à ce composant (un composant
-                // suivant ne doit pas hériter des fichiers du précédent).
-                Map<String, String> fichiers = nouveauxFichiers(staging, fichiersDejaVus);
+                Map<String, String> fichiers;
+                CacheComposants.Entrée entrée = cache.entréeSaine(composant);
+                if (entrée != null
+                        && cache.lierDans(composant.empreinte(), staging,
+                        entrée.fichiers())) {
+                    // Réutilisé : aucun octet réseau, sommes déjà vérifiées.
+                    fichiers = entrée.fichiers();
+                    réutilisés.add(composant.id());
+                    octetsÉvités += composant.size();
+                } else {
+                    Path archive = source.fetch(composant, progress, cancel);
+                    extractor.extract(archive, staging);
+                    // Seuls les fichiers NOUVEAUX appartiennent à ce composant (un composant
+                    // suivant ne doit pas hériter des fichiers du précédent).
+                    fichiers = nouveauxFichiers(staging, fichiersDejaVus);
+                    // Le composant rejoint le cache pour les prochaines installations
+                    // (best effort — jamais au prix de l'installation).
+                    cache.peupler(composant, staging, fichiers);
+                }
+                fichiersDejaVus.addAll(fichiers.keySet());
                 installes.add(new InstalledState.InstalledComponent(composant.id(),
                         composant.version(), fichiers));
             }
@@ -122,7 +210,7 @@ public final class EngineInstaller {
                 retablirEcriture(ancien);
                 Files2.supprimerRecursivement(ancien);
             }
-            return nouvelEtat;
+            return new RésultatInstallation(nouvelEtat, octetsÉvités, réutilisés);
         } catch (IOException ioError) {
             throw new InstallException("Installation impossible : " + ioError.getMessage(),
                     ioError);
@@ -131,6 +219,61 @@ public final class EngineInstaller {
             retablirEcriture(staging);
             Files2.supprimerRecursivement(staging);
         }
+    }
+
+    /**
+     * Amorce le cache depuis le moteur précédent : chaque composant réclamé par le
+     * nouveau manifeste dont l'empreinte de contenu correspond à un composant EN
+     * PLACE (mêmes fichiers, mêmes sommes — vérifiés sur disque) rejoint le cache
+     * par lien dur, avant la suppression de l'ancien moteur. Échecs silencieux :
+     * sans amorçage, le composant sera simplement téléchargé.
+     */
+    private void amorcerCache(List<ComponentManifest> ordonnes, InstalledState precedent) {
+        if (precedent == null) {
+            return;
+        }
+        Path ancienMoteur = home.engineDir(precedent.engineVersion());
+        if (!Files.isDirectory(ancienMoteur)) {
+            return;
+        }
+        for (ComponentManifest composant : ordonnes) {
+            if (composant.empreinte() == null) {
+                continue;
+            }
+            InstalledState.InstalledComponent ancien = precedent.component(composant.id());
+            if (ancien == null || ancien.files().isEmpty()) {
+                continue;
+            }
+            if (!EmpreinteContenu.deCarte(ancien.files())
+                    .equals(composant.empreinte())) {
+                continue;
+            }
+            if (!fichiersSains(ancienMoteur, ancien.files())) {
+                continue; // Altéré : pas d'amorçage sur du contenu douteux.
+            }
+            cache.peupler(composant, ancienMoteur, ancien.files());
+        }
+    }
+
+    /**
+     * Vérifie que des fichiers d'un moteur installé correspondent bien à leurs
+     * sommes (base de l'amorçage : ne mettre en cache que du contenu sain).
+     */
+    private static boolean fichiersSains(Path moteur, Map<String, String> fichiers) {
+        for (Map.Entry<String, String> fichier : fichiers.entrySet()) {
+            Path chemin = moteur.resolve(fichier.getKey());
+            if (!Files.isRegularFile(chemin)) {
+                return false;
+            }
+            try {
+                if (!Files2.sha256(chemin).equals(fichier.getValue())) {
+                    return false;
+                }
+            } catch (IOException illisible) {
+                return false;
+            }
+        }
+        return true;
     }
 
     /**

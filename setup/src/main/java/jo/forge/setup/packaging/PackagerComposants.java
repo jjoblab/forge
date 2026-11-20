@@ -2,6 +2,7 @@ package jo.forge.setup.packaging;
 
 import jo.forge.setup.manifest.ComponentManifest;
 import jo.forge.setup.manifest.EngineManifest;
+import jo.forge.setup.manifest.EmpreinteContenu;
 import jo.forge.setup.manifest.ManifestCodec;
 import jo.forge.setup.util.Files2;
 
@@ -78,8 +79,31 @@ import java.util.zip.ZipOutputStream;
  *       [--moteur jar1 jar2 …] [--compilateur ecj.jar]
  *       [--compat-art &lt;répertoire de sources&gt;]
  *       [--dexeur r8.jar] [--signeur apksig.jar] [--aapt2 binaire --abi arm64-v8a]
+ *       [--version-aapt2 &lt;base&gt;] [--kotlin jar1 jar2 …]
+ *       [--url-outils &lt;URL de base des composants d'outils&gt;]
  *       [--clé-privée &lt;pkcs8-b64&gt;] [--sans-outils-android]
  * </pre>
+ *
+ * <p><b>Versions dérivées du contenu</b> (v0.2.9, économie de données mobiles) :
+ * les composants d'outils ({@code aapt2-&lt;abi&gt;}, {@code platform-&lt;api&gt;}) ne portent
+ * PLUS la version du moteur — qui changeait à chaque publication quand bien même
+ * leur contenu était identique, forçant l'appareil à tout re-télécharger. Leur
+ * version est dérivée de la somme de leur archive : {@code <base>.&lt;somme8&gt;} (ex.
+ * {@code 34.0.0.3f2a1b9c} pour platform-34, {@code 1.1.0.9c8d7e6f} pour aapt2) —
+ * elle ne change QUE quand le contenu change. La base sémantique de platform est
+ * {@code &lt;api&gt;.0.0} ; celle d'aapt2 vient de {@code --version-aapt2} (version
+ * amont du prébuilt, défaut {@code 1.0.0}). Chaque composant porte enfin son
+ * empreinte de contenu ({@link EmpreinteContenu}) : c'est elle qui permet à
+ * l'installateur de réutiliser les fichiers déjà présents sur l'appareil.</p>
+ *
+ * <p>{@code --url-outils} (base sans slash final, ex.
+ * {@code …/releases/download/outils}) héberge les composants d'outils sur une
+ * version GitHub DÉDIÉE et pérenne : un manifeste v0.2.10 peut référencer l'archive
+ * publiée en v0.2.9 sans la re-téléverser. Sans l'option, l'URL reste celle de la
+ * version du moteur (les composants sont alors téléversés avec chaque version —
+ * comportement historique, utile au développement local).
+ * {@code --kotlin} assemble le composant {@code kotlin-compiler} (compilateur Kotlin
+ * embarqué, feuille de route langages — v0.2.9).</p>
  *
  * <p>{@code --sans-outils-android} omet les composants redistribuables de la
  * plate-forme ({@code platform-&lt;api&gt;} et {@code aapt2-&lt;abi&gt;}) tout en conservant
@@ -132,6 +156,12 @@ public final class PackagerComposants {
         boolean sansOutilsAndroid = options.containsKey("sans-outils-android");
         String cléPrivée = options.containsKey("clé-privée")
                 ? Files.readString(Path.of(obligatoire(options, "clé-privée"))) : null;
+        // Base sémantique des versions dérivées (aapt2 : version amont du prébuilt).
+        String baseAapt2 = options.getOrDefault("version-aapt2", List.of("1.0.0")).get(0);
+        // Hébergement pérenne des composants d'outils (release GitHub « outils ») :
+        // null = URL de la version du moteur (comportement historique).
+        String urlOutils = options.containsKey("url-outils")
+                ? obligatoire(options, "url-outils") : null;
         Files.createDirectories(sortie);
 
         List<ComponentManifest> composants = new ArrayList<>();
@@ -168,11 +198,18 @@ public final class PackagerComposants {
                     "signature d'APK (apksig)", List.of("engine-core"),
                     d8, androidJar, jars(options, "signeur")));
         }
+        if (options.containsKey("kotlin")) {
+            composants.add(composantDexé(sortie, version, "kotlin-compiler",
+                    "compilateur Kotlin embarqué (kotlin-compiler-embeddable) — "
+                            + "expérimental, validation ART en cours",
+                    List.of("engine-core"),
+                    d8, androidJar, jars(options, "kotlin")));
+        }
         if (options.containsKey("aapt2") && !sansOutilsAndroid) {
             String abi = options.getOrDefault("abi", List.of("arm64-v8a")).get(0);
-            composants.add(composantFichier(sortie, version, "aapt2-" + abi,
+            composants.add(composantFichier(sortie, baseAapt2, "aapt2-" + abi,
                     "outil de ressources Android (aapt2)", List.of("engine-core"),
-                    List.of(abi), Path.of(obligatoire(options, "aapt2"))));
+                    List.of(abi), Path.of(obligatoire(options, "aapt2")), urlOutils));
         }
         if (sansOutilsAndroid) {
             System.out.println("[avertissement] composants d'outils Android omis "
@@ -182,9 +219,9 @@ public final class PackagerComposants {
             int api = options.containsKey("min-api")
                     ? Integer.parseInt(obligatoire(options, "min-api"))
                     : versionApi(androidJar);
-            composants.add(composantFichier(sortie, version, "platform-" + api,
+            composants.add(composantFichier(sortie, api + ".0.0", "platform-" + api,
                     "plate-forme Android de compilation (android.jar)",
-                    List.of("engine-core"), List.of("all"), androidJar));
+                    List.of("engine-core"), List.of("all"), androidJar, urlOutils));
         } else {
             System.err.println("[avertissement] android.jar absent : composant "
                     + "platform-N omis (la CI le produit avec le SDK complet)");
@@ -215,7 +252,10 @@ public final class PackagerComposants {
     }
 
     /**
-     * Assemble un composant dexé : d8 sur les jars, classes.dex dans un zip.
+     * Assemble un composant dexé : d8 sur les jars, classes.dex (et ses suites
+     * multi-dex, classes2.dex, classes3.dex… — un gros compilateur dépasse la
+     * limite de 64K méthodes d'un dex) dans un zip. La version du composant est
+     * celle du moteur (c'est le moteur lui-même).
      */
     private static ComponentManifest composantDexé(Path sortie, String version,
             String id, String description, List<String> dépendances, Path d8,
@@ -251,24 +291,58 @@ public final class PackagerComposants {
         if (!Files.isRegularFile(dex)) {
             throw new IOException("composant " + id + " : d8 n'a pas produit de dex");
         }
+        // Suites multi-dex (classes2.dex, classes3.dex…) : d8 les produit quand le
+        // code dépasse 64K méthodes — le compilateur Kotlin en fait des dizaines.
+        // Toutes rejoignent le jar : le classloader d'ART les charge toutes (API 21+).
+        List<Path> dexes = new ArrayList<>(List.of(dex));
+        for (int indice = 2; ; indice++) {
+            Path suite = travail.resolve("classes" + indice + ".dex");
+            if (!Files.isRegularFile(suite)) {
+                break;
+            }
+            dexes.add(suite);
+        }
         Path archive = sortie.resolve(id + "-" + version + ".zip");
-        emballerJarDexe(dex, archive, cheminDexe(id), jars);
+        emballerJarDexe(dexes, archive, cheminDexe(id), jars);
         System.out.println("[composant " + id + "] " + archive.getFileName() + " ("
-                + Files.size(archive) + " octets) — " + description);
-        return manifesteDe(archive, version, List.of("all"), dépendances);
+                + Files.size(archive) + " octets, " + dexes.size() + " dex) — "
+                + description);
+        return manifesteDe(archive, version, List.of("all"), dépendances, null);
     }
 
     /**
-     * Assemble un composant fichier unique (binaire aapt2, android.jar…).
+     * Assemble un composant fichier unique (binaire aapt2, android.jar…). La
+     * version du composant est DÉRIVÉE du contenu : {@code <base>.<somme8>} — elle
+     * ne change que quand l'archive change, pour que les publications successives
+     * d'un même contenu restent la même version (économie de données mobiles).
+     *
+     * @param sortie      répertoire de publication.
+     * @param baseVersion base sémantique (ex. {@code 34.0.0}, {@code 1.1.0}).
+     * @param id          identifiant du composant.
+     * @param description texte de journal.
+     * @param dépendances composants requis.
+     * @param abis        ABI du composant.
+     * @param fichier     fichier à emballer.
+     * @param urlOutils   base d'URL de la release pérenne des outils, ou {@code null}
+     *                   pour l'URL de la version du moteur.
+     * @return l'entrée de manifeste du composant assemblé.
+     * @throws IOException si l'assemblage échoue.
      */
-    private static ComponentManifest composantFichier(Path sortie, String version,
+    private static ComponentManifest composantFichier(Path sortie, String baseVersion,
             String id, String description, List<String> dépendances,
-            List<String> abis, Path fichier) throws IOException {
+            List<String> abis, Path fichier, String urlOutils) throws IOException {
+        // L'archive est d'abord écrite sous un nom provisoire : sa version (dérivée
+        // de sa propre somme) n'est connue qu'après écriture.
+        Path provisoire = sortie.resolve(id + "-contenu.zip");
+        zipperFichier(provisoire, fichier, cheminOutil(id));
+        String somme = Files2.sha256(provisoire);
+        String version = baseVersion + "." + somme.substring(0, 8);
         Path archive = sortie.resolve(id + "-" + version + ".zip");
-        zipperFichier(archive, fichier, cheminOutil(id));
+        Files.move(provisoire, archive, StandardCopyOption.REPLACE_EXISTING);
         System.out.println("[composant " + id + "] " + archive.getFileName() + " ("
-                + Files.size(archive) + " octets) — " + description);
-        return manifesteDe(archive, version, abis, dépendances);
+                + Files.size(archive) + " octets, version dérivée du contenu) — "
+                + description);
+        return manifesteDe(archive, version, abis, dépendances, urlOutils);
     }
 
     /**
@@ -495,28 +569,32 @@ public final class PackagerComposants {
     }
 
     /**
-     * Emballe un dex produit par d8 en jar (zip : {@code classes.dex} puis, dans l'ordre
-     * alphabétique, les ressources des jars sources), puis l'archive du composant avec ce
-     * jar posé à son chemin de destination. ART charge le {@code classes.dex} d'un jar
-     * exactement comme celui d'un APK, et son classloader sert les autres entrées du zip
-     * à {@code getResource} — c'est ce qui rend les messages d'ECJ trouvables sur appareil.
+     * Emballe un dex (et ses suites multi-dex) produit par d8 en jar (zip :
+     * {@code classes.dex}, {@code classes2.dex}… puis, dans l'ordre alphabétique, les
+     * ressources des jars sources), puis l'archive du composant avec ce jar posé à
+     * son chemin de destination. ART charge le {@code classes.dex} d'un jar exactement
+     * comme celui d'un APK — et ses suites multi-dex depuis l'API 21 — et son
+     * classloader sert les autres entrées du zip à {@code getResource} — c'est ce qui
+     * rend les messages d'ECJ trouvables sur appareil.
      *
-     * @param dex               fichier {@code classes.dex} produit par d8.
-     * @param archive           archive du composant à écrire ({@code <id>-<version>.zip}).
-     * @param cheminDestination chemin d'installation du jar dans le répertoire moteur.
-     * @param jarsSources       jars dexés (leurs ressources non-classe sont conservées).
+     * @param dexes              fichiers {@code classes*.dex} produits par d8 (au moins un).
+     * @param archive            archive du composant à écrire ({@code <id>-<version>.zip}).
+     * @param cheminDestination  chemin d'installation du jar dans le répertoire moteur.
+     * @param jarsSources        jars dexés (leurs ressources non-classe sont conservées).
      */
-    static void emballerJarDexe(Path dex, Path archive, String cheminDestination,
+    static void emballerJarDexe(List<Path> dexes, Path archive, String cheminDestination,
                                 List<Path> jarsSources) throws IOException {
         Path travail = Files.createTempFile("forge-jar-dexe", ".jar");
         try {
             try (ZipOutputStream jar = new ZipOutputStream(
                     Files.newOutputStream(travail))) {
-                ZipEntry entree = new ZipEntry("classes.dex");
-                entree.setTime(HORODATAGE_FIXE);
-                jar.putNextEntry(entree);
-                Files.copy(dex, jar);
-                jar.closeEntry();
+                for (Path dex : dexes) {
+                    ZipEntry entree = new ZipEntry(dex.getFileName().toString());
+                    entree.setTime(HORODATAGE_FIXE);
+                    jar.putNextEntry(entree);
+                    Files.copy(dex, jar);
+                    jar.closeEntry();
+                }
                 for (Map.Entry<String, byte[]> ressource
                         : ressourcesConservées(jarsSources).entrySet()) {
                     ZipEntry entréeRessource = new ZipEntry(ressource.getKey());
@@ -628,16 +706,24 @@ public final class PackagerComposants {
     }
 
     /**
-     * Entrée de manifeste d'une archive produite (taille + somme + URL de release).
+     * Entrée de manifeste d'une archive produite : taille, somme, empreinte de
+     * contenu et URL. L'URL des composants d'outils pointe la release pérenne
+     * {@code outils} quand {@code urlOutils} est donné (un contenu identique reste
+     * servi par la même URL d'une publication à l'autre) ; sinon la version du
+     * moteur (comportement historique).
      */
     private static ComponentManifest manifesteDe(Path archive, String version,
-            List<String> abis, List<String> dépendances) throws IOException {
+            List<String> abis, List<String> dépendances, String urlOutils)
+            throws IOException {
+        String url = urlOutils != null
+                ? urlOutils + "/" + archive.getFileName()
+                : "https://github.com/jjoblab/forge/releases/download"
+                        + "/v" + version + "/" + archive.getFileName();
         return new ComponentManifest(
                 nomSansVersion(archive.getFileName().toString()),
                 version, Files.size(archive), Files2.sha256(archive),
-                List.of("https://github.com/jjoblab/forge/releases/download"
-                        + "/v" + version + "/" + archive.getFileName()),
-                abis, 1, dépendances);
+                List.of(url),
+                abis, 1, dépendances, EmpreinteContenu.deArchive(archive));
     }
 
     /** Identifiant du composant depuis un nom de fichier versionné. */

@@ -24,6 +24,7 @@ import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
@@ -65,7 +66,7 @@ class PackagerComposantsTest {
         Files.write(dex, octetsDex);
         Path archive = temporaire.resolve("java-compiler-0.2.0.zip");
 
-        PackagerComposants.emballerJarDexe(dex, archive, "lib/java-compiler.jar", List.of());
+        PackagerComposants.emballerJarDexe(List.of(dex), archive, "lib/java-compiler.jar", List.of());
 
         byte[] jarEmballé = entréeUnique(archive, "lib/java-compiler.jar");
         // Le jar interne sans sources est un zip à entrée unique classes.dex, octets identiques.
@@ -101,7 +102,7 @@ class PackagerComposantsTest {
         Files.write(dex, "dex factice".getBytes(StandardCharsets.UTF_8));
         Path archive = temporaire.resolve("java-compiler-0.2.4.zip");
 
-        PackagerComposants.emballerJarDexe(dex, archive, "lib/java-compiler.jar",
+        PackagerComposants.emballerJarDexe(List.of(dex), archive, "lib/java-compiler.jar",
                 List.of(jarSource));
 
         try (ZipFile jar = new ZipFile(jarInterne(archive).toFile())) {
@@ -145,7 +146,7 @@ class PackagerComposantsTest {
         Files.write(dex, "dex factice".getBytes(StandardCharsets.UTF_8));
         Path archive = temporaire.resolve("engine-core-0.2.4.zip");
 
-        PackagerComposants.emballerJarDexe(dex, archive, "engine.jar",
+        PackagerComposants.emballerJarDexe(List.of(dex), archive, "engine.jar",
                 List.of(premier, secondIdentique));
 
         try (ZipFile jar = new ZipFile(jarInterne(archive).toFile())) {
@@ -158,8 +159,8 @@ class PackagerComposantsTest {
         Path conflit = jarDe(Map.of("commun.txt", "CONTENU DIFFÉRENT"));
         Path autreArchive = temporaire.resolve("engine-core-conflit-0.2.4.zip");
         IOException refusée = assertThrows(IOException.class,
-                () -> PackagerComposants.emballerJarDexe(dex, autreArchive, "engine.jar",
-                        List.of(premier, conflit)));
+                () -> PackagerComposants.emballerJarDexe(List.of(dex), autreArchive,
+                        "engine.jar", List.of(premier, conflit)));
         assertTrue(refusée.getMessage().contains("commun.txt"),
                 "le message doit nommer la ressource en conflit : " + refusée.getMessage());
     }
@@ -171,10 +172,74 @@ class PackagerComposantsTest {
                 PackagerComposants.cheminDexe("java-compiler"));
         assertEquals("lib/dexeur.jar", PackagerComposants.cheminDexe("dexeur"));
         assertEquals("lib/signeur.jar", PackagerComposants.cheminDexe("signeur"));
+        assertEquals("lib/kotlin-compiler.jar",
+                PackagerComposants.cheminDexe("kotlin-compiler"));
         assertEquals("components/aapt2-arm64-v8a/aapt2",
                 PackagerComposants.cheminOutil("aapt2-arm64-v8a"));
         assertEquals("components/platform-34/android.jar",
                 PackagerComposants.cheminOutil("platform-34"));
+    }
+
+    @Test
+    void multiDexToutesLesSuitesDansLeJar() throws IOException {
+        // Un composant qui dépasse 64K méthodes : d8 écrit classes.dex,
+        // classes2.dex, classes3.dex… — toutes doivent rejoindre le jar, dans
+        // l'ordre, sinon seules les premières classes chargeront sur l'appareil.
+        Path dex1 = temporaire.resolve("classes.dex");
+        Path dex2 = temporaire.resolve("classes2.dex");
+        Path dex3 = temporaire.resolve("classes3.dex");
+        Files.write(dex1, "un".getBytes(StandardCharsets.UTF_8));
+        Files.write(dex2, "deux".getBytes(StandardCharsets.UTF_8));
+        Files.write(dex3, "trois".getBytes(StandardCharsets.UTF_8));
+        Path archive = temporaire.resolve("kotlin-compiler-0.2.9.zip");
+
+        PackagerComposants.emballerJarDexe(List.of(dex1, dex2, dex3), archive,
+                "lib/kotlin-compiler.jar", List.of());
+
+        byte[] octets = entréeUnique(archive, "lib/kotlin-compiler.jar");
+        Path interne = temporaire.resolve("interne-multidex.jar");
+        Files.write(interne, octets);
+        try (ZipFile jar = new ZipFile(interne.toFile())) {
+            assertEquals(List.of("classes.dex", "classes2.dex", "classes3.dex"),
+                    jar.stream().map(ZipEntry::getName).toList(),
+                    "toutes les suites multi-dex, dans l'ordre");
+        }
+    }
+
+    @Test
+    void empreinteDeContenuIndépendanteDuConteneur() throws IOException {
+        // Deux archives différentes (nom, horodatage d'écriture) portant les MÊMES
+        // entrées : même empreinte — c'est elle qui rend le composant réutilisable
+        // d'une publication à l'autre malgré un re-zippage.
+        Path binaire = temporaire.resolve("aapt2");
+        Files.write(binaire, "binaire identique".getBytes(StandardCharsets.UTF_8));
+        Path première = temporaire.resolve("a.zip");
+        Path seconde = temporaire.resolve("b.zip");
+        zipperAvecHorodatage(première, binaire, HORODATAGE_FIXE);
+        zipperAvecHorodatage(seconde, binaire, HORODATAGE_FIXE + 86_400_000L);
+
+        assertEquals(jo.forge.setup.manifest.EmpreinteContenu.deArchive(première),
+                jo.forge.setup.manifest.EmpreinteContenu.deArchive(seconde),
+                "l'empreinte ne dépend pas de l'archive, seulement des fichiers");
+        // Une entrée différente : empreinte différente.
+        Path autre = temporaire.resolve("autre-aapt2");
+        Files.write(autre, "binaire différent".getBytes(StandardCharsets.UTF_8));
+        Path troisième = temporaire.resolve("c.zip");
+        zipperAvecHorodatage(troisième, autre, HORODATAGE_FIXE);
+        assertNotEquals(jo.forge.setup.manifest.EmpreinteContenu.deArchive(première),
+                jo.forge.setup.manifest.EmpreinteContenu.deArchive(troisième));
+    }
+
+    /** Zip d'un fichier unique sous un nom interne, horodatage paramétrable. */
+    private static void zipperAvecHorodatage(Path archive, Path fichier, long horodatage)
+            throws IOException {
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+            ZipEntry entrée = new ZipEntry("components/aapt2-arm64-v8a/aapt2");
+            entrée.setTime(horodatage);
+            zip.putNextEntry(entrée);
+            Files.copy(fichier, zip);
+            zip.closeEntry();
+        }
     }
 
     @Test

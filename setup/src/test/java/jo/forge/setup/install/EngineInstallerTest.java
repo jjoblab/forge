@@ -8,6 +8,7 @@ import jo.forge.setup.download.InstallCancelledException;
 import jo.forge.setup.download.InstallException;
 import jo.forge.setup.manifest.ComponentManifest;
 import jo.forge.setup.manifest.EngineManifest;
+import jo.forge.setup.manifest.EmpreinteContenu;
 import jo.forge.setup.util.Files2;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -64,10 +65,28 @@ class EngineInstallerTest {
     // ---- Fabriques ----------------------------------------------------------
 
     /**
-     * Construit une archive de composant sur disque et retourne sa description.
+     * Construit une archive de composant sur disque et retourne sa description
+     * (sans empreinte : manifestes antérieurs à v0.2.9).
      */
     private ComponentManifest composantLocal(String id, String version,
                                              List<String> depends, String... fichiers)
+            throws IOException {
+        return composant(id, version, depends, null, fichiers);
+    }
+
+    /**
+     * Construit une archive de composant AVEC empreinte de contenu (manifestes
+     * v0.2.9+) — la même archive donne la même empreinte (réutilisation).
+     */
+    private ComponentManifest composantAvecEmpreinte(String id, String version,
+                                                     List<String> depends,
+                                                     String... fichiers)
+            throws IOException {
+        return composant(id, version, depends, "", fichiers);
+    }
+
+    private ComponentManifest composant(String id, String version, List<String> depends,
+                                         String empreinteOuNull, String... fichiers)
             throws IOException {
         Path archive = paquetsDir.resolve(id + "-" + version + ".zip");
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
@@ -80,7 +99,25 @@ class EngineInstallerTest {
         return new ComponentManifest(id, version, Files.size(archive),
                 Files2.sha256(archive),
                 List.of("http://127.0.0.1:" + serveur.getAddress().getPort() + "/" + id),
-                List.of("all"), 1, depends);
+                List.of("all"), 1, depends,
+                empreinteOuNull == null ? null : EmpreinteContenu.deArchive(archive));
+    }
+
+    /** Source qui compte ses téléchargements (économie de données). */
+    private static final class SourceComptée implements ComponentSource {
+        private final ComponentSource délégué;
+        final List<String> téléchargés = new ArrayList<>();
+
+        SourceComptée(ComponentSource délégué) {
+            this.délégué = délégué;
+        }
+
+        @Override
+        public Path fetch(ComponentManifest component, Downloader.ProgressListener progress,
+                         CancellationToken cancel) {
+            téléchargés.add(component.id());
+            return délégué.fetch(component, progress, cancel);
+        }
     }
 
     private EngineManifest manifeste(String version, List<ComponentManifest> composants) {
@@ -102,7 +139,7 @@ class EngineInstallerTest {
                 List.of("engine-core"), "android-34.jar");
         InstalledState etat = installateurLocal().install(
                 manifeste("0.1.0", List.of(plateforme, coeur)), "arm64-v8a", null,
-                new CancellationToken());
+                new CancellationToken()).état();
 
         assertEquals("0.1.0", etat.engineVersion());
         // engine-core (dépendance) précède platform-34 dans l'état installé.
@@ -159,7 +196,8 @@ class EngineInstallerTest {
         ComponentManifest v2 = composantLocal("engine-core", "0.2.0", List.of(),
                 "engine.jar", "lib/nouveaute.jar");
         InstalledState etat = installateurLocal().install(
-                manifeste("0.2.0", List.of(v2)), "arm64-v8a", null, new CancellationToken());
+                manifeste("0.2.0", List.of(v2)), "arm64-v8a", null,
+                new CancellationToken()).état();
 
         assertEquals("0.2.0", etat.engineVersion());
         assertFalse(Files.exists(home.engineDir("0.1.0")),
@@ -299,10 +337,165 @@ class EngineInstallerTest {
 
         InstalledState etat = installateurLocal().install(
                 manifeste("0.1.0", List.of(coeur, aapt2X86)), "arm64-v8a", null,
-                new CancellationToken());
+                new CancellationToken()).état();
         assertNull(etat.component("aapt2-x86_64"),
                 "le composant d'une autre ABI n'est pas installé");
         assertFalse(Files.exists(home.engineDir("0.1.0").resolve("bin/aapt2")));
+    }
+
+    @Test
+    void miseAJourSansRetéléchargerLesComposantsInchangés() throws IOException {
+        // v1 : deux composants AVEC empreinte (manifeste v0.2.9+).
+        ComponentManifest coeurV1 = composantAvecEmpreinte("engine-core", "0.1.0",
+                List.of(), "engine.jar");
+        ComponentManifest plateforme = composantAvecEmpreinte("platform-34", "34.0.0",
+                List.of("engine-core"), "components/platform-34/android.jar");
+        SourceComptée source = new SourceComptée(
+                new ComponentSource.LocalDirectory(paquetsDir));
+        EngineInstaller installateur = new EngineInstaller(home, source,
+                new ArchiveExtractor());
+        installateur.install(manifeste("0.1.0", List.of(coeurV1, plateforme)),
+                "arm64-v8a", null, new CancellationToken());
+        assertEquals(List.of("engine-core", "platform-34"), source.téléchargés,
+                "la première installation télécharge tout");
+
+        // v2 : le moteur change, la plate-forme est IDENTIQUE (même archive).
+        ComponentManifest coeurV2 = composantAvecEmpreinte("engine-core", "0.2.0",
+                List.of(), "engine.jar", "lib/nouveaute.jar");
+        EngineInstaller.RésultatInstallation résultat = installateur.install(
+                manifeste("0.2.0", List.of(coeurV2, plateforme)),
+                "arm64-v8a", null, new CancellationToken());
+
+        assertEquals(List.of("platform-34"), résultat.composantsRéutilisés(),
+                "la plate-forme inchangée est servie par le cache");
+        assertEquals(3, source.téléchargés.size(),
+                "seul le nouveau moteur est téléchargé");
+        assertEquals(plateforme.size(), résultat.octetsÉvités(),
+                "les octets évités valent la taille du composant réutilisé");
+        assertTrue(installateur.verify().isEmpty(),
+                "le moteur assemblé depuis le cache est intègre");
+        assertFalse(Files.exists(home.engineDir("0.1.0")), "l'ancien moteur part");
+    }
+
+    @Test
+    void amorçageDepuisUnMoteurSansEmpreinte() throws IOException {
+        // Génération v0.2.8 : manifeste SANS empreinte (les composants sont alors
+        // toujours téléchargés, même identiques).
+        ComponentManifest coeurVieux = composantLocal("engine-core", "0.2.8",
+                List.of(), "engine.jar");
+        ComponentManifest plateformeVieille = composantLocal("platform-34", "0.2.8",
+                List.of("engine-core"), "components/platform-34/android.jar");
+        SourceComptée source = new SourceComptée(
+                new ComponentSource.LocalDirectory(paquetsDir));
+        EngineInstaller installateur = new EngineInstaller(home, source,
+                new ArchiveExtractor());
+        installateur.install(
+                manifeste("0.2.8", List.of(coeurVieux, plateformeVieille)),
+                "arm64-v8a", null, new CancellationToken());
+
+        // Génération v0.2.9 : empreintes au manifeste, MÊME contenu de plate-forme
+        // (fichiers identiques → même empreinte que l'état installé).
+        ComponentManifest coeurNeuf = composantAvecEmpreinte("engine-core", "0.2.9",
+                List.of(), "engine.jar", "lib/nouveaute.jar");
+        ComponentManifest plateformeNeuve = composantAvecEmpreinte("platform-34",
+                "34.0.0.abcdef01", List.of("engine-core"),
+                "components/platform-34/android.jar");
+        EngineInstaller.RésultatInstallation résultat = installateur.install(
+                manifeste("0.2.9", List.of(coeurNeuf, plateformeNeuve)),
+                "arm64-v8a", null, new CancellationToken());
+
+        // La plate-forme a été AMORCÉE depuis le moteur 0.2.8 : aucun octet réseau.
+        assertEquals(List.of("platform-34"), résultat.composantsRéutilisés());
+        assertEquals(3, source.téléchargés.size(),
+                "seul engine-core a été re-téléchargé (2 installs + 1 moteur)");
+        assertTrue(installateur.verify().isEmpty());
+    }
+
+    @Test
+    void cacheAltéréRetéléchargeEtSeRépare() throws IOException {
+        ComponentManifest coeur = composantAvecEmpreinte("engine-core", "0.1.0",
+                List.of(), "engine.jar");
+        SourceComptée source = new SourceComptée(
+                new ComponentSource.LocalDirectory(paquetsDir));
+        EngineInstaller installateur = new EngineInstaller(home, source,
+                new ArchiveExtractor());
+        installateur.install(manifeste("0.1.0", List.of(coeur)),
+                "arm64-v8a", null, new CancellationToken());
+
+        // Désinstallation : le moteur part, l'ÉTAT part, le cache RESTE (c'est son
+        // but) — l'amorçage ne pourra donc pas masquer l'altération qui suit.
+        installateur.uninstall();
+
+        // Altération du fichier caché : l'entrée ne doit plus être servie.
+        Path fichierCaché = home.cacheComposants()
+                .resolve(coeur.empreinte()).resolve("contenu").resolve("engine.jar");
+        assertTrue(Files.isRegularFile(fichierCaché), "le composant est en cache");
+        fichierCaché.toFile().setWritable(true, true);
+        Files.write(fichierCaché, "falsifié".getBytes(StandardCharsets.UTF_8));
+        assertFalse(installateur.composantEnCache(coeur),
+                "une entrée altérée n'est plus réutilisable");
+
+        // L'installation re-télécharge le composant altéré et répare le cache :
+        // un cache douteux ne doit JAMAIS contaminer le moteur installé.
+        ComponentManifest mêmeContenu = composantAvecEmpreinte("engine-core", "0.2.0",
+                List.of(), "engine.jar");
+        EngineInstaller.RésultatInstallation résultat = installateur.install(
+                manifeste("0.2.0", List.of(mêmeContenu)), "arm64-v8a", null,
+                new CancellationToken());
+        assertTrue(résultat.composantsRéutilisés().isEmpty(),
+                "rien n'est réutilisé depuis une entrée altérée");
+        assertEquals(2, source.téléchargés.size(),
+                "le composant altéré a été re-téléchargé");
+        assertTrue(installateur.composantEnCache(mêmeContenu),
+                "le composant re-téléchargé a repeuplé le cache");
+        assertTrue(installateur.verify().isEmpty());
+    }
+
+    @Test
+    void réparationComplèteSansRéseau() throws IOException {
+        // Installation initiale (remplit le cache)…
+        ComponentManifest coeur = composantAvecEmpreinte("engine-core", "0.1.0",
+                List.of(), "engine.jar");
+        ComponentManifest plateforme = composantAvecEmpreinte("platform-34", "34.0.0",
+                List.of("engine-core"), "components/platform-34/android.jar");
+        EngineInstaller installateur = installateurLocal();
+        installateur.install(manifeste("0.1.0", List.of(coeur, plateforme)),
+                "arm64-v8a", null, new CancellationToken());
+
+        // …puis RÉPARATION (même version) avec une source qui échoue toujours :
+        // le cache couvre tout, aucun réseau n'est nécessaire.
+        ComponentSource sourceMorte = (composant, progress, cancel) -> {
+            throw new InstallException("réseau coupé : " + composant.id());
+        };
+        EngineInstaller horsLigne = new EngineInstaller(home, sourceMorte,
+                new ArchiveExtractor());
+        EngineInstaller.RésultatInstallation résultat = horsLigne.install(
+                manifeste("0.1.0", List.of(plateforme, coeur)), "arm64-v8a", null,
+                new CancellationToken());
+
+        assertEquals(List.of("engine-core", "platform-34"),
+                résultat.composantsRéutilisés(), "tout vient du cache");
+        assertEquals(coeur.size() + plateforme.size(), résultat.octetsÉvités());
+        assertTrue(horsLigne.verify().isEmpty(), "le moteur réparé est intègre");
+    }
+
+    @Test
+    void désinstallationConserveLeCacheEtLaPurgeLeSupprime() throws IOException {
+        ComponentManifest coeur = composantAvecEmpreinte("engine-core", "0.1.0",
+                List.of(), "engine.jar");
+        EngineInstaller installateur = installateurLocal();
+        installateur.install(manifeste("0.1.0", List.of(coeur)),
+                "arm64-v8a", null, new CancellationToken());
+
+        installateur.uninstall();
+        assertTrue(installateur.composantEnCache(coeur),
+                "la désinstallation ne touche pas au cache (économie conservée)");
+        assertTrue(installateur.tailleCache() > 0);
+
+        assertTrue(installateur.purgerCache());
+        assertFalse(installateur.composantEnCache(coeur),
+                "après purge, le composant n'est plus en cache");
+        assertEquals(0, installateur.tailleCache());
     }
 
     private void ecrire(HttpExchange exchange, byte[] contenu, long debut, long fin,

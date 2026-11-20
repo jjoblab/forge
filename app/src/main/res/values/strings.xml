@@ -24,12 +24,15 @@
     <string name="install_fetching">Récupération du manifeste et vérification de la signature…</string>
     <string name="install_components_header">Moteur %1$s — %2$d composants (%3$s) :</string>
     <string name="install_component_line">• %1$s %2$s — %3$s</string>
+    <string name="install_component_line_cached">• %1$s %2$s — déjà téléchargé (aucun octet)</string>
+    <string name="install_components_savings">Téléchargement réel : %1$s — %2$s déjà sur l\'appareil, repris du cache.</string>
     <string name="install_mobile_data_warning">Le téléchargement consomme des données
         mobiles si le Wi-Fi est absent. Une installation interrompue reprend là où
         elle s\'est arrêtée.</string>
     <string name="install_download_started">Téléchargement et installation…</string>
     <string name="install_progress_line">%1$s sur %2$s</string>
     <string name="install_finished">Moteur %1$s installé.</string>
+    <string name="install_finished_savings">Moteur %1$s installé — %2$s évités : %3$d composant(s) identique(s) repris du cache, aucun octet re-téléchargé.</string>
     <string name="install_cancelled">Installation annulée — les octets déjà téléchargés
         sont conservés pour la reprise.</string>
     <string name="install_engine_error">Installation impossible : %1$s</string>
