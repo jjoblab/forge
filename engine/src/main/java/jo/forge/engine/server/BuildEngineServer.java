@@ -241,6 +241,24 @@ public final class BuildEngineServer {
                     "erreur interne du moteur : " + inattendu.getClass().getSimpleName()
                             + (inattendu.getMessage() == null ? "" : " — "
                             + inattendu.getMessage()));
+        } catch (Error erreurGrave) {
+            // Filet de sécurité, miroir de celui de l'exécuteur : un Error (mémoire
+            // saturée avant les tâches, pile rompue) doit terminer le build par un
+            // échec PROPRE — pas un fil qui meurt en silence et un client qui attend
+            // une fin qui ne viendra jamais. La trace part sur stderr : le client la
+            // capture désormais (journal du moteur).
+            diagnostics.println("Erreur grave dans le build " + buildId + " : "
+                    + erreurGrave);
+            erreurGrave.printStackTrace(diagnostics);
+            try {
+                echecPropre(events, buildId, debut,
+                        "erreur grave du moteur ("
+                                + erreurGrave.getClass().getSimpleName()
+                                + ") — mémoire probablement insuffisante :"
+                                + " réessayez en mode basse mémoire");
+            } catch (Throwable plusRien) {
+                // Le canal lui-même est épuisé : la trace stderr reste au client.
+            }
         } finally {
             runningBuilds.remove(buildId);
         }
