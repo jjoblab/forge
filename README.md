@@ -111,11 +111,17 @@ vers le SDK comme d'habitude.
   non attrapées de la coquille s'écrivent maintenant dans un journal borné, exposé
   dans le rapport copiable ; garde de câblage des vues dans les tests (le plantage
   est attrapé avant l'installation, plus après).
+- [x] Correctif ECJ sur ART (`v0.2.4`) — la `v0.2.3` échouait à `core:compileJava`
+  sur l'appareil (`Can't find bundle … locale fr_HT`) : d8 ne convertissant que les
+  classes, les ressources d'ECJ (messages, tables du parseur) étaient perdues au
+  dexage ; les jars dexés les conservent maintenant à côté du dex (servies par le
+  classloader d'ART), manifeste et signatures d'origine écartés, `about.html` (notice
+  EPL-2.0) conservé.
 - [ ] Vérification sur appareil réel (ART) — procédure dans `docs/limites-et-suite.md`.
 
 ## Tester sur un appareil
 
-Depuis la publication [`v0.2.3`](https://github.com/jjoblab/forge/releases/latest) :
+Depuis la publication [`v0.2.4`](https://github.com/jjoblab/forge/releases/latest) :
 
 1. **Coquille** : installez l'APK joint à la version (chargement latéral ; clé d'essai
    stable — les versions de test successives s'installent l'une sur l'autre).

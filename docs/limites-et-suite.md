@@ -15,6 +15,7 @@ tout écart est consigné ici.
 | Post-4 — Assistant, jonction, exemples | **Fait** (2026-11-20) | Étape 14 du tableau ci-dessous : assistant d'installation câblé, jonction des outils, exemples embarqués, publications `v0.2.0` puis `v0.2.1` (clé d'essai stable). |
 | Post-4 — Diagnostic sur appareil | **Fait** (2026-11-20) | Étape 15 du tableau ci-dessous : stderr du moteur capturé, journaux copiables, moteurs successifs arrêtés, publication `v0.2.2`. |
 | Post-4 — Correctif d'ouverture | **Fait** (2026-11-21) | La `v0.2.2` plantait à l'ouverture (boutons de journaux non branchés à leurs vues) ; correctif + journal d'écroulements de la coquille dans le rapport + garde de câblage des vues dans les tests + appels limités à l'API 28 (`List.of`/`String.lines`/`Files.readString` écartés), publication `v0.2.3`. |
+| Post-4 — Correctif ECJ sur ART | **Fait** (2026-11-21) | Constat `v0.2.3` (rapport de diagnostic copié depuis l'appareil) : `core:compileJava` échoue par `Can't find bundle for base name …batch.messages, locale fr_HT` — d8 ne convertit que les classes, les ressources d'ECJ (bundles de messages, tables `.rsc` du parseur et du scanner, ~1,04 Mo) étaient perdues au dexage, et sur JVM les tests ne le voyaient pas (jar complet au classpath). Correctif : les jars dexés conservent toute entrée non-classe des jars sources (manifeste et signatures du jar d'origine écartés — ils ne signent plus rien une fois fusionnés ; `about.html` d'ECJ conservé, notice EPL-2.0 exigée à la redistribution §7), car le classloader d'ART sert les entrées zip d'un jar du classpath (`DexPathList`/`ClassPathURLStreamHandler`, API 28+). Doublons identiques dédupliqués, conflits de contenu refusés, ordre et horodatages fixes (déterminisme des composants). Publication `v0.2.4`. |
 
 ### Phase 4 : détail par étape
 
@@ -144,23 +145,24 @@ tout écart est consigné ici.
    `1b1a3052168a52f38a91ea03c87831a0d94c1fff`, jamais copié ni référencé hors de
    `docs/REFERENCES.md`.
 
-## Procédure de test sur appareil (v0.2.3)
+## Procédure de test sur appareil (v0.2.4)
 
-La chaîne est testable de bout en bout depuis la publication `v0.2.3` (la `v0.2.2`
-plantait à l'ouverture — boutons de journaux branchés sans `findViewById`, corrigé) :
+La chaîne est testable de bout en bout depuis la publication `v0.2.4` (la `v0.2.3`
+compilait encore son premier projet Java en échec : ressources d'ECJ perdues au
+dexage, `Can't find bundle … locale fr_HT` — corrigé) :
 
 1. **Installer la coquille** : APK signé de la clé d'essai joint à la version GitHub
-   `v0.2.3` (`app-debug.apk`), installation par chargement latéral (autoriser les
+   `v0.2.4` (`app-debug.apk`), installation par chargement latéral (autoriser les
    sources inconnues). Les versions de test successives s'installent l'une sur
    l'autre (clé d'essai stable, jetons CI) ; une installation antérieure signée
    autrement (clé de débogage éphémère d'un exécutant, comme l'APK d'artefact des
-   builds de branche) doit d'abord être désinstallée. Une `v0.2.1` ou `v0.2.2` déjà
+   builds de branche) doit d'abord être désinstallée. Une `v0.2.1`-`v0.2.3` déjà
    installée se met à jour directement par-dessus.
 2. **Mettre à jour le moteur** : section *Installation du moteur* — *Charger le
    manifeste* puis *Réinstaller (mise à jour ou réparation)* : les composants Java
-   de la `v0.2.3` remplacent ceux des versions antérieures (la capture du stderr vit
-   dans la coquille et fonctionnerait même avec un moteur plus ancien ; la mise à
-   jour du moteur apporte son filet de sécurité contre les erreurs graves).
+   de la `v0.2.4` remplacent ceux des versions antérieures — c'est eux qui portent
+   le correctif ECJ (ressources conservées à côté du dex ; le composant
+   `java-compiler` passe d'environ 1,2 à 2,3 Mo).
 3. **Construire l'exemple Java** : bouton *Importer les projets d'exemple* (stockage
    privé, aucune permission), puis *Construire* — le moteur démarre dans son propre
    processus (`app_process`, tas dédié), ECJ compile sur ART, les jar sortent dans
@@ -193,7 +195,10 @@ objet tant que les composants Android ne sont pas publiés.
 
 1. **Vérification sur appareil réel (ART)** — la grande inconnue restante, désormais
    testable par la procédure ci-dessus : `app_process` + `CLASSPATH`, jars dexés en
-   lecture seule, ECJ et d8 sur ART, tueur de processus Android 12+.
+   lecture seule, ECJ et d8 sur ART, tueur de processus Android 12+. Le maillon ECJ
+   (chargement des classes ET des ressources sur ART) est déverrouillé par la
+   `v0.2.4` ; le premier build complet sur appareil reste à constater, de même que
+   les maillons aval (jar, dex) sur ART.
 2. **Prébuilt `aapt2` ANDROID (arm64)** — construction AOSP dédiée — puis publication
    des composants `aapt2`/`platform` après validation juridique de leur
    redistribution (`distribution.md` §7) : c'est ce qui débloque le pipeline Android
