@@ -112,9 +112,12 @@ public class ForgeHostService extends Service {
     }
 
     /**
-     * Lance le moteur installé, ping, publie l'état.
+     * Lance le moteur installé, ping, publie l'état. Le moteur d'une supervision
+     * précédente est arrêté d'abord : chaque test n'ajoute pas une VM de plus sur
+     * l'appareil (mémoire saturée = moteur tué au pire moment).
      */
     private void demarrerMoteur() {
+        arrêterMoteur();
         ForgeHome home = new ForgeHome(getFilesDir().toPath().resolve("forge"));
         EngineInstaller installateur = new EngineInstaller(home, null, null);
         InstalledState installe = installateur.currentState();
@@ -145,6 +148,22 @@ public class ForgeHostService extends Service {
             stateDetail = echec.getMessage() == null
                     ? echec.getClass().getSimpleName() : echec.getMessage();
             notifier(stateDetail);
+        }
+    }
+
+    /**
+     * Arrête le moteur supervisé s'il existe (proprement, destruction en secours).
+     */
+    private void arrêterMoteur() {
+        EngineClient moteur = client;
+        client = null;
+        if (moteur == null) {
+            return;
+        }
+        try {
+            moteur.shutdown().get(5, TimeUnit.SECONDS);
+        } catch (Exception injoignable) {
+            moteur.kill();
         }
     }
 
