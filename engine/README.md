@@ -8,7 +8,7 @@ l'application. Il s'exécute dans un processus séparé de l'interface.
 | Package | Rôle | État |
 |---|---|---|
 | `jo.forge.engine.bootstrap` | `EngineMain` (point d'entrée de la VM moteur), moteur factice des tests de contrat. | Livré (étapes 2, 8) |
-| `jo.forge.engine.build` | `BuildEngineServer` : le vrai serveur — modèle → pipeline → graphe → exécuteur, événements et diagnostics en trames. | Livré (étape 8) |
+| `jo.forge.engine.server` | `BuildEngineServer` : le vrai serveur — modèle → pipeline → graphe → exécuteur, événements et diagnostics en trames. | Livré (étape 8) |
 | `jo.forge.engine.model` | Modèle déclaratif `forge.json` (modules, types, portées, facette Android) et son codec strict. | Livré (étape 8) |
 | `jo.forge.engine.pipeline` | `ProjectLayout` (disposition canonique build/ et .forge/). | Livré (étape 8) |
 | `jo.forge.engine.pipeline.java` | `EcjCompiler` (ECJ en processus, diagnostics par l'API), `CompileJavaTask`, `JarTask` (jar déterministe), `JavaPipeline` (modèle → tâches). | Livré (étape 8) |

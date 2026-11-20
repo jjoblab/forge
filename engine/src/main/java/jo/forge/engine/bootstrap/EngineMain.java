@@ -4,7 +4,7 @@ import jo.forge.api.FrameReader;
 import jo.forge.api.FrameType;
 import jo.forge.api.FrameWriter;
 import jo.forge.api.MessageIO;
-import jo.forge.engine.build.BuildEngineServer;
+import jo.forge.engine.server.BuildEngineServer;
 
 import java.io.IOException;
 import java.io.PrintStream;
