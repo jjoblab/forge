@@ -15,6 +15,12 @@ import java.util.List;
  * laisse sa pile d'appels), et dernière trace JSON écrite par le moteur si un build
  * s'est terminé.</p>
  *
+ * <p>Absence de trace : « le build ne s'est pas terminé » n'est qu'UNE cause — la
+ * réimportation des exemples supprime le dossier projet, traces comprises (rapport
+ * appareil du 2026-11-20 : un build réussi s'y affichait comme jamais terminé).
+ * Le message cite les deux causes ; le journal du build porte depuis v0.2.8 son
+ * propre verdict final, qui départage.</p>
+ *
  * <p>Classe volontairement sans dépendance Android (données passées en texte) :
  * testable sur JVM comme les autres classes pures de la coquille.</p>
  */
@@ -75,8 +81,8 @@ public final class RapportDiagnostic {
         section(rapport, "Écroulements de la coquille", journalCrash);
         rapport.append("--- Dernière trace ");
         if (trace == null) {
-            rapport.append("---\n(aucune : le build ne s'est pas terminé — "
-                    + "voir le journal du moteur)\n");
+            rapport.append("---\n(aucune — le build ne s'est pas terminé, ou le projet "
+                    + "a été réimporté depuis : la réimportation efface les traces)\n");
         } else {
             rapport.append('(').append(trace.nom()).append(") ---\n");
             rapport.append(tronquer(trace.contenu())).append('\n');

@@ -673,6 +673,16 @@ public class MainActivity extends Activity {
                     progression.tasksTotal()));
         } else if (événement instanceof BuildEvent.BuildFinished fin) {
             progression.setIndeterminate(false);
+            // Le journal partagé doit se terminer par son PROPRE verdict : le
+            // rapport appareil du 2026-11-20 a lu « build jamais terminé » sur un
+            // build pourtant réussi — le journal s'arrêtait à la dernière tâche et
+            // le verdict ne vivait que dans le résumé, effacé par la réimportation
+            // des exemples (qui supprime aussi les traces du projet).
+            ajouterLigne(fin.success()
+                    ? getString(R.string.build_finished_ok, fin.durationMs())
+                    : getString(R.string.build_finished_ko,
+                            fin.failedTask() == null ? "?" : fin.failedTask(),
+                            fin.message()));
             afficherRésumé(fin.success()
                     ? getString(R.string.build_finished_ok, fin.durationMs())
                     : getString(R.string.build_finished_ko,

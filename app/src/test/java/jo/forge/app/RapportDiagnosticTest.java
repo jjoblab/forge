@@ -53,7 +53,13 @@ class RapportDiagnosticTest {
         assertTrue(rapport.contains("--- Journal du build ---\n(vide)"));
         assertTrue(rapport.contains("--- Journal du moteur (stderr) ---\n(vide)"));
         assertTrue(rapport.contains("--- Écroulements de la coquille ---\n(vide)"));
-        assertTrue(rapport.contains("(aucune : le build ne s'est pas terminé"));
+        // Rapport appareil du 2026-11-20 : l'absence de trace disait « build jamais
+        // terminé » alors que la cause était la réimportation des exemples (qui
+        // supprime le dossier projet, traces comprises) — les deux causes sont citées.
+        assertTrue(rapport.contains(
+                "(aucune — le build ne s'est pas terminé, ou le projet"));
+        assertTrue(rapport.contains("réimporté depuis"),
+                "la réimportation est citée comme cause alternative");
         assertTrue(rapport.contains("code de sortie : inconnu"),
                 "code null = inconnu, pas un plantage du rapport");
     }
