@@ -101,6 +101,20 @@ tout écart est consigné ici.
   valider juridiquement avant publication publique — et le binaire emballe
   aujourd'hui est le prébuilt LINUX (développement et CI) : le prébuilt ANDROID
   (arm64) exige une construction AOSP dédiée (écart consigné).
+- **Stabilité CI — flocons résolus le 2026-11-20** (échecs intermittents des étapes
+  8-13 sur GitHub Actions, reproduits localement en boucle ~1/25) : deux causes
+  racines, toutes deux corrigées. (1) Le serveur de build écrivait ses trames depuis
+  plusieurs threads dont les files de tâches, éphémères : `PipedInputStream` lève
+  « Write end dead » dès que le dernier écrivain du tube meurt — tout le canal passe
+  désormais par un fil rédacteur unique et durable (file FIFO, ordre d'émission
+  préservé, vidange à l'arrêt). (2) L'exécuteur laissait mourir silencieusement un
+  runnable écroulé hors de ses zones protégées (le `Future` avalait l'exception :
+  comptage rompu, sous-graphe jamais soumis, build fini sans tâche fautive) — un
+  filet de sécurité convertit désormais tout throwable résiduel en échec propre
+  (état FAILED, tâche fautive, dépendants bloqués) et `terminer` est idempotent ;
+  les enregistreurs des tests, appelés depuis les threads du pool, utilisent des
+  collections concurrentes. Validation : 85 exécutions de la suite complète sans
+  échec (contre ~1 échec sur 20 avant correctifs).
 
 ## Hypothèses retenues (Phases 0-3)
 

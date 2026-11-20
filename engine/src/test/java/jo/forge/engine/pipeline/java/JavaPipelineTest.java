@@ -82,7 +82,8 @@ class JavaPipelineTest {
     @Test
     void modifierLeHautRelanceLaDescendanceNécessaire() throws Exception {
         Projets.projetDeuxModules(temporaire);
-        exécuter(new Enregistreur());
+        assertTrue(exécuter(new Enregistreur()).success(),
+                "le premier build doit réussir");
 
         // Modifier UNE source du module bas de la pile : core:compileJava, core:jar et
         // la compilation descendante se relancent (le classpath de app a changé par
@@ -119,7 +120,8 @@ class JavaPipelineTest {
     @Test
     void modifierLeBasNeRelancePasLeHaut() throws Exception {
         Projets.projetDeuxModules(temporaire);
-        exécuter(new Enregistreur());
+        assertTrue(exécuter(new Enregistreur()).success(),
+                "le premier build doit réussir");
 
         Projets.fichier(temporaire, "app/src/main/java/demo/app/App.java", """
                 package demo.app;
@@ -146,7 +148,8 @@ class JavaPipelineTest {
     @Test
     void jarDéterministeEntreDeuxExécutions() throws Exception {
         Projets.projetDeuxModules(temporaire);
-        exécuter(new Enregistreur());
+        assertTrue(exécuter(new Enregistreur()).success(),
+                "le premier build doit réussir");
         byte[] premier = Files.readAllBytes(
                 temporaire.resolve("build/app/libs/app.jar"));
 
@@ -154,7 +157,7 @@ class JavaPipelineTest {
         // des octets identiques (entrées triées, horodatage fixe, manifeste stable).
         Files.delete(temporaire.resolve("build/app/libs/app.jar"));
         Enregistreur événements = new Enregistreur();
-        exécuter(événements);
+        assertTrue(exécuter(événements).success(), "le second build doit réussir");
         assertTrue(événements.tâchesParÉtat(
                 jo.forge.api.BuildEvent.TaskState.STARTED).contains("app:jar"));
         byte[] second = Files.readAllBytes(
@@ -207,14 +210,18 @@ class JavaPipelineTest {
         return liste.stream().sorted().toList();
     }
 
-    /** Enregistreur d'événements et de diagnostics pour les assertions. */
+    /** Enregistreur d'événements pour les assertions — collections CONCURRENTES : le
+     * puits est appelé depuis les threads du pool (une carte HashMap/ArrayList
+     * partagée perd des événements sous charge — flocon constaté en CI). */
     private static final class Enregistreur implements TaskExecutor.BuildEvents {
 
         final Map<jo.forge.api.BuildEvent.TaskState, List<String>> états =
-                new HashMap<>();
-        final List<jo.forge.engine.diag.Diagnostic> diagnostics = new ArrayList<>();
-        final StringBuilder journalErreur = new StringBuilder();
-        private String premierÉchec;
+                new java.util.concurrent.ConcurrentHashMap<>();
+        final List<jo.forge.engine.diag.Diagnostic> diagnostics =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        final StringBuffer journalErreur = new StringBuffer();
+        private final java.util.concurrent.atomic.AtomicReference<String> premierÉchec =
+                new java.util.concurrent.atomic.AtomicReference<>();
 
         List<String> tâchesParÉtat(jo.forge.api.BuildEvent.TaskState état) {
             return états.getOrDefault(état, List.of());
@@ -227,7 +234,8 @@ class JavaPipelineTest {
 
         @Override
         public void taskState(jo.forge.api.BuildEvent.TaskStateEvent event) {
-            états.computeIfAbsent(event.state(), k -> new ArrayList<>())
+            états.computeIfAbsent(event.state(),
+                            k -> new java.util.concurrent.CopyOnWriteArrayList<>())
                     .add(event.taskName());
         }
 
@@ -253,14 +261,12 @@ class JavaPipelineTest {
 
         @Override
         public String dernierEchec() {
-            return premierÉchec;
+            return premierÉchec.get();
         }
 
         @Override
         public void tacheEchouee(String taskName) {
-            if (premierÉchec == null) {
-                premierÉchec = taskName;
-            }
+            premierÉchec.compareAndSet(null, taskName);
         }
     }
 }

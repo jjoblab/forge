@@ -172,13 +172,15 @@ class ResolveDependenciesTaskTest {
         return octets.toByteArray();
     }
 
-    /** Enregistreur d'événements pour les assertions. */
+    /** Enregistreur d'événements pour les assertions — collections concurrentes (le
+     * puits est appelé depuis les threads du pool). */
     private static final class Enregistreur implements TaskExecutor.BuildEvents {
 
         final Map<jo.forge.api.BuildEvent.TaskState, List<String>> états =
-                new HashMap<>();
-        final StringBuilder journalErreur = new StringBuilder();
-        private String premierÉchec;
+                new java.util.concurrent.ConcurrentHashMap<>();
+        final StringBuffer journalErreur = new StringBuffer();
+        private final java.util.concurrent.atomic.AtomicReference<String> premierÉchec =
+                new java.util.concurrent.atomic.AtomicReference<>();
 
         List<String> tâchesParÉtat(jo.forge.api.BuildEvent.TaskState état) {
             return états.getOrDefault(état, List.of());
@@ -191,7 +193,8 @@ class ResolveDependenciesTaskTest {
 
         @Override
         public void taskState(jo.forge.api.BuildEvent.TaskStateEvent event) {
-            états.computeIfAbsent(event.state(), k -> new ArrayList<>())
+            états.computeIfAbsent(event.state(),
+                            k -> new java.util.concurrent.CopyOnWriteArrayList<>())
                     .add(event.taskName());
         }
 
@@ -212,14 +215,12 @@ class ResolveDependenciesTaskTest {
 
         @Override
         public String dernierEchec() {
-            return premierÉchec;
+            return premierÉchec.get();
         }
 
         @Override
         public void tacheEchouee(String taskName) {
-            if (premierÉchec == null) {
-                premierÉchec = taskName;
-            }
+            premierÉchec.compareAndSet(null, taskName);
         }
     }
 }

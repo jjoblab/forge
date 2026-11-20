@@ -140,7 +140,7 @@ class BenchmarkBuild {
 
         final AtomicInteger exécutées;
         final List<String> nomsExécutées = new java.util.concurrent.CopyOnWriteArrayList<>();
-        final StringBuilder journalErreur = new StringBuilder();
+        final StringBuffer journalErreur = new StringBuffer();
 
         Compteur(AtomicInteger exécutées) {
             this.exécutées = exécutées;

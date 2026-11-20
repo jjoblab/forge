@@ -13,6 +13,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -107,6 +108,8 @@ public final class TaskExecutor {
         // dependants : construit ici, uniquement LU ensuite (publication sûre par la
         // création des threads du pool).
         Map<String, List<String>> dependants = new HashMap<>();
+        // Noms des tâches déjà terminées (idempotence de terminer, filet de sécurité).
+        Set<String> terminées = java.util.concurrent.ConcurrentHashMap.newKeySet();
         for (Task task : graph.allTasks()) {
             restantes.put(task.name(), task.dependencies().size());
             for (String dependance : task.dependencies()) {
@@ -135,7 +138,7 @@ public final class TaskExecutor {
         try {
             for (Task task : racines) {
                 soumettre(task, pool, enCours, restantes, dependants, terminees,
-                        bloquables);
+                        bloquables, terminées);
             }
             // Attendre la fin de toutes les soumissions (et des cascades).
             enCours.arriveAndAwaitAdvance();
@@ -165,20 +168,58 @@ public final class TaskExecutor {
     /**
      * Soumet une tâche au pool ; à sa fin, décrémente ses dépendants et soumet les
      * prêts (ou les marque bloqués si elle a échoué/été annulée).
+     *
+     * <p>Filet de sécurité : tout throwable sorti d'{@link #executerUne} (erreur
+     * grave avant le corps protégé, puits d'événements en panne…) est converti en
+     * échec PROPRE de la tâche — jamais en mort silencieuse dans le {@link Future}.
+     * Sans ce filet, le comptage se rompt et un sous-graphe entier disparaît sans
+     * diagnostic (flocons constatés en CI : tâches « jamais soumises », build
+     * prématurément terminé sans tâche fautive).</p>
      */
     private void soumettre(Task task, ExecutorService pool, Phaser enCours,
                            Map<String, Integer> restantes,
                            Map<String, List<String>> dependants,
-                           AtomicInteger terminees, AtomicInteger bloquables) {
+                           AtomicInteger terminees, AtomicInteger bloquables,
+                           Set<String> terminées) {
         enCours.register();
         pool.submit(() -> {
             try {
                 executerUne(task, restantes, dependants, pool, enCours, terminees,
-                        bloquables);
+                        bloquables, terminées);
+            } catch (Throwable fuite) {
+                échecImprévu(task, fuite, restantes, dependants, pool, enCours,
+                        terminees, bloquables, terminées);
             } finally {
                 enCours.arriveAndDeregister();
             }
         });
+    }
+
+    /**
+     * Dernier recours : une tâche dont l'exécution s'est écroulée hors des zones
+     * protégées échoue PROPREMENT — état FAILED, tâche fautive enregistrée,
+     * dépendants bloqués, comptage exact.
+     */
+    private void échecImprévu(Task task, Throwable fuite, Map<String, Integer> restantes,
+                              Map<String, List<String>> dependants, ExecutorService pool,
+                              Phaser enCours, AtomicInteger terminees,
+                              AtomicInteger bloquables, Set<String> terminées) {
+        String cause = fuite.getMessage() == null
+                ? fuite.getClass().getSimpleName() : fuite.getMessage();
+        try {
+            events.tacheEchouee(task.name());
+            events.taskState(new BuildEvent.TaskStateEvent(events.buildId(),
+                    System.currentTimeMillis(), task.name(),
+                    BuildEvent.TaskState.FAILED, 0));
+            events.log(BuildEvent.LogEvent.LogLevel.ERROR,
+                    "Erreur non attrapée dans " + task.name() + " ("
+                            + fuite.getClass().getSimpleName() + ") : " + cause);
+        } catch (Throwable puitsEnPanne) {
+            // Le puits d'événements est lui-même écroulé : la comptabilité ci-dessous
+            // reste notre seule obligation.
+        }
+        terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
+                terminées, false);
     }
 
     /**
@@ -187,7 +228,7 @@ public final class TaskExecutor {
     private void executerUne(Task task, Map<String, Integer> restantes,
                              Map<String, List<String>> dependants, ExecutorService pool,
                              Phaser enCours, AtomicInteger terminees,
-                             AtomicInteger bloquables) {
+                             AtomicInteger bloquables, Set<String> terminées) {
         String buildId = events.buildId();
         // Annulation posée avant le tour de cette tâche : saut silencieux.
         if (cancellation.isCancelled()) {
@@ -195,7 +236,7 @@ public final class TaskExecutor {
                     System.currentTimeMillis(), task.name(),
                     BuildEvent.TaskState.SKIPPED, 0));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    false);
+                    terminées, false);
             return;
         }
 
@@ -205,17 +246,21 @@ public final class TaskExecutor {
                     System.currentTimeMillis(), task.name(),
                     BuildEvent.TaskState.UP_TO_DATE, 0));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    true);
+                    terminées, true);
             return;
         }
 
         long debut = System.currentTimeMillis();
-        events.taskState(new BuildEvent.TaskStateEvent(buildId,
-                System.currentTimeMillis(), task.name(),
-                BuildEvent.TaskState.STARTED, 0));
-        // Inscription pour l'interruption immédiate à l'annulation (décision D-08).
-        cancellation.registerCurrent();
+        // L'émission STARTED et l'inscription au jeton vivent DANS la zone protégée :
+        // une erreur grave (mémoire saturée au moment de la construction de
+        // l'événement, puits en panne) est convertie en échec propre, pas en perte
+        // silencieuse de la tâche.
         try {
+            events.taskState(new BuildEvent.TaskStateEvent(buildId,
+                    System.currentTimeMillis(), task.name(),
+                    BuildEvent.TaskState.STARTED, 0));
+            // Inscription pour l'interruption immédiate à l'annulation (décision D-08).
+            cancellation.registerCurrent();
             task.execute(new ContexteTache(task, events, cancellation, projectRoot));
             if (cancellation.isCancelled()) {
                 // Réussie mais annulation demandée pendant l'exécution : annulée.
@@ -227,7 +272,7 @@ public final class TaskExecutor {
                     BuildEvent.TaskState.SUCCEEDED,
                     System.currentTimeMillis() - debut));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    true);
+                    terminées, true);
         } catch (TaskCancelledException annulation) {
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
                     System.currentTimeMillis(), task.name(),
@@ -235,7 +280,7 @@ public final class TaskExecutor {
             events.log(BuildEvent.LogEvent.LogLevel.INFO,
                     "Tâche " + task.name() + " annulée");
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    false);
+                    terminées, false);
         } catch (Exception echec) {
             String cause = echec.getMessage() == null
                     ? echec.getClass().getSimpleName() : echec.getMessage();
@@ -246,7 +291,7 @@ public final class TaskExecutor {
             events.log(BuildEvent.LogEvent.LogLevel.ERROR,
                     "Échec de " + task.name() + " : " + cause);
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    false);
+                    terminées, false);
         } catch (java.lang.Error erreurGrave) {
             // Un Error (mémoire saturée du dexeur en particulier) ne doit JAMAIS
             // rompre le comptage silencieusement : la tâche échoue proprement, la
@@ -263,7 +308,7 @@ public final class TaskExecutor {
                             + " — probablement un manque de mémoire :"
                             + " réessayez en mode basse mémoire");
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    false);
+                    terminées, false);
         } finally {
             cancellation.unregisterCurrent();
         }
@@ -271,11 +316,19 @@ public final class TaskExecutor {
 
     /**
      * Marque une tâche terminée et débloque (ou bloque transitivement) ses dépendants.
+     *
+     * <p>Idempotente : un même nom de tâche n'est compté et ne décrémente ses
+     * dépendants qu'une seule fois, quels que soient les chemins d'erreur
+     * parcourus (filet de sécurité compris).</p>
      */
     private void terminer(Task task, Map<String, Integer> restantes,
                           Map<String, List<String>> dependants, ExecutorService pool,
                           Phaser enCours, AtomicInteger terminees,
-                          AtomicInteger bloquables, boolean reussie) {
+                          AtomicInteger bloquables, Set<String> terminées,
+                          boolean reussie) {
+        if (!terminées.add(task.name())) {
+            return; // Déjà terminée (double passage d'un chemin d'erreur) : ignorer.
+        }
         terminees.incrementAndGet();
         events.progress(graph.size(), terminees.get() + bloquables.get());
         for (String dependant : dependants.getOrDefault(task.name(), List.of())) {
@@ -292,7 +345,7 @@ public final class TaskExecutor {
             int restant = restantes.merge(dependant, -1, Integer::sum);
             if (restant == 0 && !cancellation.isCancelled()) {
                 soumettre(graph.task(dependant), pool, enCours, restantes, dependants,
-                        terminees, bloquables);
+                        terminees, bloquables, terminées);
             }
         }
     }

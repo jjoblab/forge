@@ -272,15 +272,20 @@ public final class MainActivity extends Activity {
                 racine).execute();
     }
 
-    /** Enregistreur d'événements pour les assertions. */
+    /** Enregistreur d'événements pour les assertions — collections CONCURRENTES : le
+     * puits est appelé depuis les threads du pool (des collections partagées non
+     * synchronisées perdent des événements sous charge — flocon constaté en CI). */
     private static final class Enregistreur implements TaskExecutor.BuildEvents {
 
         final Map<jo.forge.api.BuildEvent.TaskState, List<String>> états =
-                new HashMap<>();
-        final List<jo.forge.engine.diag.Diagnostic> diagnostics = new ArrayList<>();
-        final List<String> toutesLignes = new ArrayList<>();
-        final StringBuilder erreurs = new StringBuilder();
-        private String premierÉchec;
+                new java.util.concurrent.ConcurrentHashMap<>();
+        final List<jo.forge.engine.diag.Diagnostic> diagnostics =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        final List<String> toutesLignes =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
+        final StringBuffer erreurs = new StringBuffer();
+        private final java.util.concurrent.atomic.AtomicReference<String> premierÉchec =
+                new java.util.concurrent.atomic.AtomicReference<>();
 
         List<String> tâches(jo.forge.api.BuildEvent.TaskState état) {
             return états.getOrDefault(état, List.of());
@@ -293,7 +298,8 @@ public final class MainActivity extends Activity {
 
         @Override
         public void taskState(jo.forge.api.BuildEvent.TaskStateEvent event) {
-            états.computeIfAbsent(event.state(), k -> new ArrayList<>())
+            états.computeIfAbsent(event.state(),
+                            k -> new java.util.concurrent.CopyOnWriteArrayList<>())
                     .add(event.taskName());
         }
 
@@ -320,14 +326,12 @@ public final class MainActivity extends Activity {
 
         @Override
         public String dernierEchec() {
-            return premierÉchec;
+            return premierÉchec.get();
         }
 
         @Override
         public void tacheEchouee(String taskName) {
-            if (premierÉchec == null) {
-                premierÉchec = taskName;
-            }
+            premierÉchec.compareAndSet(null, taskName);
         }
     }
 }

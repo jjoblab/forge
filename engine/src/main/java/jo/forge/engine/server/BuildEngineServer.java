@@ -39,10 +39,12 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -61,7 +63,13 @@ import java.util.concurrent.atomic.AtomicReference;
  * attend l'arrêt effectif, puis accuse — aucun worker ne survit à l'accusé.</p>
  *
  * <p>Thread-sûreté : lecteur du canal dans le thread appelant, builds sur l'exécuteur
- * dédié, écritures toutes via le {@link FrameWriter} synchronisé.</p>
+ * dédié, et <em>toutes</em> les écritures de trames passent par un fil rédacteur
+ * unique (file d'attente vidée par un seul thread, qui vit aussi longtemps que le
+ * serveur). C'est une exigence du protocole ET des tubes : un canal à écriture
+ * multi-fils fait mourir le lecteur sitôt qu'un écrivain éphémère se termine
+ * ({@code Write end dead} sur {@code PipedInputStream} — les files de tâches sont
+ * précisément éphémères). Le fil rédacteur préserve l'ordre d'émission : chaque
+ * trame est mise en file au point d'émission, et la file est un FIFO.</p>
  */
 public final class BuildEngineServer {
 
@@ -74,6 +82,7 @@ public final class BuildEngineServer {
     private final PrintStream diagnostics;
     private final ExecutorService buildExecutor;
     private final Map<String, BuildEnCours> runningBuilds = new ConcurrentHashMap<>();
+    private final RédacteurCanal canal;
 
     /** Un build en cours : son exécution et son jeton d'annulation. */
     private record BuildEnCours(Future<?> future, CancellationFlag cancellation) {
@@ -90,6 +99,7 @@ public final class BuildEngineServer {
         this.writer = new FrameWriter(out);
         this.diagnostics = diagnostics;
         this.buildExecutor = Executors.newCachedThreadPool();
+        this.canal = new RédacteurCanal();
     }
 
     /**
@@ -101,19 +111,25 @@ public final class BuildEngineServer {
      */
     public void serve(InputStream in) throws IOException {
         FrameReader reader = new FrameReader(in);
-        writer.write(FrameType.HELLO, 0, out -> MessageIO.writeHello(out,
+        canal.écrire(FrameType.HELLO, 0, out -> MessageIO.writeHello(out,
                 new Hello(EngineVersion.CURRENT, ProtocolVersions.PROTOCOL_MIN,
                         ProtocolVersions.PROTOCOL_MAX, CAPABILITIES)));
-        boolean running = true;
-        while (running) {
-            Frame frame = reader.readFrame();
-            if (frame == null) {
-                running = false;
-                continue;
+        try {
+            boolean running = true;
+            while (running) {
+                Frame frame = reader.readFrame();
+                if (frame == null) {
+                    running = false;
+                    continue;
+                }
+                running = handle(frame);
             }
-            running = handle(frame);
+        } finally {
+            // Couper d'abord les producteurs (builds en cours), puis vider la file :
+            // l'accusé SHUTDOWN en attente doit atteindre le client avant l'arrêt.
+            buildExecutor.shutdownNow();
+            canal.fermer();
         }
-        buildExecutor.shutdownNow();
     }
 
     /**
@@ -230,9 +246,10 @@ public final class BuildEngineServer {
 
     /**
      * Annule un build : drapeau + interruption, attente de l'arrêt effectif, puis
-     * accusé (D-08).
+     * accusé (D-08). L'accusé passe par le fil rédacteur : il suit donc, dans la
+     * file, la trame de fin du build annulé (émise avant la fin du futur).
      */
-    private void cancelBuild(Frame requestFrame, String buildId) throws IOException {
+    private void cancelBuild(Frame requestFrame, String buildId) {
         BuildEnCours build = runningBuilds.remove(buildId);
         boolean wasRunning = build != null;
         if (wasRunning) {
@@ -305,9 +322,9 @@ public final class BuildEngineServer {
 
         @Override
         public void buildFinished(BuildEvent.BuildFinished finished) {
-            event(BuildEvent.BuildFinished.class, finished);
-            // Trace exportable : après l'événement de fin pour le canal, mais
-            // l'écriture du FICHIER ne traverse pas le canal (ordre du canal préservé).
+            // La trace est écrite AVANT l'émission de la fin : le client qui voit la
+            // trame BuildFinished peut affirmer immédiatement que la trace existe
+            // (l'ordre du canal reste : fin = dernier événement émis).
             try {
                 List<BuildTrace.Tâche> tâches = new ArrayList<>();
                 étatsTâches.values().stream()
@@ -324,6 +341,7 @@ public final class BuildEngineServer {
                 diagnostics.println("Trace de build non écrite (" + buildId + ") : "
                         + e.getMessage());
             }
+            event(BuildEvent.BuildFinished.class, finished);
         }
 
         @Override
@@ -338,22 +356,108 @@ public final class BuildEngineServer {
 
         /** Émet un événement sur le canal (toujours dans l'ordre d'appel). */
         private void event(Class<?> type, BuildEvent evenement) {
-            try {
-                writer.write(FrameType.BUILD_EVENT, 0,
-                        out -> MessageIO.writeBuildEvent(out, evenement));
-            } catch (IOException e) {
-                diagnostics.println("Canon de sortie perdu (" + type.getSimpleName()
-                        + ") : " + e.getMessage());
-            }
+            canal.écrire(FrameType.BUILD_EVENT, 0,
+                    out -> MessageIO.writeBuildEvent(out, evenement));
         }
     }
 
     /**
-     * Répond à une requête en réutilisant son identifiant de corrélation.
+     * Fil rédacteur du canal : TOUTES les trames du serveur (poignée de main,
+     * accusés, événements de build) passent par cette file FIFO vidée par un seul
+     * thread, qui vit aussi longtemps que le serveur.
+     *
+     * <p>Pourquoi : les événements sont émis par les threads de tâches du build,
+     * qui sont éphémères (le pool est arrêté à chaque fin de build). Un canal
+     * multi-écrivains rend le lecteur fragile au premier écrivain mort —
+     * {@code PipedInputStream} lève {@code Write end dead} dès que le dernier
+     * écrivain du tube disparaît, même si d'autres trames sont encore à venir
+     * (flocon CI : {@code BuildEngineServerTest}, build terminé sans que le client
+     * voie la trame de fin). Avec un rédacteur unique et durable, le dernier
+     * écrivain ne meurt qu'à l'arrêt du serveur — après vidange de la file.</p>
+     *
+     * <p>Ordre : l'ordre d'émission est l'ordre de mise en file, donc l'ordre du
+     * canal — y compris « BuildFinished avant CANCELLED » (l'accusé d'annulation
+     * n'est mis en file qu'après l'attente du build, dont la trame de fin est déjà
+     * en file) et « BUILD_STARTED avant tout événement du build ».</p>
+     */
+    private final class RédacteurCanal {
+
+        private final BlockingQueue<Écriture> file = new LinkedBlockingQueue<>();
+        private final Thread fil;
+        private volatile boolean fermé;
+
+        RédacteurCanal() {
+            fil = new Thread(this::boucle, "forge-rédacteur");
+            fil.setDaemon(true);
+            fil.start();
+        }
+
+        /**
+         * Met une trame en file (appelé par le lecteur du canal et les builds).
+         *
+         * @param type          type de la trame.
+         * @param corrélation   identifiant de corrélation.
+         * @param charge        encodeur de la charge utile.
+         */
+        void écrire(FrameType type, long corrélation,
+                    FrameWriter.PayloadWriter charge) {
+            if (fermé) {
+                return; // Serveur arrêté : les dernières trames sont abandonnées.
+            }
+            file.add(new Écriture(type, corrélation, charge));
+        }
+
+        /** Vide la file puis arrête le rédacteur (fin de serve). */
+        void fermer() {
+            fermé = true;
+            file.add(new Écriture(null, 0, null)); // Pastille d'arrêt.
+            try {
+                fil.join(TimeUnit.SECONDS.toMillis(5));
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+
+        private void boucle() {
+            try {
+                while (true) {
+                    Écriture écriture = file.take();
+                    if (écriture.charge() == null) {
+                        return; // Pastille : tout ce qui précède est déjà écrit.
+                    }
+                    try {
+                        writer.write(écriture.type(), écriture.corrélation(),
+                                écriture.charge());
+                    } catch (RuntimeException encodage) {
+                        // Une charge invalide ne doit pas tuer le rédacteur : la
+                        // trame est perdue, le canal continue.
+                        diagnostics.println("Trame non écrite (encodage) : "
+                                + encodage.getMessage());
+                    }
+                }
+            } catch (InterruptedException fin) {
+                Thread.currentThread().interrupt();
+            } catch (IOException canalPerdu) {
+                // Le pair a fermé le canal : plus rien ne passera.
+                diagnostics.println("Canal de sortie fermé par le pair : "
+                        + canalPerdu.getMessage());
+                fermé = true;
+            }
+        }
+
+        /** Une trame en attente (charge nulle = pastille d'arrêt). */
+        private record Écriture(FrameType type, long corrélation,
+                                FrameWriter.PayloadWriter charge) {
+        }
+    }
+
+    /**
+     * Répond à une requête en réutilisant son identifiant de corrélation — via le fil
+     * rédacteur, pour un canal à écrivain unique.
      */
     private void reply(Frame request, FrameType type,
-                       FrameWriter.PayloadWriter payload) throws IOException {
-        writer.write(type, request.correlationId(), payload);
+                       FrameWriter.PayloadWriter payload) {
+        canal.écrire(type, request.correlationId(), payload);
     }
 
     /**
