@@ -44,10 +44,13 @@ public final class AndroidPipeline {
      * @param projectRoot racine du projet.
      * @param horsLigne mode hors ligne pour la résolution.
      * @param abi       ABI de l'appareil (résolution du binaire aapt2).
+     * @param engineHome répertoire du moteur installé (outils Android embarqués),
+     *                   ou {@code null} (machine de développement : SDK local).
      * @return les tâches du module (le graphe les ordonne).
      */
     public static List<Task> tâchesDe(ForgeModule module, ForgeModel model,
-                                      Path projectRoot, boolean horsLigne, String abi) {
+                                      Path projectRoot, boolean horsLigne, String abi,
+                                      Path engineHome) {
         Map<String, ForgeModule> parNom = model.modules().stream()
                 .collect(Collectors.toMap(ForgeModule::name, Function.identity()));
         ProjectLayout layout = new ProjectLayout(projectRoot);
@@ -69,7 +72,7 @@ public final class AndroidPipeline {
             // V1 : une bibliothèque Android compile comme une bibliothèque Java
             // contre android.jar (pas de ressources, pas d'AAR — écart consigné).
             Path androidJar = AndroidToolsLocator.androidJar(
-                    module.android().orElseThrow().targetSdk(), null);
+                    module.android().orElseThrow().targetSdk(), engineHome);
             tâches.add(new CompileJavaTask(module, layout, dépendancesCompilation,
                     classesDépendances, List.of(), List.of(androidJar),
                     resolve.cheminClasspath()));
@@ -79,8 +82,8 @@ public final class AndroidPipeline {
 
         jo.forge.engine.model.AndroidFacet facette = module.android().orElseThrow();
         Aapt2Tool aapt2 = new Aapt2Tool(
-                AndroidToolsLocator.aapt2(abi, null));
-        Path androidJar = AndroidToolsLocator.androidJar(facette.targetSdk(), null);
+                AndroidToolsLocator.aapt2(abi, engineHome));
+        Path androidJar = AndroidToolsLocator.androidJar(facette.targetSdk(), engineHome);
 
         ProcessResourcesTask ressources = new ProcessResourcesTask(module, layout,
                 aapt2, androidJar);

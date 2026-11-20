@@ -33,8 +33,17 @@ public final class DeviceVmLauncher implements VmLauncher {
 
     @Override
     public Map<String, String> environmentFor(VmSpec spec) {
+        // CLASSPATH pour app_process, puis les variables additionnelles de la VM
+        // (ex. FORGE_ENGINE_DIR) : elles écrasent CLASSPATH si un appelant s'y risque,
+        // ce que le contrat interdit — la classe principale vient de notre classpath.
         Map<String, String> env = new LinkedHashMap<>();
         env.put(CLASSPATH_VAR, String.join(":", spec.classpathEntries()));
+        env.putAll(spec.env());
+        if (!String.join(":", spec.classpathEntries())
+                .equals(env.get(CLASSPATH_VAR))) {
+            throw new IllegalStateException(
+                    "La VM enfant tente d'écraser CLASSPATH : interdit");
+        }
         return env;
     }
 

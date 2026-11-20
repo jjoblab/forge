@@ -84,6 +84,10 @@ public final class BuildEngineServer {
     private final Map<String, BuildEnCours> runningBuilds = new ConcurrentHashMap<>();
     private final RédacteurCanal canal;
 
+    /** Répertoire du moteur installé (composants aapt2, plate-forme), ou null.
+     * Transmit par la coquille via la variable d'environnement FORGE_ENGINE_DIR. */
+    private final java.nio.file.Path engineHome;
+
     /** Un build en cours : son exécution et son jeton d'annulation. */
     private record BuildEnCours(Future<?> future, CancellationFlag cancellation) {
     }
@@ -100,6 +104,16 @@ public final class BuildEngineServer {
         this.diagnostics = diagnostics;
         this.buildExecutor = Executors.newCachedThreadPool();
         this.canal = new RédacteurCanal();
+        this.engineHome = engineHomeDepuisEnvironnement();
+    }
+
+    /**
+     * Répertoire du moteur installé depuis l'environnement (coquille → moteur) ;
+     * absent en développement : les outils viennent alors de la machine.
+     */
+    private static java.nio.file.Path engineHomeDepuisEnvironnement() {
+        String valeur = System.getenv("FORGE_ENGINE_DIR");
+        return valeur == null || valeur.isBlank() ? null : java.nio.file.Path.of(valeur);
     }
 
     /**
@@ -205,7 +219,7 @@ public final class BuildEngineServer {
 
             ForgeModel model = ModelCodec.read(root);
             List<jo.forge.engine.tasks.Task> tasks = JavaPipeline.tasksFor(model, root,
-                    request.options().offline(), request.options().abi());
+                    request.options().offline(), request.options().abi(), engineHome);
             TaskGraph graph = TaskGraph.of(tasks);
             ProjectLayout layout = new ProjectLayout(root);
             FingerprintStore store = new FingerprintStore(layout.stateDir(), root,

@@ -47,8 +47,10 @@ public final class JavaVmLauncher implements VmLauncher {
 
     @Override
     public Map<String, String> environmentFor(VmSpec spec) {
-        // Le classpath passe par la ligne de commande sous java, pas par l'environnement.
-        return Map.of();
+        // Le classpath passe par la ligne de commande sous java, pas par
+        // l'environnement ; les variables additionnelles de la VM (ex.
+        // FORGE_ENGINE_DIR) s'appliquent au même titre que sous app_process.
+        return new LinkedHashMap<>(spec.env());
     }
 
     @Override

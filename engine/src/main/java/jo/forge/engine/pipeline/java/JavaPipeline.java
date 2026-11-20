@@ -47,7 +47,7 @@ public final class JavaPipeline {
      * @return les tâches, dans un ordre quelconque (le graphe les ordonne).
      */
     public static List<Task> tasksFor(ForgeModel model, Path projectRoot) {
-        return tasksFor(model, projectRoot, false, "arm64-v8a");
+        return tasksFor(model, projectRoot, false, "arm64-v8a", null);
     }
 
     /**
@@ -60,7 +60,7 @@ public final class JavaPipeline {
      */
     public static List<Task> tasksFor(ForgeModel model, Path projectRoot,
                                       boolean horsLigne) {
-        return tasksFor(model, projectRoot, horsLigne, "arm64-v8a");
+        return tasksFor(model, projectRoot, horsLigne, "arm64-v8a", null);
     }
 
     /**
@@ -75,6 +75,23 @@ public final class JavaPipeline {
      */
     public static List<Task> tasksFor(ForgeModel model, Path projectRoot,
                                       boolean horsLigne, String abi) {
+        return tasksFor(model, projectRoot, horsLigne, abi, null);
+    }
+
+    /**
+     * Construit les tâches de tous les modules du projet, forme complète.
+     *
+     * @param model       modèle validé.
+     * @param projectRoot racine du projet.
+     * @param horsLigne   mode hors ligne : la résolution n'utilise que le cache.
+     * @param abi         ABI de l'appareil (ex. {@code arm64-v8a}).
+     * @param engineHome  répertoire du moteur installé (outils Android embarqués :
+     *                   aapt2 par ABI, android.jar par API), ou {@code null} sur
+     *                   machine de développement (SDK local).
+     * @return les tâches, dans un ordre quelconque (le graphe les ordonne).
+     */
+    public static List<Task> tasksFor(ForgeModel model, Path projectRoot,
+                                      boolean horsLigne, String abi, Path engineHome) {
         Map<String, ForgeModule> parNom = model.modules().stream()
                 .collect(Collectors.toMap(ForgeModule::name, Function.identity()));
 
@@ -82,7 +99,7 @@ public final class JavaPipeline {
         for (ForgeModule module : model.modules()) {
             if (module.type() != ModuleType.JAVA_LIBRARY) {
                 tasks.addAll(jo.forge.engine.pipeline.android.AndroidPipeline
-                        .tâchesDe(module, model, projectRoot, horsLigne, abi));
+                        .tâchesDe(module, model, projectRoot, horsLigne, abi, engineHome));
                 continue;
             }
             ProjectLayout layout = new ProjectLayout(projectRoot);

@@ -31,6 +31,10 @@ public final class EngineSession {
     /** Classe principale du moteur (point d'entrée de la VM enfant). */
     public static final String ENGINE_MAIN = "jo.forge.engine.bootstrap.EngineMain";
 
+    /** Variable d'environnement transmettant au moteur son répertoire installé
+     * (localisation des outils Android du moteur : aapt2, android.jar). */
+    public static final String ENV_ENGINE_DIR = "FORGE_ENGINE_DIR";
+
     /** Tas par défaut du moteur en Mo (décision D-02). */
     public static final int HEAP_DEFAULT_MB = 512;
 
@@ -77,7 +81,11 @@ public final class EngineSession {
             jars.sort(Comparator.comparing(Path::getFileName));
             jars.forEach(jar -> classpath.add(jar.toString()));
         }
-        return new VmSpec(classpath, ENGINE_MAIN, heapMb, List.of());
+        // Le moteur reçoit son répertoire installé : c'est là qu'il localise ses
+        // outils (composants aapt2 et plate-forme éventuellement installés).
+        java.util.Map<String, String> env = new java.util.LinkedHashMap<>();
+        env.put(ENV_ENGINE_DIR, engineDir.toString());
+        return new VmSpec(classpath, ENGINE_MAIN, heapMb, List.of(), env);
     }
 
     /**
