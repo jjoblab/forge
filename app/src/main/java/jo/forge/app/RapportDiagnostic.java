@@ -10,8 +10,10 @@ import java.util.List;
  *
  * <p>Sections : contexte (versions, appareil, projet, résumé), journal du build tel
  * qu'affiché, journal du moteur (stderr capturé par le client — la seule trace qui
- * survit à une mort brutale du processus), et dernière trace JSON écrite par le moteur
- * si un build s'est terminé.</p>
+ * survit à une mort brutale du processus), écroulements de la coquille (exceptions
+ * non attrapées, écrites avant la fermeture du processus — un « force close » y
+ * laisse sa pile d'appels), et dernière trace JSON écrite par le moteur si un build
+ * s'est terminé.</p>
  *
  * <p>Classe volontairement sans dépendance Android (données passées en texte) :
  * testable sur JVM comme les autres classes pures de la coquille.</p>
@@ -45,11 +47,14 @@ public final class RapportDiagnostic {
      * @param contexte      versions, appareil, projet, résumé.
      * @param journalBuild  lignes du journal de build affiché (éventuellement vide).
      * @param journalMoteur lignes de stderr du moteur (éventuellement vide).
+     * @param journalCrash  lignes du journal d'écroulements de la coquille
+     *                      (éventuellement vide).
      * @param trace         dernière trace JSON du projet (null si aucune).
      * @return le rapport en texte brut.
      */
     public static String composer(Contexte contexte, List<String> journalBuild,
-                                  List<String> journalMoteur, TraceDernière trace) {
+                                  List<String> journalMoteur, List<String> journalCrash,
+                                  TraceDernière trace) {
         StringBuilder rapport = new StringBuilder();
         rapport.append("Rapport de diagnostic Forge\n");
         rapport.append("Généré le ").append(LocalDateTime.now().format(HORODATE)).append('\n');
@@ -67,6 +72,7 @@ public final class RapportDiagnostic {
         rapport.append("Résumé : ").append(contexte.résuméBuild()).append("\n\n");
         section(rapport, "Journal du build", journalBuild);
         section(rapport, "Journal du moteur (stderr)", journalMoteur);
+        section(rapport, "Écroulements de la coquille", journalCrash);
         rapport.append("--- Dernière trace ");
         if (trace == null) {
             rapport.append("---\n(aucune : le build ne s'est pas terminé — "

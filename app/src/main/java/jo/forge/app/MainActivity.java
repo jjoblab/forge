@@ -18,6 +18,7 @@ import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Locale;
@@ -105,8 +106,16 @@ public class MainActivity extends Activity {
      * build — l'ancien moteur peut encore écrire dans l'ancien tampon, sans gêne. */
     private JournalMoteur journalMoteur = new JournalMoteur(JournalMoteur.CAPACITÉ_PAR_DÉFAUT);
 
+    /** Journal des écroulements de la coquille (exceptions non attrapées) : installé
+     * avant tout le reste pour qu'un « force close » laisse une trace copiable. */
+    private JournalCrash journalCrash;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Avant super.onCreate : le moindre plantage de l'ouverture (branchement des
+        // vues, disposition) doit être écrit dans le journal avant que le système ne
+        // ferme le processus — c'est ce journal que « Copier les journaux » expose.
+        journalCrash = JournalCrash.installer(getFilesDir().toPath());
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         statusText = findViewById(R.id.engine_status);
@@ -720,9 +729,27 @@ public class MainActivity extends Activity {
                 abiPrincipale(), mémoireTotaleMo(), Build.MODEL,
                 cheminProjet.getText().toString().trim(),
                 résuméBuild.getText().toString());
-        List<String> lignesBuild = journalBuild.getText().toString().lines().toList();
+        List<String> lignesBuild = lignesDe(journalBuild.getText().toString());
         return RapportDiagnostic.composer(contexte, lignesBuild,
-                journalMoteur.copie(), dernièreTrace());
+                journalMoteur.copie(),
+                lignesDe(journalCrash.copie()),
+                dernièreTrace());
+    }
+
+    /**
+     * Découpe un texte en lignes sans {@code String.lines()} (API 33+) ni
+     * {@code Stream.toList()} (API 34) : la coquille promet minSdk 28, et le
+     * rapport de diagnostic doit se composer sur tout appareil compatible.
+     *
+     * @param texte le texte à découper (fins de ligne CR et CRLF normalisées).
+     * @return les lignes, éventuellement vide (jamais null).
+     */
+    private static List<String> lignesDe(String texte) {
+        String normalisé = texte.replace("\r\n", "\n").replace('\r', '\n');
+        if (normalisé.isEmpty()) {
+            return new ArrayList<>();
+        }
+        return new ArrayList<>(Arrays.asList(normalisé.split("\n")));
     }
 
     /**
