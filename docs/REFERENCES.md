@@ -28,8 +28,11 @@ ses noms d'identifiants, il ne constitue pas une œuvre dérivée au sens de la 
 
 1. aucune portion de code du moteur de référence ne sera copiée, même adaptée ;
 2. nos noms de classes, méthodes, packages et fichiers seront différents des siens ;
-3. la licence de Forge reste à choisir (voir `docs/limites-et-suite.md`) ; si un doute subsistait
-   sur un point précis, une réécriture documentation-uniquement serait préférée.
+3. la licence de Forge est **Apache-2.0** (décision propriétaire du 2026-11-20, fichier
+   `LICENSE`) ; choisir une licence copyleft ultérieure imposerait de réévaluer l'analyse
+   ci-dessus pour chaque dépendance embarquée ;
+4. si un doute subsistait sur un point précis, une réécriture documentation-uniquement
+   serait préférée.
 
 ## Table des références
 

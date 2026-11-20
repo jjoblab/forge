@@ -55,8 +55,9 @@ tout écart est consigné ici.
   test) ; l'assistant d'installation complet (listes, tailles, avertissement mobile,
   progression, annulation — exigences §2.2) sera câblé sur `setup` à l'étape 11 ; la
   logique testable existe déjà.
-- **Licence de Forge non choisie** : décision propriétaire requise avant toute publication
-  (voir `distribution.md` §7) ; recommandation : Apache-2.0.
+- **Licence de Forge choisie : Apache-2.0** (décision propriétaire du 2026-11-20, appliquée
+  au dépôt entier — fichier `LICENSE` ; voir `distribution.md` §7 pour les notices des
+  dépendances embarquées, à générer à l'étape 12).
 - **Clé publique ECDSA de production** : pas encore générée ; une clé de test est créée à
   la volée dans les tests. À épingler à l'étape 12 (procédure `distribution.md` §4).
 

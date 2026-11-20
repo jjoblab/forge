@@ -93,4 +93,7 @@ vers le SDK comme d'habitude.
 
 ## Licence
 
-À définir (voir `docs/limites-et-suite.md`).
+Forge est publié sous licence **Apache-2.0** (voir [`LICENSE`](LICENSE), décision
+consignée dans `docs/distribution.md` §7). Les dépendances embarquées dans le moteur
+(ECJ sous EPL-2.0, d8/R8 et apksig sous Apache-2.0) sont listées avec leurs conditions
+de redistribution dans `docs/distribution.md`.

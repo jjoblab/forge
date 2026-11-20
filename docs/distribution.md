@@ -121,18 +121,13 @@ moteur figé entre deux mises à jour de l'application, perte de l'installation 
 
 ## 7. Licences
 
-- **Forge doit choisir sa licence avant la première publication** (décision propriétaire,
-  consignée dans [`limites-et-suite.md`](limites-et-suite.md)). Statut actuel : non décidée.
-- **Recommandation** : Apache-2.0 pour tout le dépôt — permissive, compatible avec toutes les
-  dépendances du moteur, maximise les contributions et la redistribution par F-Droid. Si un
-  copyleft est préféré : GPL-3.0-or-later est compatible avec les dépendances ci-dessous sous
-  réserve de l'analyse fine de l'EPL-2.0 (voir le point ECJ) ; l'exception de linkage du moteur
-  de référence (GPL + exception SPI) n'a pas vocation à être copiée telle quelle — nos modules
-  `api/` peuvent simplement être publiés sous Apache-2.0 même si le reste est GPL.
+- **Licence de Forge : Apache-2.0** (décision propriétaire du 2026-11-20, appliquée à tout le
+  dépôt, fichier `LICENSE` à la racine). Choix conforme à la recommandation ci-dessous.
+- **Recommandation (suivie)** : Apache-2.0 pour tout le dépôt — permissive, compatible avec toutes les
+  dépendances du moteur, maximise les contributions et la redistribution par F-Droid.
 - **Dépendances embarquées dans le moteur** (toutes FLOSS, à mentionner dans les notices) :
   - ECJ (compilateur Java) : **EPL-2.0** — redistribution dans notre artefact acceptée ;
-    si Forge choisit GPL-3.0, vérifier l'option « licence secondaire » d'EPL-2.0 (GPLv2+
-    compatible) et documenter le choix ;
+    compatible avec Apache-2.0 pour la redistribution (mention de licence requise) ;
   - d8/R8 (dexeur) : Apache-2.0 ;
   - apksig (signature) : Apache-2.0.
 - **Aucun code du moteur de référence** n'est embarqué (réimplémentation indépendante, voir
