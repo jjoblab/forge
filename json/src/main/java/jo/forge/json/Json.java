@@ -1,4 +1,4 @@
-package jo.forge.setup.json;
+package jo.forge.json;
 
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
@@ -6,8 +6,8 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Analyse et écriture JSON minimales, sans dépendance, pour le manifeste des composants
- * et les fichiers d'état de l'installateur.
+ * Analyse et écriture JSON minimales, sans dépendance : manifeste signé des composants,
+ * état installé, modèle déclaratif {@code forge.json}, trace de build.
  *
  * <p>Types acceptés en lecture : objets ({@code Map<String, Object>}, ordre conservé),
  * tableaux ({@code List<Object>}), chaînes, entiers ({@code Long}), décimaux
@@ -16,8 +16,8 @@ import java.util.Map;
  * sont rejetés.</p>
  *
  * <p>Ce parseur volontairement restreint ne sert qu'à des fichiers de confiance
- * vérifiés (manifeste signé, état interne) ; il n'est pas un validateur général de
- * JSON arbitraire.</p>
+ * vérifiés (manifeste signé, état interne) ou descriptifs de projet ; il n'est pas un
+ * validateur général de JSON arbitraire.</p>
  */
 public final class Json {
 

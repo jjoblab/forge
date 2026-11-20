@@ -1,4 +1,4 @@
-package jo.forge.setup.json;
+package jo.forge.json;
 
 import org.junit.jupiter.api.Test;
 

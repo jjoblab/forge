@@ -335,9 +335,11 @@ Le module `client/` est un ajout justifié au schéma suggéré : la supervision
 (lancement, poignée de main, reconnexion) n'est ni du contrat (`api/` doit rester minuscule),
 ni de l'installation (`setup/`), ni de l'Android (`app/`) — et la garder en pur Java la rend
 testable sur JVM comme le reste. Les charts détaillées par module vivent dans les `README.md`
-existants. Le petit parseur/écriteur JSON de `setup/` (≈ 300 lignes testées) évite une
+existants. Le petit parseur/écriteur JSON, né dans `setup/` (≈ 400 lignes testées), vit depuis
+l'étape 8 dans son propre module `json/` — le moteur lit `forge.json` et écrit sa trace avec,
+sans dépendre de l'installateur ; il évite une
 dépendance à une bibliothèque JSON : maîtrise du comportement sur ART, surface d'audit réduite
-(juste pour le manifeste et l'état, jamais sur le canal de contrôle — D-07).
+(manifeste, état, `forge.json`, trace — jamais sur le canal de contrôle, D-07).
 
 ### D-11 — Modèle de projet déclaratif
 

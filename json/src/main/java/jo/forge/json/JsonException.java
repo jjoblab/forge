@@ -1,4 +1,4 @@
-package jo.forge.setup.json;
+package jo.forge.json;
 
 /**
  * Erreur d'analyse ou d'écriture JSON : entrée mal formée, type inattendu, profondeur

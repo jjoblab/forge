@@ -1,6 +1,6 @@
 package jo.forge.setup.manifest;
 
-import jo.forge.setup.json.Json;
+import jo.forge.json.Json;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -29,7 +29,7 @@ public final class ManifestCodec {
         Object racine;
         try {
             racine = Json.parse(json);
-        } catch (jo.forge.setup.json.JsonException malformed) {
+        } catch (jo.forge.json.JsonException malformed) {
             throw new ManifestException("Manifeste illisible : " + malformed.getMessage());
         }
         if (!(racine instanceof Map<?, ?> objet)) {

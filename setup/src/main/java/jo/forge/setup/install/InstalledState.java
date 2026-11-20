@@ -1,7 +1,7 @@
 package jo.forge.setup.install;
 
 import jo.forge.setup.download.InstallException;
-import jo.forge.setup.json.Json;
+import jo.forge.json.Json;
 
 import java.io.IOException;
 import java.nio.file.Files;

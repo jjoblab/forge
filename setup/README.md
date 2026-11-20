@@ -18,4 +18,11 @@ Contenu prévu :
 L'assistant visuel (écrans, avertissements données mobiles, espace disque) vit dans `app/` et
 délègue à ce module.
 
-Ce module sera un projet Gradle Java 17 pur créé en Phase 4, étape 3, testé avec un faux serveur.
+Ce module est livré depuis l'étape 3 de la Phase 4 : manifeste signé ECDSA P-256, téléchargeur
+reprenable (HTTP `Range`), extraction anti-zip-slip plafonnée, installation atomique, mise à
+jour/réparation/désinstallation, plan d'installation et installation hors ligne — le tout testé
+avec de vrais serveurs HTTP locaux.
+
+> Le parseur/écriteur JSON historique de ce module vit désormais dans le module partagé
+> [`json/`](../json/README.md) (extrait à l'étape 8, quand le moteur a eu besoin de lire
+> `forge.json` sans dépendre de l'installateur).

@@ -1,6 +1,6 @@
 // Réglages du build multi-modules de Forge.
-// Modules : api (contrat), client (supervision du moteur), setup (installateur),
-// engine (moteur de build), app (coquille Android).
+// Modules : api (contrat), json (lecture/écriture JSON), client (supervision du moteur),
+// setup (installateur), engine (moteur de build), app (coquille Android).
 
 pluginManagement {
     repositories {
@@ -21,6 +21,7 @@ dependencyResolutionManagement {
 rootProject.name = 'forge'
 
 include ':api'
+include ':json'
 include ':client'
 include ':setup'
 include ':engine'
