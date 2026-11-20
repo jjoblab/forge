@@ -81,6 +81,17 @@ jobs:
       - name: Tests de la coquille (chargement du moteur installé)
         run: ./gradlew --no-daemon :app:testDebugUnitTest --stacktrace
 
+      - name: Décoder la clé d'essai de signature APK
+        # Clé STABLE : les APK de test successifs s'installent l'un sur l'autre
+        # (la clé de débogage d'un exécutant éphémère changerait à chaque build).
+        env:
+          FORGE_APK_KEYSTORE_B64: ${{ secrets.FORGE_APK_KEYSTORE_B64 }}
+          FORGE_APK_KEYSTORE_MDP: ${{ secrets.FORGE_APK_KEYSTORE_MDP }}
+        run: |
+          echo "$FORGE_APK_KEYSTORE_B64" | base64 -d > /tmp/forge-test.jks
+          echo "FORGE_APK_KEYSTORE=/tmp/forge-test.jks" >> "$GITHUB_ENV"
+          echo "FORGE_APK_KEYSTORE_MDP=$FORGE_APK_KEYSTORE_MDP" >> "$GITHUB_ENV"
+
       - name: Assemblage de la coquille (app)
         run: ./gradlew --no-daemon :app:assembleDebug --stacktrace
 
@@ -146,15 +157,24 @@ jobs:
           open('/tmp/cle-publique.b64', 'w').write(''.join(morceaux))
           PY
           ./gradlew --no-daemon :setup:jar :json:jar :api:jar -q
-          java -cp "setup/build/libs/setup-0.2.0.jar:json/build/libs/json-0.2.0.jar:api/build/libs/api-0.2.0.jar" \
+          java -cp "setup/build/libs/setup-0.2.1.jar:json/build/libs/json-0.2.1.jar:api/build/libs/api-0.2.1.jar" \
             jo.forge.setup.manifest.OutilManifeste verifier \
             engine/build/composants/manifest.json /tmp/cle-publique.b64 \
             engine/build/composants/manifest.sig
 
+      - name: Décoder la clé d'essai de signature APK
+        env:
+          FORGE_APK_KEYSTORE_B64: ${{ secrets.FORGE_APK_KEYSTORE_B64 }}
+          FORGE_APK_KEYSTORE_MDP: ${{ secrets.FORGE_APK_KEYSTORE_MDP }}
+        run: |
+          echo "$FORGE_APK_KEYSTORE_B64" | base64 -d > /tmp/forge-test.jks
+          echo "FORGE_APK_KEYSTORE=/tmp/forge-test.jks" >> "$GITHUB_ENV"
+          echo "FORGE_APK_KEYSTORE_MDP=$FORGE_APK_KEYSTORE_MDP" >> "$GITHUB_ENV"
+
       - name: Assembler la coquille (APK installable de test)
-        # APK de DÉBOGAGE signé (clé de débogage) : la signature de production reste
-        # une évolution consignée (limites-et-suite.md). L'APK non signé d'assembleRelease
-        # ne serait pas installable sur appareil.
+        # APK signé avec la clé d'essai STABLE du dépôt : installable par chargement
+        # latéral et upgradable par-dessus les versions de test précédentes. La
+        # signature de production reste une évolution consignée (limites-et-suite.md).
         run: ./gradlew --no-daemon :app:assembleDebug --stacktrace
 
       - name: Publier la version GitHub

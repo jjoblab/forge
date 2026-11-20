@@ -98,15 +98,17 @@ vers le SDK comme d'habitude.
 - [x] Post-4 — assistant d'installation câblé dans la coquille (canal signé, composants
   avec tailles, progression, reprise), jonction des outils Android au moteur installé
   (`FORGE_ENGINE_DIR`), layout des composants publiés conforme à la convention
-  d'installation, exemples embarqués importables sans permission, première publication
-  `v0.2.0` (sans composants redistribuables du SDK — garde juridique).
+  d'installation, exemples embarqués importables sans permission, publications de
+  test `v0.2.0`/`v0.2.1` (sans composants redistribuables du SDK — garde juridique ;
+  `v0.2.1` signe les APK de test avec une clé d'essai stable).
 - [ ] Vérification sur appareil réel (ART) — procédure dans `docs/limites-et-suite.md`.
 
 ## Tester sur un appareil
 
-Depuis la publication [`v0.2.0`](https://github.com/jjoblab/forge/releases/tag/v0.2.0) :
+Depuis la publication [`v0.2.1`](https://github.com/jjoblab/forge/releases/latest) :
 
-1. **Coquille** : installez l'APK joint à la version (chargement latéral).
+1. **Coquille** : installez l'APK joint à la version (chargement latéral ; clé d'essai
+   stable — les versions de test successives s'installent l'une sur l'autre).
 2. **Moteur** : dans l'application, section *Installation du moteur* — le canal par
    défaut (version GitHub la plus récente) charge le manifeste signé (vérifié contre
    la clé épinglée dans la coquille), affiche les composants avec tailles, puis
