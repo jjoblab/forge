@@ -56,7 +56,7 @@ jobs:
           java-version: '17'
 
       # Phase 4 : ./gradlew check remplacera cette garde dès que les projets Gradle existeront.
-      - name: Tests (garde : aucun projet Gradle pour l'instant)
+      - name: "Tests (garde : aucun projet Gradle pour l'instant)"
         run: |
           if [ -x ./gradlew ]; then
             ./gradlew check --stacktrace
