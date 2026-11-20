@@ -11,7 +11,7 @@ package jo.forge.engine;
 public final class EngineVersion {
 
     /** Version courante. */
-    public static final String CURRENT = "0.2.7";
+    public static final String CURRENT = "0.2.8";
 
     private EngineVersion() {
     }
