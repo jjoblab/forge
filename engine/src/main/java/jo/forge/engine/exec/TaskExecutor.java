@@ -100,7 +100,12 @@ public final class TaskExecutor {
     public BuildResult execute() {
         String buildId = events.buildId();
         long debut = System.currentTimeMillis();
-        Map<String, Integer> restantes = new HashMap<>();
+        // ConcurrentHashMap OBLIGATOIRE : les terminaisons de tâches (et donc les
+        // décréments) se produisent en parallèle sur le pool — un HashMap simple se
+        // corromprait (double soumission ou tâche jamais soumise, selon la course).
+        Map<String, Integer> restantes = new java.util.concurrent.ConcurrentHashMap<>();
+        // dependants : construit ici, uniquement LU ensuite (publication sûre par la
+        // création des threads du pool).
         Map<String, List<String>> dependants = new HashMap<>();
         for (Task task : graph.allTasks()) {
             restantes.put(task.name(), task.dependencies().size());
@@ -120,12 +125,17 @@ public final class TaskExecutor {
         AtomicInteger terminees = new AtomicInteger();
         AtomicInteger bloquables = new AtomicInteger(); // Sautées par blocage transitif.
 
+        // Racines : déterminées AVANT tout démarrage du pool, depuis les dépendances
+        // STATIQUES — jamais depuis la carte « restantes » (mutée en parallèle par les
+        // terminaisons) : une racine rapide pourrait décrémenter une tâche à zéro
+        // pendant le balayage et provoquer une double soumission (course réelle,
+        // corrigée à l'étape 9).
+        List<Task> racines = graph.allTasks().stream()
+                .filter(task -> task.dependencies().isEmpty()).toList();
         try {
-            for (Task task : graph.allTasks()) {
-                if (restantes.get(task.name()) == 0) {
-                    soumettre(task, pool, enCours, restantes, dependants, terminees,
-                            bloquables);
-                }
+            for (Task task : racines) {
+                soumettre(task, pool, enCours, restantes, dependants, terminees,
+                        bloquables);
             }
             // Attendre la fin de toutes les soumissions (et des cascades).
             enCours.arriveAndAwaitAdvance();

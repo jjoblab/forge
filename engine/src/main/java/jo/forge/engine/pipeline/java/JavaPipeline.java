@@ -22,16 +22,16 @@ import java.util.stream.Collectors;
  * Pipeline Java : transformation du modèle déclaratif en tâches de build (décision
  * D-11 — même principe qu'un greffon de système de build, sans son infrastructure).
  *
- * <p>Chaîne par module {@code java-library} : {@code compileJava} puis {@code jar},
- * câblées par les dépendances de projet. La sémantique des portées est celle des
- * bibliothèques Java Gradle : {@code api} se transmet aux consommateurs,
- * {@code implementation} reste locale, {@code compileOnly}/{@code runtimeOnly} ne
- * dépassent pas la compilation/l'exécution du module.</p>
+ * <p>Chaîne par module {@code java-library} : {@code resolveDependencies} (Maven,
+ * étape 9), {@code compileJava} puis {@code jar}, câblées par les dépendances de
+ * projet. La sémantique des portées est celle des bibliothèques Java Gradle : {@code api}
+ * se transmet aux consommateurs, {@code implementation} reste locale,
+ * {@code compileOnly}/{@code runtimeOnly} ne dépassent pas la compilation/l'exécution
+ * du module.</p>
  *
- * <p>Étape 8 : seuls les modules {@code java-library} sont construits — un module
- * Android est refusé avec un message explicite (pipeline Android : étape 10), une
- * dépendance Maven également (résolveur : étape 9). Ces refus sont des messages
- * d'avancement, pas des silences.</p>
+ * <p>Étape 10 restante : les modules Android ({@code application},
+ * {@code android-library}) sont refusés avec un message explicite — le pipeline Android
+ * arrive à l'étape 10.</p>
  */
 public final class JavaPipeline {
 
@@ -44,25 +44,44 @@ public final class JavaPipeline {
      * @param model       modèle validé.
      * @param projectRoot racine du projet.
      * @return les tâches, dans un ordre quelconque (le graphe les ordonne).
-     * @throws ModelException si un module exige un pipeline non livré ou une
-     *                        dépendance Maven (étapes 9-10).
+     * @throws ModelException si un module exige le pipeline Android (étape 10).
      */
     public static List<Task> tasksFor(ForgeModel model, Path projectRoot) {
+        return tasksFor(model, projectRoot, false);
+    }
+
+    /**
+     * Construit les tâches de tous les modules du projet, avec le mode réseau.
+     *
+     * @param model       modèle validé.
+     * @param projectRoot racine du projet.
+     * @param horsLigne   mode hors ligne : la résolution n'utilise que le cache.
+     * @return les tâches, dans un ordre quelconque (le graphe les ordonne).
+     * @throws ModelException si un module exige le pipeline Android (étape 10).
+     */
+    public static List<Task> tasksFor(ForgeModel model, Path projectRoot,
+                                      boolean horsLigne) {
         verifierPerimetre(model);
         Map<String, ForgeModule> parNom = model.modules().stream()
                 .collect(Collectors.toMap(ForgeModule::name, Function.identity()));
 
         List<Task> tasks = new ArrayList<>();
         for (ForgeModule module : model.modules()) {
+            ProjectLayout layout = new ProjectLayout(projectRoot);
             List<String> dependances = new ArrayList<>();
             for (ModuleDependency.ProjectDependency dep : CompileJavaTask.compileDeps(module)) {
                 dependances.add(dep.module() + ":compileJava");
             }
             LinkedHashSet<Path> classpath = new LinkedHashSet<>();
             fermetureCompilation(module, parNom, classpath, new HashSet<>(), projectRoot);
-            tasks.add(new CompileJavaTask(module, new ProjectLayout(projectRoot),
-                    dependances, new ArrayList<>(classpath)));
-            tasks.add(new JarTask(module, new ProjectLayout(projectRoot)));
+
+            ResolveDependenciesTask resolve = new ResolveDependenciesTask(module, layout,
+                    ResolveDependenciesTask.racinesDe(parNom, module),
+                    model.repositories(), horsLigne);
+            tasks.add(resolve);
+            tasks.add(new CompileJavaTask(module, layout, dependances,
+                    new ArrayList<>(classpath), resolve.cheminClasspath()));
+            tasks.add(new JarTask(module, layout));
         }
         return tasks;
     }
@@ -76,13 +95,6 @@ public final class JavaPipeline {
                 throw new ModelException("Le module " + module.name() + " (type "
                         + module.type().wireName()
                         + ") exige le pipeline Android, livré à l'étape 10");
-            }
-            for (ModuleDependency dep : module.dependencies()) {
-                if (dep instanceof ModuleDependency.MavenDependency maven) {
-                    throw new ModelException("La dépendance Maven " + maven.coordinate()
-                            + " (module " + module.name()
-                            + ") exige le résolveur, livré à l'étape 9");
-                }
             }
         }
     }

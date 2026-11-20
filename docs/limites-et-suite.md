@@ -25,13 +25,13 @@ tout écart est consigné ici.
 | 6. Exécuteur | **Fait** | File de prêtes, parallélisme plafonné calculé, échec bloquant transitif, branches saines menées à terme, annulation par interruption immédiate des threads, événements en flux. |
 | 7. Empreintes et magasin | **Fait** | Empreintes par contenu (fichiers, répertoires en flux, propriétés triées, version de code), magasin atomique versionné à somme de contrôle, noms injectifs, corruption = périmé, sorties revérifiées ; incrémentalité prouvée par test (toucher un fichier ne relance que sa tâche). |
 | 8. Pipeline Java | **Fait** | Modèle déclaratif `forge.json` strict (codec testé), ECJ en processus avec diagnostics par l'API (fichier/ligne/colonne/code), tâches `compileJava`/`jar` câblées par portées (fermeture `api`), jar déterministe (testé octet par octet), **vrai serveur de build** câblé dans `EngineMain` (défaut ; `--fake` garde le moteur scripté pour les tests de contrat), exemple `examples/multi-modules-java`, benchmark complet vs incrémental (première mesure : 6/6 → 4/6 tâches). Parseur JSON extrait dans le module `json/` partagé. |
-| 9. Résolveur | À faire | POM/BOM XML durci, médiation nearest-wins, échec-sur-conflit réel, cache, intégrité, hors ligne. |
+| 9. Résolveur | **Fait** | Résolution Maven complète : POM effectifs (parents, propriétés, gestion, nomenclatures importées, relogements), exclusions, optionnelles, médiation trois politiques (échec-sur-conflit réel, chemins cités), comparateur aligné Maven, cache réplique à écritures atomiques + cache négatif TTL, intégrité sha1, HTTPS strict (boucle locale pour les tests), bornes avec diagnostic, hors ligne, convergence en deux passes ; tâche `resolveDependencies` câblée dans le pipeline (le classpath résolu est une entrée d'empreinte de la compilation) ; 16 tests sur un vrai dépôt HTTP local. **Bonus : correction d'une course réelle dans l'exécuteur** (double soumission d'une tâche par la boucle des racines, détectée par le benchmark incrémental, corrigée et re-vérifiée 5 fois). |
 | 10. Pipeline Android | À faire | aapt2 natif (D-04), dex (d8), packaging, signature, installation, fusion de manifestes, ressources incrémentales. |
 | 11. Diagnostics et console | À faire | Rédaction de secrets, tampon borné, trace exportable, écran de build dans la coquille. |
 | 12. Packaging et publication | À faire | CI de construction des composants, dexage, manifeste signé, artefacts de release. |
 | 13. Import Gradle statique (optionnel) | À faire | Lecteur statique vers `forge.json`. |
 
-## Manques et limites constatés (Phases 3-4, étapes 1-8)
+## Manques et limites constatés (Phases 3-4, étapes 1-9)
 
 - **Écarts du pipeline Java avec le moteur de référence** (détail dans la section
   « Comparaison après implémentation » de [`REFERENCES.md`](REFERENCES.md)) :
@@ -40,8 +40,15 @@ tout écart est consigné ici.
   l'up-to-date par tâche et l'empreinte de classpath par contenu donnent déjà l'essentiel),
   variante « compilateur sans image » pour ART non câblée (repli `-source/-target`),
   `processResources` Java fusionné dans le jar (v1), chaîne de tests par module non livrée.
-- **Aucune dépendance Maven résolue à ce jour** : le pipeline refuse proprement les
-  coordonnées Maven (message citant l'étape 9) — le résolveur arrive à l'étape suivante.
+- **AAR et classifieurs non supportés à ce jour** : le résolveur refuse proprement tout
+  empaquetage non-`jar` (message citant l'étape 10) ; les métadonnées Gradle
+  `.module` (sélection de variante, contraintes), l'éviction par capacités, les
+  alignements de famille, les SNAPSHOTS et la parallélisation par vagues ne sont pas
+  livrés (écart consigné dans `REFERENCES.md`) ; les téléchargements d'artefacts sont
+  en flux mais sans reprise (petits artefacts — la reprise existe pour les composants
+  du moteur).
+- **AAR et artefacts Android** : l'explosion des AAR et les dépendances natives
+  arrivent avec le pipeline Android (étape 10).
 
 - **Rien n'a été vérifié sur appareil réel (ART)**. Tout est testé sur JVM (dont des tests
   d'intégration avec de vrais processus séparés `java`). Les points spécifiquement à

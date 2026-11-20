@@ -53,7 +53,8 @@ class BenchmarkBuild {
         assertTrue(java.nio.file.Files.exists(uneSource));
 
         Mesure incrément = exécuter(temporaire, "incrémental");
-        assertTrue(incrément.succès);
+        assertTrue(incrément.succès, "le build incrémental doit réussir : "
+                + journalDuDernierBuild);
 
         System.out.println("[benchmark] tâches exécutées : complet="
                 + complet.tâchesExécutées + "/" + complet.tâchesTotales
@@ -121,6 +122,8 @@ class BenchmarkBuild {
                 compteur, new jo.forge.engine.tasks.CancellationFlag(),
                 magasin, 2, racine).execute();
 
+        journalDuDernierBuild = compteur.journalErreur + " fin: " + compteur.messageFin
+                + " exécutées: " + compteur.nomsExécutées;
         Mesure mesure = new Mesure();
         mesure.succès = résultat.success();
         mesure.duréeMs = résultat.durationMs();
@@ -137,6 +140,7 @@ class BenchmarkBuild {
 
         final AtomicInteger exécutées;
         final List<String> nomsExécutées = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final StringBuilder journalErreur = new StringBuilder();
 
         Compteur(AtomicInteger exécutées) {
             this.exécutées = exécutées;
@@ -157,14 +161,21 @@ class BenchmarkBuild {
 
         @Override
         public void log(jo.forge.api.BuildEvent.LogEvent.LogLevel level, String message) {
+            if (level == jo.forge.api.BuildEvent.LogEvent.LogLevel.ERROR) {
+                journalErreur.append(message).append('\n');
+            }
         }
 
         @Override
         public void progress(int total, int done) {
         }
 
+        volatile String messageFin;
+
         @Override
         public void buildFinished(jo.forge.api.BuildEvent.BuildFinished finished) {
+            messageFin = finished.message() + " [succès=" + finished.success()
+                    + ", tâcheFautive=" + finished.failedTask() + "]";
         }
 
         @Override
@@ -184,4 +195,7 @@ class BenchmarkBuild {
         int tâchesExécutées;
         int tâchesTotales;
     }
+
+    /** Journal d'erreurs du dernier build (diagnostic des échecs). */
+    private String journalDuDernierBuild = "";
 }

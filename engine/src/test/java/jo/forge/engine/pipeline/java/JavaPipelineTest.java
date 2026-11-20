@@ -44,15 +44,16 @@ class JavaPipelineTest {
         ForgeModel modèle = ModelCodec.read(temporaire);
         List<Task> tâches = JavaPipeline.tasksFor(modèle, temporaire);
 
-        assertEquals(4, tâches.size(), "2 modules × (compileJava, jar)");
+        assertEquals(6, tâches.size(), "2 modules × (resolve, compile, jar)");
         Map<String, Task> parNom = tâches.stream()
                 .collect(Collectors.toMap(Task::name, t -> t));
-        assertEquals(List.of("core:compileJava"),
-                parNom.get("app:compileJava").dependencies(),
-                "app:compileJava dépend de core:compileJava");
+        assertEquals(List.of("app:resolveDependencies", "core:compileJava"),
+                parNom.get("app:compileJava").dependencies().stream().sorted().toList(),
+                "app:compileJava dépend de la compilation amont et de sa résolution");
         assertEquals(List.of("app:compileJava"),
                 parNom.get("app:jar").dependencies());
-        assertTrue(parNom.get("core:compileJava").dependencies().isEmpty());
+        assertTrue(parNom.get("core:compileJava").dependencies()
+                .contains("core:resolveDependencies"));
     }
 
     @Test
@@ -71,7 +72,7 @@ class JavaPipelineTest {
         événements = new Enregistreur();
         TaskExecutor.BuildResult second = exécuter(événements);
         assertTrue(second.success());
-        assertEquals(4, événements.tâchesParÉtat(
+        assertEquals(6, événements.tâchesParÉtat(
                 jo.forge.api.BuildEvent.TaskState.UP_TO_DATE).size(),
                 "le second build sans changement doit tout trouver à jour : "
                         + événements.tâchesParÉtat(
@@ -184,11 +185,10 @@ class JavaPipelineTest {
     }
 
     @Test
-    void refuseLesModulesHorsPérimètreAvecMessageClair() throws IOException {
+    void refuseLesModulesAndroidHorsPérimètreAvecMessageClair() throws IOException {
         Projets.fichier(temporaire, "forge.json", """
                 { "modelVersion": 1,
                   "modules": [ { "name": "app", "type": "application",
-                    "dependencies": [ { "maven": "com.exemple:o:1" } ],
                     "android": { "manifest": "m.xml", "minSdk": 28, "targetSdk": 34,
                                  "namespace": "demo" } } ] }
                 """);
@@ -198,18 +198,6 @@ class JavaPipelineTest {
         assertTrue(refus.getMessage().contains("étape 10"),
                 "le message doit citer l'étape qui livrera le pipeline Android : "
                         + refus.getMessage());
-
-        Projets.fichier(temporaire, "forge.json", """
-                { "modelVersion": 1,
-                  "modules": [ { "name": "a", "type": "java-library",
-                    "dependencies": [ { "maven": "com.exemple:o:1" } ] } ] }
-                """);
-        ForgeModel modèleMaven = ModelCodec.read(temporaire);
-        ModelException refusMaven = assertThrows(ModelException.class,
-                () -> JavaPipeline.tasksFor(modèleMaven, temporaire));
-        assertTrue(refusMaven.getMessage().contains("étape 9"),
-                "le message doit citer l'étape qui livrera le résolveur : "
-                        + refusMaven.getMessage());
     }
 
     /**

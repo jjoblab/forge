@@ -38,6 +38,7 @@ public final class CompileJavaTask implements Task {
     private final ProjectLayout layout;
     private final List<String> compileDependencies;
     private final List<Path> classpathDirs;
+    private final Path classpathFile;
 
     /**
      * Crée la tâche.
@@ -46,15 +47,18 @@ public final class CompileJavaTask implements Task {
      * @param layout            disposition du projet.
      * @param compileDependencies noms des tâches {@code compileJava} des dépendances de
      *                            projet visibles à la compilation.
-     * @param classpathDirs     répertoires de classes à mettre sur le classpath
-     *                          (fermeture exportée des dépendances de projet).
+     * @param classpathDirs     répertoires de classes des dépendances de projet.
+     * @param classpathFile     fichier de classpath Maven résolu (entrée d'empreinte et
+     *                          source des jars à l'exécution).
      */
     public CompileJavaTask(ForgeModule module, ProjectLayout layout,
-                           List<String> compileDependencies, List<Path> classpathDirs) {
+                           List<String> compileDependencies, List<Path> classpathDirs,
+                           Path classpathFile) {
         this.module = module;
         this.layout = layout;
         this.compileDependencies = List.copyOf(compileDependencies);
         this.classpathDirs = List.copyOf(classpathDirs);
+        this.classpathFile = classpathFile;
     }
 
     @Override
@@ -64,14 +68,16 @@ public final class CompileJavaTask implements Task {
 
     @Override
     public List<String> dependencies() {
-        return compileDependencies;
+        List<String> dépendances = new ArrayList<>(compileDependencies);
+        dépendances.add(module.name() + ":resolveDependencies");
+        return dépendances;
     }
 
     @Override
     public TaskIO io() {
         List<Path> entrees = new ArrayList<>(layout.existingSourceDirs(module));
         entrees.addAll(classpathDirs);
-        return new TaskIO(List.of(), entrees,
+        return new TaskIO(List.of(classpathFile), entrees,
                 Map.of("release", Integer.toString(module.javaRelease()),
                         "compilateur", "ecj:" + EcjCompiler.compilerVersion()),
                 List.of(layout.classesDir(module.name())), TASK_VERSION);
@@ -88,7 +94,11 @@ public final class CompileJavaTask implements Task {
             return;
         }
         context.logger().debug(sources.size() + " fichiers à compiler");
-        EcjCompiler.CompileResult resultat = EcjCompiler.compile(sources, classpathDirs,
+        List<Path> classpath = new ArrayList<>(classpathDirs);
+        if (Files.isRegularFile(classpathFile)) {
+            classpath.addAll(ClasspathFile.lireJarsCompilation(classpathFile));
+        }
+        EcjCompiler.CompileResult resultat = EcjCompiler.compile(sources, classpath,
                 sortie, module.javaRelease(), context.diagnostics());
         for (String ligne : resultat.consoleLines()) {
             context.logger().debug(ligne);
