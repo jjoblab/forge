@@ -147,19 +147,18 @@ tasks.register('composants', JavaExec) {
                      project(':setup').file('src/compatArt/java').absolutePath,
                      '--dexeur', r8Jar?.absolutePath,
                      '--signeur', apksigJar?.absolutePath]
-    // Garde juridique (docs/distribution.md §7) : FORGE_SANS_OUTILS_ANDROID omet les
-    // composants redistribuables du SDK (platform-<api>, aapt2-<abi>) — android.jar
-    // reste utilisé pour le DEXAGE, jamais redistribué. Les premières publications
-    // l'activent tant que les conditions de redistribution ne sont pas validées.
-    def sansOutilsAndroid = System.getenv('FORGE_SANS_OUTILS_ANDROID')
+    // Garde de distribution : FORGE_SANS_AAPT2 omet le composant aapt2-<abi>
+    // (le prébuilt des build-tools est x86_64/Linux, inutilisable sur appareil
+    // arm64 — sa construction AOSP reste une évolution consignée), TOUT EN
+    // PUBLIANT platform-<api> (android.jar) : depuis v0.2.7 la plate-forme de
+    // compilation EST un composant publié — sans elle, ECJ ne résout pas
+    // java.lang.Object sur ART (correctif du build appareil).
+    def sansAapt2 = System.getenv('FORGE_SANS_AAPT2')
     if (cheminAndroidJar) {
         arguments.addAll(['--android-jar', cheminAndroidJar])
     }
-    if (cheminAapt2 && !sansOutilsAndroid) {
+    if (cheminAapt2 && !sansAapt2) {
         arguments.addAll(['--aapt2', cheminAapt2, '--abi', 'arm64-v8a'])
-    }
-    if (sansOutilsAndroid) {
-        arguments.add('--sans-outils-android')
     }
     def cléPrivée = System.getenv('FORGE_CLE_PRIVEE')
     if (cléPrivée) {

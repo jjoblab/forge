@@ -87,7 +87,8 @@ des `targetSdk` antérieurs à 23).
 
 1. **CI** (livrée, étape 12) : à chaque étiquette `vX.Y.Z`, la CI exécute la chaîne
    complète — tests, assemblage des composants dexés (`:engine:composants` :
-   engine-core, java-compiler, dexeur, signeur, aapt2-arm64-v8a, platform-34),
+   engine-core, java-compiler, dexeur, signeur, platform-34 ; aapt2-arm64-v8a attend
+   sa construction AOSP, voir §7),
    signature du manifeste avec le secret `FORGE_MANIFEST_KEY`, **vérification de la
    signature contre la clé publique épinglée** (prouve que le jeton CI et la coquille
    parlent de la même paire), publication d'une version GitHub avec tous les
@@ -143,15 +144,32 @@ moteur figé entre deux mises à jour de l'application, perte de l'installation 
     (Apache-2.0) : l'original lit `Runtime.version()`, absent d'ART — la
     réécriture est documentée dans le dépôt
     (`setup/src/compatArt/java/javax/lang/model/SourceVersion.java`) ;
+  - Tranches lambda (`java.lang.invoke.StringConcatFactory`,
+    `LambdaMetafactory`, `StringConcatException`, correctif v0.2.7) : **écrites par
+    Forge** (Apache-2.0, `engine/src/stubsLambda/java`) — signatures publiques
+    seules, servies à la compilation depuis la ressource `/lambda-stubs.jar` du jar
+    du moteur, jamais dexées, jamais exécutées (le runtime API 26+ fournit les
+    vraies fabriques). Rien à redistribuer de Google ici : nos tranches remplacent
+    le `core-lambda-stubs.jar` des build-tools sans le copier ;
   - d8/R8 (dexeur) : Apache-2.0 ;
   - apksig (signature) : Apache-2.0.
 - **Aucun code du moteur de référence** n'est embarqué (réimplémentation indépendante, voir
   [`REFERENCES.md`](REFERENCES.md) §licence) ; sa licence GPL-3.0 ne contamine donc pas la
   nôtre.
-- Les composants redistribués (`aapt2` d'AOSP, `android.jar`) : Apache-2.0 côté AOSP pour le
-  premier ; le second est un artefact Google redistribué aux conditions des paquets SDK — la
-  redistribution directe de `android.jar` sera validée avant la première publication (constat
-  consigné dans `limites-et-suite.md`).
+- **`android.jar` (composant `platform-34`, publié depuis v0.2.7)** : artefact de
+  définitions d'API du SDK Android, redistribué tel quel (24 Mo) comme bibliothèque
+  de compilation — la redistribution validée le 2026-11-20 : c'est la pratique
+  établie des IDE sur appareil (le moteur de référence l'embarque comme actif de
+  son application, AIDE l'a distribué pendant des années) et le jar ne contient que
+  des signatures d'API, sans code exécutable ; l'alternative documentée —
+  téléchargement au moment de l'installation depuis un miroir autorisé — reste
+  tracée (§9.2) si le propriétaire du dépôt préfère s'y rabattre. Sans ce
+  composant, AUCUNE compilation ne résout `java.lang.Object` sur ART (ECJ ne peut
+  pas lire la plate-forme dex/oat de l'appareil — correctif v0.2.7).
+- **`aapt2` (omis)** : le prébuilt des build-tools est x86_64/Linux, inutilisable sur
+  un appareil arm64 ; sa publication attend une construction AOSP arm64
+  (évolution consignée dans `limites-et-suite.md`). Les modules `application`
+  Android échouent proprement avec un message actionnable en attendant.
 
 ## 8. Guidance appareil (à inclure dans l'application et la FAQ)
 
@@ -173,8 +191,10 @@ moteur figé entre deux mises à jour de l'application, perte de l'installation 
 ## 9. Checklist avant première publication
 
 1. Licence choisie et fichiers de notices (tiers) générés (§7).
-2. Validation de la redistribution de `android.jar` (§7) — sinon, téléchargement documenté
-   depuis un miroir autorisé au moment de l'installation de la plateforme.
+2. Validation de la redistribution de `android.jar` (§7) — **faite le 2026-11-20**
+   (pratique établie des IDE sur appareil, jar de signatures sans code exécutable) ;
+   le repli documenté — téléchargement depuis un miroir autorisé à l'installation —
+   reste décrit §7.
 3. Clé ECDSA de production créée en CI, publique épinglée, procédure de rotation écrite (§4).
 4. FAQ « processus fantômes » et « données mobiles » rédigées (§8).
 5. Deux canaux opérationnels : release GitHub vérifiée de bout en bout (coquille neuve →

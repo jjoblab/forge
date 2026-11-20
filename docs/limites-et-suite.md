@@ -46,8 +46,11 @@ tout écart est consigné ici.
   processeurs d'annotations désactivés (parité, à documenter comme décision), compilation
   incrémentale fine par fichier et cache d'ABI absents (améliorations A-8/A-10 non livrées —
   l'up-to-date par tâche et l'empreinte de classpath par contenu donnent déjà l'essentiel),
-  variante « compilateur sans image » pour ART non câblée (repli `-source/-target`),
   `processResources` Java fusionné dans le jar (v1), chaîne de tests par module non livrée.
+  Le compilateur sans image pour ART est LIVRÉ (`v0.2.7`, REF-155/156) — avec le correctif
+  `originalSourceLevel` que la référence n'a pas (ses expansions varargs binaires échouent).
+  Suivi possible : le cœur Java filtré (android.jar moins `android.*`) pour les projets
+  purement Java, comme la référence le dérive pour ses applications console.
 - **AAR et classifieurs non supportés à ce jour** : le résolveur refuse proprement tout
   empaquetage non-`jar` (message citant l'étape 10) ; les métadonnées Gradle
   `.module` (sélection de variante, contraintes), l'éviction par capacités, les
@@ -67,12 +70,14 @@ tout écart est consigné ici.
   (débogage seul), installation sur appareil (étape 11, côté coquille).
 - **Résolution des outils Android (aapt2, android.jar)** : la jonction est FAITE
   (post-4, étape 14) — le moteur installé localise ses outils via `FORGE_ENGINE_DIR`
-  (composants par ABI et par API, localisateur testé sur JVM). En revanche, les
-  composants `aapt2`/`platform` ne sont PAS publiés dans les versions de test
-  `v0.2.x` (garde juridique §7) : sur appareil, un module Android échoue proprement
-  avec le message « installez le composant… » tant que le prébuilt aapt2 ANDROID
-  (arm64, construction AOSP dédiée) n'est pas produit et les conditions de
-  redistribution validées.
+  (composants par ABI et par API, localisateur testé sur JVM). Depuis `v0.2.7`, le
+  composant `platform-34` (android.jar) EST publié : c'est lui qui permet à ECJ de
+  résoudre `java.lang.Object` sur ART (correctif du build appareil — un module
+  sans facette Android reçoit la plate-forme la plus haute installée, un projet
+  mixte suit le `targetSdk` de ses modules Android). Reste non publié :
+  `aapt2-<abi>` — le prébuilt des build-tools est x86_64/Linux, inutilisable sur
+  appareil arm64 ; sa construction AOSP dédiée reste à produire, et un module
+  `application` Android échoue proprement avec un message actionnable en attendant.
 - **Écran de build et installation** : l'assistant d'installation est CÂBLÉ depuis
   l'étape 14 (canal, composants, tailles, avertissement données mobiles, progression,
   reprise, réparation, désinstallation). Restent non vérifiés sur appareil réel :
@@ -85,11 +90,13 @@ tout écart est consigné ici.
   (le moteur démarre, répond et meurt proprement, D-01), arrêt des moteurs successifs
   **validé**, `resolveDependencies` **validé** (deux modules en parallèle), capture du
   stderr et rapports **validés** (c'est eux qui ont livré chaque diagnostic des
-  correctifs `v0.2.3`→`v0.2.6`). Restent à constater : le premier build COMPLET
-  (`compileJava` corrigé en `v0.2.6`, les maillons aval `jar` puis la chaîne Android
-  `dex`/`packageApk`/`signApk` sur ART), le binaire `aapt2` téléchargé (W^X, D-04),
-  l'installation par PackageInstaller et le tueur de processus Android 12+ (D-02). Le
-  repli `DexClassLoader` reste conçu mais non câblé.
+  correctifs `v0.2.3`→`v0.2.7`). Restent à constater : le premier build COMPLET
+  (`compileJava` reprend en `v0.2.7` : plate-forme + tranches lambda + correctif varargs,
+  validés en simulation ART contre android.jar réel — à confirmer sur l'appareil), les
+  maillons aval `jar` puis la chaîne Android `dex`/`packageApk`/`signApk` sur ART, le
+  binaire `aapt2` téléchargé (W^X, D-04), l'installation par PackageInstaller et le
+  tueur de processus Android 12+ (D-02). Le repli `DexClassLoader` reste conçu mais non
+  câblé.
 - **Audit ART des composants distribués (v0.2.6)** — mêmes outils d'audit que pour ECJ
   (lecture des pools de constantes) : `apksig` **propre** (0 classe référencée absente
   d'ART) ; `r8` en porte **4**, toutes hors du chemin D8 du dexage simple que Forge
@@ -122,14 +129,14 @@ tout écart est consigné ici.
   publique dans `ClesForge` (coquille, test de format), clé privée en jeton CI
   `FORGE_MANIFEST_KEY` (posé le 2026-11-20 par l'API GitHub, jamais versionnée) ;
   la rotation reste à documenter opérationnellement (`distribution.md` §4).
-- **Redistribution de `android.jar` et du binaire `aapt2`** : les composants
-  `platform-34` (android.jar du SDK) et `aapt2-arm64-v8a` (binaire des build-tools)
-  NE SONT PAS publiés dans les versions de test `v0.2.x` — les conditions de redistribution
-  (`distribution.md` §7) restent à valider juridiquement, et le binaire aujourd'hui
-  constructible est le prébuilt LINUX (utile au développement et à la CI seulement) :
-  le prébuilt ANDROID (arm64) exige une construction AOSP dédiée. La publication les
-  omet explicitement (`FORGE_SANS_OUTILS_ANDROID`) ; `android.jar` reste utilisé au
-  DEXAGE côté publication, jamais redistribué.
+- **Redistribution de `android.jar` et du binaire `aapt2`** : `platform-34` (android.jar
+  du SDK) est PUBLIÉ depuis `v0.2.7` — redistribution validée le 2026-11-20
+  (`distribution.md` §7 : pratique établie des IDE sur appareil, jar de signatures
+  d'API sans code exécutable). `aapt2-arm64-v8a` reste NON publié : le binaire
+  aujourd'hui constructible est le prébuilt LINUX (utile au développement et à la CI
+  seulement) ; le prébuilt ANDROID (arm64) exige une construction AOSP dédiée. La
+  publication omet explicitement aapt2 (`FORGE_SANS_AAPT2`) ; `android.jar` sert au
+  DEXAGE côté publication ET est redistribué comme composant de compilation.
 - **Stabilité CI — flocons résolus le 2026-11-20** (échecs intermittents des étapes
   8-13 sur GitHub Actions, reproduits localement en boucle ~1/25) : deux causes
   racines, toutes deux corrigées. (1) Le serveur de build écrivait ses trames depuis
@@ -159,30 +166,34 @@ tout écart est consigné ici.
    `1b1a3052168a52f38a91ea03c87831a0d94c1fff`, jamais copié ni référencé hors de
    `docs/REFERENCES.md`.
 
-## Procédure de test sur appareil (v0.2.6)
+## Procédure de test sur appareil (v0.2.7)
 
-La chaîne est testable de bout en bout depuis la publication `v0.2.6` (la `v0.2.3`
+La chaîne est testable de bout en bout depuis la publication `v0.2.7` (la `v0.2.3`
 compilait encore son premier projet Java en échec : ressources d'ECJ perdues au
 dexage, `Can't find bundle … locale fr_HT` — corrigé en `v0.2.4` ; le code de
 sortie du moteur est honnête depuis la `v0.2.5` ; le crash `SourceVersion` sur
-ART — API `java.compiler` absente d'Android — est corrigé en `v0.2.6`, et les
+ART — API `java.compiler` absente d'Android — est corrigé en `v0.2.6` ; les
 messages d'erreurs graves ne prétendent plus systématiquement à un manque de
-mémoire) :
+mémoire ; et `v0.2.7` corrige l'échec « The type java.lang.Object cannot be
+resolved » : plate-forme `platform-34` publiée, compilation sans image sur ART,
+tranches lambda embarquées et correctif varargs `originalSourceLevel`) :
 
 1. **Installer la coquille** : APK signé de la clé d'essai joint à la version GitHub
-   `v0.2.6` (`app-debug.apk`), installation par chargement latéral (autoriser les
+   `v0.2.7` (`app-debug.apk`), installation par chargement latéral (autoriser les
    sources inconnues). Les versions de test successives s'installent l'une sur
    l'autre (clé d'essai stable, jetons CI) ; une installation antérieure signée
    autrement (clé de débogage éphémère d'un exécutant, comme l'APK d'artefact des
-   builds de branche) doit d'abord être désinstallée. Une `v0.2.1`-`v0.2.5` déjà
+   builds de branche) doit d'abord être désinstallée. Une `v0.2.1`-`v0.2.6` déjà
    installée se met à jour directement par-dessus.
 2. **Mettre à jour le moteur** : section *Installation du moteur* — *Charger le
    manifeste* puis *Réinstaller (mise à jour ou réparation)* : les composants Java
-   de la `v0.2.6` remplacent ceux des versions antérieures — le composant
-   `java-compiler` porte désormais l'API `java.compiler` pour ART (jar dexé ~1,3 Mo
-   téléchargés : ECJ + 146 classes de l'API, `SourceVersion` réécrit) ; ceux de la
-   `v0.2.4` portaient le correctif des ressources, ceux de la `v0.2.5` le client au
-   code de sortie auto-guéri.
+   de la `v0.2.7` remplacent ceux des versions antérieures — NOUVEAU : le composant
+   `platform-34` (~24 Mo, android.jar) est publié et installé, le jar du moteur
+   porte les tranches lambda (`/lambda-stubs.jar`), et la compilation Java sur ART
+   passe par le chemin sans image (plate-forme au classpath de TOUT module,
+   correctif varargs compris) ; ceux de la `v0.2.6` portaient l'API `java.compiler`
+   pour ART, ceux de la `v0.2.4` le correctif des ressources, ceux de la `v0.2.5`
+   le client au code de sortie auto-guéri.
 3. **Construire l'exemple Java** : bouton *Importer les projets d'exemple* (stockage
    privé, aucune permission), puis *Construire* — le moteur démarre dans son propre
    processus (`app_process`, tas dédié), ECJ compile sur ART, les jar sortent dans
@@ -191,8 +202,9 @@ mémoire) :
    précédent est arrêté avant chaque lancement et à la fin du build (plus de VM
    oisives qui s'accumulent).
 4. **Limites attendues sur cette version** : l'exemple `application-android` échoue
-   proprement (composants aapt2/plate-forme non publiés, message actionnable) ; la
-   production d'un APK installable sur appareil attend le prébuilt aapt2 arm64.
+   proprement (composant aapt2 non publié — arm64/AOSP en attente, message
+   actionnable ; `platform-34` est désormais installé) ; la production d'un APK
+   installable sur appareil attend le prébuilt aapt2 arm64.
 5. **En cas de problème (débogage)** : bouton *Copier les journaux* (presse-papiers)
    ou *Partager* (courriel, notes…) — le rapport contient le contexte (versions,
    appareil, projet), le journal du build, le **journal du moteur** (stderr capturé

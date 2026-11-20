@@ -134,12 +134,14 @@ jobs:
         env:
           # Clé privée de signature (PKCS#8, base64) : JETON CI, jamais versionnée.
           FORGE_MANIFEST_KEY: ${{ secrets.FORGE_MANIFEST_KEY }}
-          # Premières publications SANS les composants redistribuables du SDK
-          # (platform-34 embarque android.jar, aapt2 le binaire des build-tools) :
-          # garde juridique docs/distribution.md §7 tant que les conditions de
-          # redistribution ne sont pas validées — et le binaire actuel est le prébuilt
-          # Linux, inutile sur appareil (arm64 attend une construction AOSP).
-          FORGE_SANS_OUTILS_ANDROID: '1'
+          # Le composant platform-34 (android.jar) est PUBLIÉ depuis v0.2.7 :
+          # sans lui, aucune compilation ne résout java.lang.Object sur ART
+          # (ECJ ne peut pas lire la plate-forme dex/oat de l'appareil —
+          # correctif du build appareil, voir REFERENCES.md).
+          # aapt2 reste OMIS : le prébuilt des build-tools est x86_64/Linux,
+          # inutilisable sur un appareil arm64 — sa construction AOSP est une
+          # évolution consignée (limites-et-suite.md).
+          FORGE_SANS_AAPT2: '1'
         run: |
           echo "$FORGE_MANIFEST_KEY" > /tmp/cle-privee.b64
           FORGE_CLE_PRIVEE=/tmp/cle-privee.b64 ./gradlew --no-daemon :engine:composants
@@ -187,4 +189,4 @@ jobs:
             engine/build/composants/manifest.sig \
             app/build/outputs/apk/debug/app-debug.apk \
             --title "Forge $GITHUB_REF_NAME" \
-            --notes "Composants du moteur (dexés pour ART — sans outils Android pour cette version, voir distribution.md §7), manifeste signé (ECDSA P-256) et coquille (APK de débogage, installable). Vérifiez le manifeste avec la clé publique épinglée dans la coquille (ClesForge) avant toute installation."
+            --notes "Composants du moteur (dexés pour ART ; platform-34 embarque android.jar, aapt2 attend sa construction arm64 — distribution.md §7), manifeste signé (ECDSA P-256) et coquille (APK de débogage, installable). Vérifiez le manifeste avec la clé publique épinglée dans la coquille (ClesForge) avant toute installation."

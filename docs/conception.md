@@ -244,7 +244,7 @@ redirections incontrôlé constaté REF-126).
 |---|---|---|---|
 | `engine-core` | `engine.jar` (classes.dex du moteur) + `lib/*.jar` dexées (ECJ, dexeur, signeur) | ~15-25 Mo | — |
 | `aapt2-arm64-v8a`, `aapt2-x86_64` | binaire natif par ABI | ~2-4 Mo/ABI | — |
-| `platform-<api>` | `android.jar` du niveau visé (34 à la publication) | ~50 Mo | — |
+| `platform-<api>` | `android.jar` du niveau visé (34 à la publication, PUBLIÉ depuis v0.2.7) | ~24 Mo | — |
 | `kotlin-compiler` (optionnel) | compilateur Kotlin dexé | ~30 Mo | — |
 
 Chaque entrée : `id`, `version`, `size`, `sha256`, `urls` (miroirs), `abis`, `minAppVersion`,
@@ -437,6 +437,20 @@ REF-066), normalisation du classpath pour l'empreinte (D-12). L'incrémental fin
 du seul fichier touché) viendra après la parité fonctionnelle ; l'up-to-date par tâche + les
 empreintes ABI (voir §7) en donnent déjà l'essentiel du bénéfice — c'est le constat fait chez
 le moteur de référence (REF-035, REF-131, REF-132).
+
+**Plate-forme de compilation (v0.2.7)** : sur l'ART d'un appareil, ECJ ne peut emprunter
+aucune classe de l'hôte (la plate-forme vit en dex/oat, illisibles pour lui) — sans
+bibliothèque de plate-forme explicite, la moindre classe échoue sur `java.lang.Object`.
+Tout module reçoit donc `android.jar` (composant `platform-<api>` installé) comme
+bibliothèque de plate-forme quand le moteur tourne sur ART ; à un niveau ≥ 9, le frontal
+par lots ne sait pas l'employer (refusé sur `-bootclasspath`, pas d'image `jrt`) : la
+compilation passe par le compilateur INTERNE d'ECJ sur un environnement de noms classique
+(`CompilateurSansImage`, REF-155), plate-forme posée comme simple bibliothèque. Sur JVM de
+bureau, la plate-forme reste vide — sémantique JDK historique. Les tranches lambda
+(`StringConcatFactory`, `LambdaMetafactory` — omises d'android.jar, exigées par tout
+compilateur 9+ pour concaténations et lambdas) sont embarquées comme ressource
+`/lambda-stubs.jar` du jar du moteur : signatures seules, servies en dernier recours par
+l'environnement de noms, jamais dexées (REF-156).
 
 **Android** : `Aapt2Compile`/`Aapt2Link` via `NativeResourceCompiler` (D-04) avec parsing de
 la sortie en diagnostics structurés (REF-063 — parité), fusion de manifestes Java pur (parité
