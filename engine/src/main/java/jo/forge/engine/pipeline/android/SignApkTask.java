@@ -19,15 +19,17 @@ import java.util.Map;
  * pour les cibles d'API antérieures à 24, v2 requis ensuite).
  *
  * <p>Clé de DÉBOGAGE générée à la première utilisation dans le magasin du projet
- * ({@code .forge/debug-key.p12}) — aucune secret en clair, aucun mot de passe sur une
- * ligne de commande (écart assumé avec le moteur de référence, constat sécurité de la
+ * ({@code .forge/debug-key.forge}) — EN PROCESSUS depuis v0.2.9 (correctif du crash
+ * « Cannot run program keytool » sur ART : {@link DebugKeyStore}) — aucun secret en
+ * clair, aucun sous-processus, aucun mot de passe sur une ligne de commande (écart
+ * assumé avec le moteur de référence, constat sécurité de la
  * revue). La signature de production (magasin fourni, secret hors journal) est une
  * évolution consignée dans {@code docs/limites-et-suite.md}.</p>
  */
 public final class SignApkTask implements Task {
 
-    /** Version du code de cette tâche. */
-    static final String TASK_VERSION = "1";
+    /** Version du code de cette tâche (v0.2.9 : clé en pur Java, conteneur .forge). */
+    static final String TASK_VERSION = "2";
 
     private final ForgeModule module;
     private final ProjectLayout layout;
@@ -69,8 +71,7 @@ public final class SignApkTask implements Task {
     public void execute(TaskContext context) throws IOException {
         context.checkCancelled();
         int minSdk = module.android().orElseThrow().minSdk();
-        DebugKeyStore clés = new DebugKeyStore(
-                layout.root().resolve(".forge").resolve("debug-key.p12"));
+        DebugKeyStore clés = new DebugKeyStore(layout.root().resolve(".forge"));
         DebugKeyStore.Clé clé = clés.chargerOuGénérer();
 
         Path signé = apkSigné();
