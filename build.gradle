@@ -1,0 +1,17 @@
+// Build racine de Forge. Chaque module déclare son plugin, son but et ses dépendances
+// explicitement dans son propre build.gradle (pas de configuration magique partagée) ;
+// la charte commune (Java 17, UTF-8, javadoc française) est répétée volontairement.
+
+plugins {
+    // Version unique du plugin Android, appliqué uniquement par :app.
+    id 'com.android.application' version '8.5.2' apply false
+}
+
+subprojects {
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+    }
+    tasks.withType(Javadoc).configureEach {
+        options.encoding = 'UTF-8'
+    }
+}

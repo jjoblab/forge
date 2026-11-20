@@ -1,0 +1,27 @@
+// Réglages du build multi-modules de Forge.
+// Modules : api (contrat), client (supervision du moteur), setup (installateur),
+// engine (moteur de build), app (coquille Android).
+
+pluginManagement {
+    repositories {
+        google()
+        mavenCentral()
+        gradlePluginPortal()
+    }
+}
+
+dependencyResolutionManagement {
+    repositoriesMode = RepositoriesMode.FAIL_ON_PROJECT_REPOS
+    repositories {
+        mavenCentral()
+        google()
+    }
+}
+
+rootProject.name = 'forge'
+
+include ':api'
+include ':client'
+include ':setup'
+include ':engine'
+include ':app'

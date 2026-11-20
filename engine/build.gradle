@@ -1,0 +1,36 @@
+// Module engine : le moteur de build lui-même — bootstrap de la VM, modèle de projet,
+// graphe de tâches, exécuteur borné, empreintes et magasin d'état, pipelines de
+// compilation (Java, Android) et résolution de dépendances. Pur Java, testé sur JVM,
+// exécuté sur ART via app_process. Ne dépend d'aucune API Android.
+
+plugins {
+    id 'java-library'
+}
+
+group = 'jo.forge'
+version = '0.1.0'
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 17
+}
+
+dependencies {
+    api project(':api')
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+    testLogging {
+        events 'failed', 'skipped'
+        exceptionFormat 'full'
+    }
+}

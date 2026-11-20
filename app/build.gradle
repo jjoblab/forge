@@ -1,0 +1,47 @@
+// Module app : la coquille Android — interface (assistant d'installation, projets,
+// builds) et service hôte en premier plan. Aucune logique de build : tout le travail
+// de construction vit dans le moteur téléchargé (module engine), exécuté dans un
+// processus séparé.
+
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'jo.forge.app'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'jo.forge.app'
+        minSdk 28
+        // targetSdk 28 assumé : préserve l'exécution des binaires d'outils téléchargés
+        // depuis le stockage privé (politique W^X d'Android 10+, voir docs/conception.md D-04).
+        targetSdk 28
+        versionCode 1
+        versionName '0.1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation project(':api')
+    implementation project(':client')
+    implementation project(':setup')
+
+    testImplementation platform('org.junit:junit-bom:5.11.4')
+    testImplementation 'org.junit.jupiter:junit-jupiter'
+    testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+}
+
+// Les tests unitaires JVM de la coquille (classes sans dépendance Android) utiliseront
+// les tâches testDebugUnitTest/testReleaseUnitTest du plugin Android (Phase 4.2).

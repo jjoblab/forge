@@ -1,6 +1,7 @@
-# CI légère de Forge : contrôle des termes interdits + emplacement des tests JVM.
-# Les tests s'activeront automatiquement quand les projets Gradle existeront (Phase 4) ;
-# en attendant, le workflow valide l'hygiène du dépôt à chaque push.
+# CI de Forge : contrôle des termes interdits, puis build et tests de tous les modules.
+# - hygiene : contrôle anti-référence (secret FORBIDDEN_TERMS) + garde de structure.
+# - build   : JDK 17 + SDK Android (plateforme 34, build-tools 34), tests JVM des modules
+#             purs (api, client, setup, engine) et assemblage de la coquille (app).
 name: CI
 
 on:
@@ -38,13 +39,16 @@ jobs:
           test -f docs/REFERENCES.md
           test -f docs/analyse-moteur-build.md
           test -f docs/revue-moteur-build.md
+          test -f docs/conception.md
+          test -f docs/distribution.md
           test -f docs/limites-et-suite.md
           test -x tools/check-references.sh
           test -x tools/hooks/pre-commit
           test -x tools/hooks/commit-msg
+          test -x ./gradlew
 
-  tests:
-    name: Tests JVM (JDK 17)
+  build:
+    name: Build et tests (JDK 17)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -55,11 +59,21 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # Phase 4 : ./gradlew check remplacera cette garde dès que les projets Gradle existeront.
-      - name: "Tests (garde : aucun projet Gradle pour l'instant)"
-        run: |
-          if [ -x ./gradlew ]; then
-            ./gradlew check --stacktrace
-          else
-            echo "Aucun wrapper Gradle pour l'instant (Phase 4) — étape sans objet."
-          fi
+      - name: Configurer le SDK Android
+        uses: android-actions/setup-android@v3
+
+      - name: Installer les composants SDK requis
+        run: yes | sdkmanager --licenses > /dev/null && sdkmanager --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
+
+      - name: Tests JVM (api, client, setup, engine)
+        run: ./gradlew --no-daemon :api:test :client:test :setup:test :engine:test --stacktrace
+
+      - name: Assemblage de la coquille (app)
+        run: ./gradlew --no-daemon :app:assembleDebug --stacktrace
+
+      - name: Publier l'APK de débogage en artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: forge-app-debug
+          path: app/build/outputs/apk/debug/app-debug.apk
+          retention-days: 14

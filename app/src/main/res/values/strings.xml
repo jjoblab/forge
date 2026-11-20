@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Forge</string>
+
+    <!-- État du moteur (tant qu'aucun moteur n'est installé, les fonctions de build
+         sont désactivées avec un message clair — cahier des charges §2.2). -->
+    <string name="status_engine_missing">Aucun moteur installé</string>
+    <string name="status_engine_missing_hint">Forge est une coquille : le moteur de
+        construction (compilateur, dexeur, outil de ressources) s\'installe séparément.
+        Les fonctions de build sont désactivées jusqu\'à son installation.</string>
+    <string name="section_engine">Moteur</string>
+</resources>
