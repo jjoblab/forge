@@ -110,7 +110,10 @@ class JavaPipelineTest {
                 trier(événements.tâchesParÉtat(
                         jo.forge.api.BuildEvent.TaskState.STARTED)),
                 "relancées : la branche basse ET la compilation descendante (classpath "
-                        + "changé), mais pas le jar descendant (classes identiques)");
+                        + "changé), mais pas le jar descendant (classes identiques)"
+                        + " — à jour : " + événements.tâchesParÉtat(
+                                jo.forge.api.BuildEvent.TaskState.UP_TO_DATE)
+                        + " journal : " + événements.journalErreur);
     }
 
     @Test
