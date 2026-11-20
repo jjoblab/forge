@@ -21,5 +21,11 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <!-- Service hôte : supervision du moteur en premier plan (aucun export :
+             seule la coquille le démarre). -->
+        <service
+            android:name=".ForgeHostService"
+            android:exported="false" />
     </application>
 </manifest>

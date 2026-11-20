@@ -8,5 +8,14 @@
     <string name="status_engine_missing_hint">Forge est une coquille : le moteur de
         construction (compilateur, dexeur, outil de ressources) s\'installe séparément.
         Les fonctions de build sont désactivées jusqu\'à son installation.</string>
+    <string name="status_engine_installed">Moteur %1$s installé</string>
     <string name="section_engine">Moteur</string>
+    <string name="action_test_engine">Tester le moteur installé</string>
+
+    <!-- Service hôte. -->
+    <string name="host_notification_channel">Supervision du moteur</string>
+    <string name="host_notification_title">Forge</string>
+    <string name="host_notification_starting">Démarrage du moteur…</string>
+    <string name="host_engine_ready">Moteur %1$s prêt</string>
+    <string name="host_engine_dead">Le processus du moteur s\'est arrêté</string>
 </resources>

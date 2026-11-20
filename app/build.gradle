@@ -38,10 +38,19 @@ dependencies {
     implementation project(':client')
     implementation project(':setup')
 
+    // Test de bout en bout du chargement : le vrai moteur (module engine) est installé
+    // par le module setup puis lancé dans un vrai processus séparé.
+    testImplementation project(':engine')
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
-// Les tests unitaires JVM de la coquille (classes sans dépendance Android) utiliseront
-// les tâches testDebugUnitTest/testReleaseUnitTest du plugin Android (Phase 4.2).
+// Tests unitaires JVM de la coquille : classes sans dépendance Android uniquement.
+android {
+    testOptions {
+        unitTests.all {
+            it.useJUnitPlatform()
+        }
+    }
+}

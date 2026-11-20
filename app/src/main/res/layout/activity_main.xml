@@ -34,5 +34,12 @@
             android:layout_marginTop="8dp"
             android:text="@string/status_engine_missing_hint"
             android:textAppearance="@android:style/TextAppearance.Material.Body1" />
+
+        <Button
+            android:id="@+id/action_test_engine"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="@string/action_test_engine" />
     </LinearLayout>
 </ScrollView>

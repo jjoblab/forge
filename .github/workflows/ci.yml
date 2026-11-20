@@ -68,6 +68,9 @@ jobs:
       - name: Tests JVM (api, client, setup, engine)
         run: ./gradlew --no-daemon :api:test :client:test :setup:test :engine:test --stacktrace
 
+      - name: Tests de la coquille (chargement du moteur installé)
+        run: ./gradlew --no-daemon :app:testDebugUnitTest --stacktrace
+
       - name: Assemblage de la coquille (app)
         run: ./gradlew --no-daemon :app:assembleDebug --stacktrace
 
