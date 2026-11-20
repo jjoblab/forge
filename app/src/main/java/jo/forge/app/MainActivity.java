@@ -129,6 +129,8 @@ public class MainActivity extends Activity {
         progression = findViewById(R.id.build_progress);
         journalBuild = findViewById(R.id.build_log);
         résuméBuild = findViewById(R.id.build_summary);
+        boutonCopierJournaux = findViewById(R.id.action_copy_logs);
+        boutonPartagerJournaux = findViewById(R.id.action_share_logs);
         journalBuild.setMovementMethod(new ScrollingMovementMethod());
 
         canalUrl.setText(getString(R.string.install_channel_default));
