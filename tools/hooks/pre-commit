@@ -24,15 +24,15 @@ fi
 
 failed=0
 
-# Vérifie un contenu (stdin) contre tous les termes ; affiche les correspondances.
+# Vérifie un contenu contre tous les termes ; affiche les correspondances.
+# Le contenu est passé en argument (PAS par pipe) : l'affectation de failed
+# doit rester dans le shell courant, un pipeline créerait un sous-shell.
 check_content() {
-  local label="$1"
-  local content
-  content="$(cat)"
+  local label="$1" content="$2"
   for term in "${TERMS[@]}"; do
-    if printf '%s' "$content" | grep -Finq -- "$term"; then
+    if grep -Finq -- "$term" <<< "$content"; then
       echo "  terme interdit « ${term} » trouvé dans ${label}" >&2
-      printf '%s' "$content" | grep -Fin -- "$term" | head -3 | sed 's/^/    /' >&2
+      grep -Fin -- "$term" <<< "$content" | head -3 | sed 's/^/    /' >&2
       failed=1
     fi
   done
@@ -46,7 +46,7 @@ while IFS= read -r file; do
   esac
   if [ -f "$file" ]; then
     if content="$(git show ":$file" 2>/dev/null)"; then
-      printf '%s' "$content" | check_content "$file"
+      check_content "$file" "$content"
     fi
   fi
 done < <(git diff --cached --name-only --diff-filter=ACMR)
