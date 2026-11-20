@@ -50,6 +50,52 @@ tasks.named('test') {
 }
 
 // ---------------------------------------------------------------------------
+// Tranches lambda (correctif v0.2.7) : android.jar omet java.lang.invoke.
+// StringConcatFactory et LambdaMetafactory, qu'un compilateur Java 9+ doit
+// résoudre pour abaisser concaténations et lambdas en invokedynamic. Les
+// tranches (signatures seules, jamais exécutées) sont compilées par ECJ
+// --release 8 — la plate-forme Java 8 porte MethodHandles mais PAS ces
+// fabriques : aucune collision de définition, aucun android.jar requis —
+// puis embarquées comme entrée /lambda-stubs.jar du jar du moteur. Entrée
+// non-classe : elle survit au dexage (v0.2.4) et le classloader d'ART la
+// sert sur l'appareil ; jamais dexée (java.* interdit dans un dex).
+// ---------------------------------------------------------------------------
+
+def tranchesSources = files(
+        fileTree('src/stubsLambda/java') { include '**/*.java' })
+def tranchesClasses = layout.buildDirectory.dir('tranchesLambda/classes')
+def tranchesRessource = layout.buildDirectory.dir('tranchesLambda/ressource')
+
+tasks.register('compilerTranchesLambda', JavaExec) {
+    group = 'build'
+    description = 'Compile les tranches lambda java.lang.invoke (ECJ --release 8).'
+    inputs.files(tranchesSources)
+    outputs.dir(tranchesClasses)
+    def jarEcj = configurations.runtimeClasspath.find { it.name.startsWith('ecj-') }
+    classpath = files(jarEcj)
+    mainClass = 'org.eclipse.jdt.internal.compiler.batch.Main'
+    args(['--release', '8', '-nowarn', '-encoding', 'UTF-8',
+          '-d', tranchesClasses.get().asFile.absolutePath]
+            + tranchesSources.collect { it.absolutePath })
+}
+
+tasks.register('tranchesLambdaJar', Zip) {
+    group = 'build'
+    description = 'Assemble /lambda-stubs.jar (ressource embarquée du jar du moteur).'
+    dependsOn 'compilerTranchesLambda'
+    archiveFileName = 'lambda-stubs.jar'
+    destinationDirectory = tranchesRessource
+    from(tranchesClasses)
+    // Jar déterministe : horodatage normalisé (reproductibilité des composants).
+    preserveFileTimestamps = false
+    reproducibleFileOrder = true
+}
+
+// La ressource rejoint le jar du moteur (et le classpath des tests).
+sourceSets.main.resources.srcDir tranchesRessource
+tasks.named('processResources') { dependsOn 'tranchesLambdaJar' }
+
+// ---------------------------------------------------------------------------
 // Publication (étape 12) : assemblage des composants du moteur et du manifeste.
 // ---------------------------------------------------------------------------
 
