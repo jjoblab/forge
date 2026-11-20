@@ -8,6 +8,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests du localisateur d'outils Android du moteur : la plus haute
@@ -58,5 +59,19 @@ class AndroidToolsLocatorTest {
                 "sans moteur installé");
         assertEquals(-1, AndroidToolsLocator.plateformeLaPlusHaute(temporaire),
                 "sans composants");
+    }
+
+    @Test
+    void messageAbsenceAapt2NommeLeComposantExact() {
+        // Rapport appareil du 2026-11-20 : « installez le composant aapt2 » sans
+        // le suffixe d'ABI ne désignait AUCUN composant réel de l'assistant —
+        // le message doit citer aapt2-arm64-v8a tel qu'il figure au manifeste.
+        String message = AndroidToolsLocator.messageAapt2Introuvable("arm64-v8a");
+        assertTrue(message.contains("aapt2-arm64-v8a"),
+                "le composant exact est nommé : " + message);
+        assertTrue(message.contains("assistant du moteur"),
+                "l'action à mener est citée");
+        assertTrue(message.contains("forge.aapt2"),
+                "le repli machine de développement est cité");
     }
 }

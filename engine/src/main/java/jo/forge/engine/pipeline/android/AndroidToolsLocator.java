@@ -13,7 +13,8 @@ import java.util.List;
  *   <li>propriétés système {@code forge.aapt2} et {@code forge.androidJar} (tests) ;</li>
  *   <li>répertoire du moteur : {@code components/aapt2-&lt;abi&gt;/aapt2} et
  *       {@code components/platform-&lt;api&gt;/android.jar} (installation réelle —
- *       l'ABI vient de la requête de build) ;</li>
+ *       l'ABI vient de la requête de build ; le composant {@code aapt2-&lt;abi&gt;} est
+ *       publié depuis v0.2.8, prébuilt Android du projet ReVanced/aapt2) ;</li>
  *   <li>variables d'environnement {@code ANDROID_HOME}/{@code ANDROID_SDK_ROOT}
  *       (machine de développement, CI) : build-tools puis platforms.</li>
  * </ol>
@@ -61,8 +62,25 @@ public final class AndroidToolsLocator {
                 // Répertoire build-tools absent ou illisible : continue.
             }
         }
-        throw new IllegalStateException("aapt2 introuvable — installez le composant "
-                + "aapt2 (assistant du moteur) ou définissez forge.aapt2 / ANDROID_HOME");
+        throw new IllegalStateException(messageAapt2Introuvable(abi));
+    }
+
+    /**
+     * Message d'absence d'aapt2, actionnable : il cite le composant exact de
+     * l'assistant ({@code aapt2-<abi>}, publié depuis v0.2.8 — prébuilt Android
+     * du projet ReVanced/aapt2, alignement 16 Ko) et les replis machine de
+     * développement.
+     *
+     * <p>Package-privé pour être testé sans dépendre de l'environnement : la CI
+     * porte un SDK local (ANDROID_HOME + build-tools), qui fait réussir la
+     * résolution de secours — le chemin d'exception n'y est jamais pris.</p>
+     *
+     * @param abi ABI demandée (ex. {@code arm64-v8a}).
+     * @return le message complet.
+     */
+    static String messageAapt2Introuvable(String abi) {
+        return "aapt2 introuvable pour " + abi + " — installez le composant aapt2-"
+                + abi + " (assistant du moteur) ou définissez forge.aapt2 / ANDROID_HOME";
     }
 
     /**
