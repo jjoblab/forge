@@ -1,0 +1,26 @@
+{
+  "modelVersion": 1,
+  "repositories": [
+    "https://repo.maven.apache.org/maven2"
+  ],
+  "modules": [
+    {
+      "name": "core",
+      "type": "java-library"
+    },
+    {
+      "name": "app",
+      "type": "application",
+      "dependencies": [
+        { "project": "core", "scope": "api" }
+      ],
+      "android": {
+        "manifest": "src/main/AndroidManifest.xml",
+        "res": ["src/main/res"],
+        "minSdk": 28,
+        "targetSdk": 34,
+        "namespace": "demo.app"
+      }
+    }
+  ]
+}

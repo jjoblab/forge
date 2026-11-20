@@ -19,8 +19,8 @@ import java.util.function.Function;
 import java.util.stream.Collectors;
 
 /**
- * Pipeline Java : transformation du modèle déclaratif en tâches de build (décision
- * D-11 — même principe qu'un greffon de système de build, sans son infrastructure).
+ * Pipelines de build : transformation du modèle déclaratif en tâches (décision
+ * D-11). Point d'entrée unique : chaque module reçoit la chaîne de son type.
  *
  * <p>Chaîne par module {@code java-library} : {@code resolveDependencies} (Maven,
  * étape 9), {@code compileJava} puis {@code jar}, câblées par les dépendances de
@@ -29,9 +29,10 @@ import java.util.stream.Collectors;
  * {@code compileOnly}/{@code runtimeOnly} ne dépassent pas la compilation/l'exécution
  * du module.</p>
  *
- * <p>Étape 10 restante : les modules Android ({@code application},
- * {@code android-library}) sont refusés avec un message explicite — le pipeline Android
- * arrive à l'étape 10.</p>
+ * <p>Les modules Android ({@code application}, {@code android-library}) reçoivent la
+ * chaîne du pipeline Android (étape 10) : {@code application} va jusqu'à l'APK signé
+ * (aapt2, d8, packaging, signature), {@code android-library} compile ses classes
+ * contre {@code android.jar} (v1 — voir {@code AndroidPipeline}).</p>
  */
 public final class JavaPipeline {
 
@@ -44,10 +45,9 @@ public final class JavaPipeline {
      * @param model       modèle validé.
      * @param projectRoot racine du projet.
      * @return les tâches, dans un ordre quelconque (le graphe les ordonne).
-     * @throws ModelException si un module exige le pipeline Android (étape 10).
      */
     public static List<Task> tasksFor(ForgeModel model, Path projectRoot) {
-        return tasksFor(model, projectRoot, false);
+        return tasksFor(model, projectRoot, false, "arm64-v8a");
     }
 
     /**
@@ -57,46 +57,53 @@ public final class JavaPipeline {
      * @param projectRoot racine du projet.
      * @param horsLigne   mode hors ligne : la résolution n'utilise que le cache.
      * @return les tâches, dans un ordre quelconque (le graphe les ordonne).
-     * @throws ModelException si un module exige le pipeline Android (étape 10).
      */
     public static List<Task> tasksFor(ForgeModel model, Path projectRoot,
                                       boolean horsLigne) {
-        verifierPerimetre(model);
+        return tasksFor(model, projectRoot, horsLigne, "arm64-v8a");
+    }
+
+    /**
+     * Construit les tâches de tous les modules du projet, avec le mode réseau et
+     * l'ABI de l'appareil (résolution du binaire aapt2 des modules Android).
+     *
+     * @param model       modèle validé.
+     * @param projectRoot racine du projet.
+     * @param horsLigne   mode hors ligne : la résolution n'utilise que le cache.
+     * @param abi         ABI de l'appareil (ex. {@code arm64-v8a}).
+     * @return les tâches, dans un ordre quelconque (le graphe les ordonne).
+     */
+    public static List<Task> tasksFor(ForgeModel model, Path projectRoot,
+                                      boolean horsLigne, String abi) {
         Map<String, ForgeModule> parNom = model.modules().stream()
                 .collect(Collectors.toMap(ForgeModule::name, Function.identity()));
 
         List<Task> tasks = new ArrayList<>();
         for (ForgeModule module : model.modules()) {
+            if (module.type() != ModuleType.JAVA_LIBRARY) {
+                tasks.addAll(jo.forge.engine.pipeline.android.AndroidPipeline
+                        .tâchesDe(module, model, projectRoot, horsLigne, abi));
+                continue;
+            }
             ProjectLayout layout = new ProjectLayout(projectRoot);
             List<String> dependances = new ArrayList<>();
             for (ModuleDependency.ProjectDependency dep : CompileJavaTask.compileDeps(module)) {
                 dependances.add(dep.module() + ":compileJava");
             }
             LinkedHashSet<Path> classpath = new LinkedHashSet<>();
-            fermetureCompilation(module, parNom, classpath, new HashSet<>(), projectRoot);
+            fermetureCompilationPublique(module, parNom, classpath,
+                    new HashSet<>(), projectRoot);
 
             ResolveDependenciesTask resolve = new ResolveDependenciesTask(module, layout,
                     ResolveDependenciesTask.racinesDe(parNom, module),
                     model.repositories(), horsLigne);
             tasks.add(resolve);
             tasks.add(new CompileJavaTask(module, layout, dependances,
-                    new ArrayList<>(classpath), resolve.cheminClasspath()));
+                    new ArrayList<>(classpath), List.of(), List.of(),
+                    resolve.cheminClasspath()));
             tasks.add(new JarTask(module, layout));
         }
         return tasks;
-    }
-
-    /**
-     * Refuse ce que l'étape courante ne construit pas, avec le module et la raison.
-     */
-    private static void verifierPerimetre(ForgeModel model) {
-        for (ForgeModule module : model.modules()) {
-            if (module.type() != ModuleType.JAVA_LIBRARY) {
-                throw new ModelException("Le module " + module.name() + " (type "
-                        + module.type().wireName()
-                        + ") exige le pipeline Android, livré à l'étape 10");
-            }
-        }
     }
 
     /**
@@ -114,6 +121,15 @@ public final class JavaPipeline {
      * @param visites   modules déjà développés.
      * @param projectRoot racine du projet (conventions de chemins).
      */
+    /**
+     * Fermeture de classpath (visible du pipeline Android — même sémantique).
+     */
+    public static void fermetureCompilationPublique(ForgeModule module,
+            Map<String, ForgeModule> parNom, LinkedHashSet<Path> accu,
+            Set<String> visites, Path projectRoot) {
+        fermetureCompilation(module, parNom, accu, visites, projectRoot);
+    }
+
     private static void fermetureCompilation(ForgeModule module,
             Map<String, ForgeModule> parNom, LinkedHashSet<Path> accu,
             Set<String> visites, Path projectRoot) {

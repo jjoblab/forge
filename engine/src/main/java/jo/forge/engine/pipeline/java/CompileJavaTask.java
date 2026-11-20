@@ -38,6 +38,8 @@ public final class CompileJavaTask implements Task {
     private final ProjectLayout layout;
     private final List<String> compileDependencies;
     private final List<Path> classpathDirs;
+    private final List<Path> sourcesSupplémentaires;
+    private final List<Path> classpathSupplémentaire;
     private final Path classpathFile;
 
     /**
@@ -48,16 +50,23 @@ public final class CompileJavaTask implements Task {
      * @param compileDependencies noms des tâches {@code compileJava} des dépendances de
      *                            projet visibles à la compilation.
      * @param classpathDirs     répertoires de classes des dépendances de projet.
+     * @param sourcesSupplémentaires répertoires de sources générées à compiler aussi
+     *                               (ex. classes R d'un module Android).
+     * @param classpathSupplémentaire entrées de classpath additionnelles (ex.
+     *                                {@code android.jar} d'un module Android).
      * @param classpathFile     fichier de classpath Maven résolu (entrée d'empreinte et
      *                          source des jars à l'exécution).
      */
     public CompileJavaTask(ForgeModule module, ProjectLayout layout,
                            List<String> compileDependencies, List<Path> classpathDirs,
-                           Path classpathFile) {
+                           List<Path> sourcesSupplémentaires,
+                           List<Path> classpathSupplémentaire, Path classpathFile) {
         this.module = module;
         this.layout = layout;
         this.compileDependencies = List.copyOf(compileDependencies);
         this.classpathDirs = List.copyOf(classpathDirs);
+        this.sourcesSupplémentaires = List.copyOf(sourcesSupplémentaires);
+        this.classpathSupplémentaire = List.copyOf(classpathSupplémentaire);
         this.classpathFile = classpathFile;
     }
 
@@ -87,6 +96,19 @@ public final class CompileJavaTask implements Task {
     public void execute(TaskContext context) throws IOException {
         context.checkCancelled();
         List<Path> sources = collecteSources();
+        // Sources générées (R d'un module Android) : collectées comme les sources
+        // propres, si elles existent déjà (premier build : la tâche génératrice
+        // précède celle-ci dans le graphe).
+        for (Path générée : sourcesSupplémentaires) {
+            if (Files.isDirectory(générée)) {
+                try (Stream<Path> parcours = Files.walk(générée)) {
+                    parcours.filter(Files::isRegularFile)
+                            .filter(p -> p.getFileName().toString().endsWith(".java"))
+                            .forEach(sources::add);
+                }
+                sources.sort(Path::compareTo);
+            }
+        }
         Path sortie = layout.classesDir(module.name());
         if (sources.isEmpty()) {
             Files.createDirectories(sortie);
@@ -95,6 +117,7 @@ public final class CompileJavaTask implements Task {
         }
         context.logger().debug(sources.size() + " fichiers à compiler");
         List<Path> classpath = new ArrayList<>(classpathDirs);
+        classpath.addAll(classpathSupplémentaire);
         if (Files.isRegularFile(classpathFile)) {
             classpath.addAll(ClasspathFile.lireJarsCompilation(classpathFile));
         }

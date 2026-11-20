@@ -184,22 +184,6 @@ class JavaPipelineTest {
                 "le journal doit citer la tâche fautive");
     }
 
-    @Test
-    void refuseLesModulesAndroidHorsPérimètreAvecMessageClair() throws IOException {
-        Projets.fichier(temporaire, "forge.json", """
-                { "modelVersion": 1,
-                  "modules": [ { "name": "app", "type": "application",
-                    "android": { "manifest": "m.xml", "minSdk": 28, "targetSdk": 34,
-                                 "namespace": "demo" } } ] }
-                """);
-        ForgeModel modèle = ModelCodec.read(temporaire);
-        ModelException refus = assertThrows(ModelException.class,
-                () -> JavaPipeline.tasksFor(modèle, temporaire));
-        assertTrue(refus.getMessage().contains("étape 10"),
-                "le message doit citer l'étape qui livrera le pipeline Android : "
-                        + refus.getMessage());
-    }
-
     /**
      * Exécute un build complet du projet temporaire avec empreintes persistantes.
      */

@@ -26,6 +26,14 @@ dependencies {
     // Compilateur Java embarqué (pur Java, EPL-2.0 — voir docs/distribution.md §7).
     implementation 'org.eclipse.jdt:ecj:3.36.0'
 
+    // Dexeur (d8) et signature d'APK (Apache-2.0 — voir docs/distribution.md §7).
+    implementation 'com.android.tools:r8:8.5.35'
+    implementation 'com.android.tools.build:apksig:8.5.2'
+
+    // aapt2 officiel (binaire linux) pour les tests JVM du pipeline Android —
+    // sur appareil, le binaire vient du composant installé (par ABI).
+    testImplementation 'com.android.tools.build:aapt2:8.5.2-11315950:linux'
+
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

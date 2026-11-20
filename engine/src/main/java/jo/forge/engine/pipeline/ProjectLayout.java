@@ -53,13 +53,23 @@ public final class ProjectLayout {
     }
 
     /**
+     * Répertoire de build d'un module (racine de toutes ses sorties).
+     *
+     * @param moduleName nom du module.
+     * @return {@code <racine>/build/<module>}.
+     */
+    public Path buildDir(String moduleName) {
+        return root.resolve("build").resolve(moduleName);
+    }
+
+    /**
      * Répertoire des classes compilées d'un module.
      *
      * @param moduleName nom du module.
      * @return {@code <racine>/build/<module>/classes}.
      */
     public Path classesDir(String moduleName) {
-        return root.resolve("build").resolve(moduleName).resolve("classes");
+        return buildDir(moduleName).resolve("classes");
     }
 
     /**

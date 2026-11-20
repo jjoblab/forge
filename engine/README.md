@@ -12,13 +12,13 @@ l'application. Il s'exécute dans un processus séparé de l'interface.
 | `jo.forge.engine.model` | Modèle déclaratif `forge.json` (modules, types, portées, facette Android) et son codec strict. | Livré (étape 8) |
 | `jo.forge.engine.pipeline` | `ProjectLayout` (disposition canonique build/ et .forge/). | Livré (étape 8) |
 | `jo.forge.engine.pipeline.java` | `EcjCompiler` (ECJ en processus, diagnostics par l'API), `CompileJavaTask`, `JarTask` (jar déterministe), `JavaPipeline` (modèle → tâches). | Livré (étape 8) |
-| `jo.forge.engine.pipeline.android` | Ressources, `aapt2`, dex, packaging, signature. | Étape 10 |
+| `jo.forge.engine.pipeline.android` | `Aapt2Tool` (borné, annulable, autotest), `ProcessResourcesTask`, `DexTask` (d8 en processus), `PackageApkTask`, `SignApkTask` (v1+v2), `AndroidPipeline`, localisation des outils. | Livré (étape 10) |
 | `jo.forge.engine.deps` | Résolution Maven (POM/BOM, médiation, cache, intégrité). | Étape 9 |
 | `jo.forge.engine.graph` / `exec` | Graphe de tâches (niveaux, cycles) et exécuteur borné annulable. | Livrés (étapes 5-6) |
 | `jo.forge.engine.state` | Empreintes par contenu et magasin persistant atomique. | Livré (étape 7) |
 | `jo.forge.engine.diag` | Diagnostics structurés (erreur localisée, code, outil) et puits. | Livré (étape 8) |
 
-Dépendance embarquée : **ECJ** (compilateur Java, EPL-2.0 — voir
+Dépendances embarquées : **ECJ** (compilateur Java, EPL-2.0), **d8/R8** et **apksig** (Apache-2.0) — voir
 `docs/distribution.md` §7).
 
 ## Règles transversales

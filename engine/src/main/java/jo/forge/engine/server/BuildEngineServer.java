@@ -188,7 +188,7 @@ public final class BuildEngineServer {
 
             ForgeModel model = ModelCodec.read(root);
             List<jo.forge.engine.tasks.Task> tasks = JavaPipeline.tasksFor(model, root,
-                    request.options().offline());
+                    request.options().offline(), request.options().abi());
             TaskGraph graph = TaskGraph.of(tasks);
             ProjectLayout layout = new ProjectLayout(root);
             FingerprintStore store = new FingerprintStore(layout.stateDir(), root,
