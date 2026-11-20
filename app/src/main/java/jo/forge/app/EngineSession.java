@@ -85,7 +85,11 @@ public final class EngineSession {
         // outils (composants aapt2 et plate-forme éventuellement installés).
         java.util.Map<String, String> env = new java.util.LinkedHashMap<>();
         env.put(ENV_ENGINE_DIR, engineDir.toString());
-        return new VmSpec(classpath, ENGINE_MAIN, heapMb, List.of(), env);
+        // Collections.emptyList (API 1) plutôt que List.of (API 30) : la coquille
+        // promet minSdk 28 — aucune option de VM pour l'instant, mais la liste doit
+        // se construire sur tout appareil compatible.
+        return new VmSpec(classpath, ENGINE_MAIN, heapMb,
+                java.util.Collections.emptyList(), env);
     }
 
     /**
