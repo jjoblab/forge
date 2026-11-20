@@ -84,12 +84,11 @@ import java.util.zip.ZipOutputStream;
  * <p>{@code --sans-outils-android} omet les composants redistribuables de la
  * plate-forme ({@code platform-&lt;api&gt;} et {@code aapt2-&lt;abi&gt;}) tout en conservant
  * {@code android.jar} pour le DEXAGE (modélisation de bibliothèque de d8, jamais
- * redistribué). Depuis v0.2.7 la publication ne l'emploie plus : le composant
- * {@code platform-&lt;api&gt;} EST publié (sans lui, ECJ ne résout pas
- * {@code java.lang.Object} sur ART — correctif du build appareil) ; seul
- * {@code aapt2-&lt;abi&gt;} reste omis tant que sa construction arm64 n'existe pas
- * (le prébuilt des build-tools est x86_64/Linux) — l'assembleur Gradle le tient
- * à jour via {@code FORGE_SANS_AAPT2}.</p>
+ * redistribué). {@code platform-&lt;api&gt;} est publié depuis v0.2.7 (sans lui, ECJ ne
+ * résout pas {@code java.lang.Object} sur ART) et {@code aapt2-&lt;abi&gt;} depuis
+ * v0.2.8 (prébuilt Android du projet ReVanced/aapt2 — le binaire des build-tools
+ * Google est x86_64/Linux, inutilisable sur appareil) ; l'option reste la porte
+ * de sortie explicite de la chaîne (garde juridique, réseau indisponible).</p>
  */
 public final class PackagerComposants {
 

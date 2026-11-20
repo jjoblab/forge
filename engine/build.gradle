@@ -30,8 +30,11 @@ dependencies {
     implementation 'com.android.tools:r8:8.5.35'
     implementation 'com.android.tools.build:apksig:8.5.2'
 
-    // aapt2 officiel (binaire linux) pour les tests JVM du pipeline Android —
-    // sur appareil, le binaire vient du composant installé (par ABI).
+    // aapt2 : sur appareil, le binaire vient du composant installé (par ABI).
+    // Depuis v0.2.8, FORGE_AAPT2 pointe le prébuilt Android de ReVanced/aapt2
+    // (alignement 16 Ko) téléchargé par la CI — le binaire x86_64 des build-tools
+    // local n'est qu'un repli de développement (inutilisable sur appareil).
+    // FORGE_SANS_AAPT2 reste la porte de sortie explicite (juridique ou réseau).
     testImplementation 'com.android.tools.build:aapt2:8.5.2-11315950:linux'
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
@@ -146,12 +149,11 @@ tasks.register('composants', JavaExec) {
                      project(':setup').file('src/compatArt/java').absolutePath,
                      '--dexeur', r8Jar?.absolutePath,
                      '--signeur', apksigJar?.absolutePath]
-    // Garde de distribution : FORGE_SANS_AAPT2 omet le composant aapt2-<abi>
-    // (le prébuilt des build-tools est x86_64/Linux, inutilisable sur appareil
-    // arm64 — sa construction AOSP reste une évolution consignée), TOUT EN
-    // PUBLIANT platform-<api> (android.jar) : depuis v0.2.7 la plate-forme de
-    // compilation EST un composant publié — sans elle, ECJ ne résout pas
-    // java.lang.Object sur ART (correctif du build appareil).
+    // Composant aapt2-<abi> : publié depuis v0.2.8 (prébuilt Android de
+    // ReVanced/aapt2, voir ci-dessus). FORGE_SANS_AAPT2 omet explicitement le
+    // composant (garde juridique docs/distribution.md §7) ; sans FORGE_AAPT2,
+    // le repli est le binaire x86_64 des build-tools locaux — utile aux tests
+    // JVM seulement, jamais distribuable pour un appareil.
     def sansAapt2 = System.getenv('FORGE_SANS_AAPT2')
     if (cheminAndroidJar) {
         arguments.addAll(['--android-jar', cheminAndroidJar])

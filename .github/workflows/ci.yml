@@ -130,18 +130,31 @@ jobs:
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
+      - name: Télécharger le prébuilt aapt2 (arm64-v8a)
+        # Source : ReVanced/aapt2 (construction AOSP ciblée Android, Apache-2.0).
+        # Les segments LOAD sont alignés 16 Ko : le binaire se charge sur les
+        # appareils à pages de 4 Ko ET de 16 Ko (un binaire aligné 4 Ko — comme
+        # les prébuilts lzhiyong plus anciens — est tué par SIGSEGV dès exec sur
+        # un appareil 16 Ko). Les prébuilts des build-tools Google sont
+        # x86_64/Linux : inutilisables sur appareil.
+        run: |
+          curl -fL --retry 3 -o /tmp/aapt2-arm64-v8a \
+            "https://github.com/ReVanced/aapt2/releases/download/v1.1.0/aapt2-arm64-v8a"
+          # Garde contre une page d'erreur HTML posée en binaire : magie ELF + taille.
+          test "$(head -c4 /tmp/aapt2-arm64-v8a | od -An -tx1 | tr -d ' \n')" = "7f454c46"
+          test "$(stat -c%s /tmp/aapt2-arm64-v8a)" -gt 100000
+
       - name: Assembler les composants et signer le manifeste
         env:
           # Clé privée de signature (PKCS#8, base64) : JETON CI, jamais versionnée.
           FORGE_MANIFEST_KEY: ${{ secrets.FORGE_MANIFEST_KEY }}
-          # Le composant platform-34 (android.jar) est PUBLIÉ depuis v0.2.7 :
+          # Le composant platform-34 (android.jar) est publié depuis v0.2.7 :
           # sans lui, aucune compilation ne résout java.lang.Object sur ART
-          # (ECJ ne peut pas lire la plate-forme dex/oat de l'appareil —
-          # correctif du build appareil, voir REFERENCES.md).
-          # aapt2 reste OMIS : le prébuilt des build-tools est x86_64/Linux,
-          # inutilisable sur un appareil arm64 — sa construction AOSP est une
-          # évolution consignée (limites-et-suite.md).
-          FORGE_SANS_AAPT2: '1'
+          # (ECJ ne peut pas lire la plate-forme dex/oat de l'appareil).
+          # Le composant aapt2-arm64-v8a (prébuilt ReVanced téléchargé ci-dessus)
+          # est publié depuis v0.2.8 : sans lui, tout module application Android
+          # échoue avant la première tâche (localisateur d'outils).
+          FORGE_AAPT2: /tmp/aapt2-arm64-v8a
         run: |
           echo "$FORGE_MANIFEST_KEY" > /tmp/cle-privee.b64
           FORGE_CLE_PRIVEE=/tmp/cle-privee.b64 ./gradlew --no-daemon :engine:composants
@@ -189,4 +202,4 @@ jobs:
             engine/build/composants/manifest.sig \
             app/build/outputs/apk/debug/app-debug.apk \
             --title "Forge $GITHUB_REF_NAME" \
-            --notes "Composants du moteur (dexés pour ART ; platform-34 embarque android.jar, aapt2 attend sa construction arm64 — distribution.md §7), manifeste signé (ECDSA P-256) et coquille (APK de débogage, installable). Vérifiez le manifeste avec la clé publique épinglée dans la coquille (ClesForge) avant toute installation."
+            --notes "Composants du moteur (dexés pour ART ; platform-34 embarque android.jar, aapt2-arm64-v8a embarque le prébuilt Android de ReVanced/aapt2), manifeste signé (ECDSA P-256) et coquille (APK de débogage, installable). Vérifiez le manifeste avec la clé publique épinglée dans la coquille (ClesForge) avant toute installation."
