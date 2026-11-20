@@ -6,13 +6,17 @@ import jo.forge.api.FrameReader;
 import jo.forge.api.FrameType;
 import jo.forge.api.FrameWriter;
 
+import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStream;
+import java.io.InputStreamReader;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
 
 /**
@@ -25,7 +29,13 @@ import java.util.function.Consumer;
  * (EOF ou code de sortie) complète toutes les requêtes en attente avec une erreur et
  * prévient le rappel {@code onDead}.</p>
  *
- * <p>Cycle de vie : {@link #start()} démarre le lecteur ; {@link #close()} ferme le canal
+ * <p>Diagnostics du moteur : stderr est drainé en continu (tube jamais saturé — un
+ * moteur bavard qui écrirait dans un tube plein finirait bloqué) vers un journal borné
+ * ({@link JournalMoteur}) et, si fourni, vers un consommateur en flux. Une sentinelle
+ * publie le code de sortie dès qu'il est connu : c'est l'indice décisif d'une mort par
+ * signal (négatif ou 128+n) face à un arrêt propre (0).</p>
+ *
+ * <p>Cycle de vie : {@link #start()} démarre les fils ; {@link #close()} ferme le canal
  * en douceur ; {@link #kill()} détruit le processus hôte (annulation de dernier
  * recours).</p>
  */
@@ -39,8 +49,14 @@ public final class EngineConnection {
     private final Map<Long, CompletableFuture<Frame>> pending = new ConcurrentHashMap<>();
     private final Consumer<BuildEvent> eventListener;
     private final Consumer<Frame> spontaneousHandler;
+    private final Consumer<String> stderrListener;
     private final Runnable onDead;
     private final Thread readerThread;
+    private final Thread stderrThread;
+    private final Thread sentinelThread;
+    private final JournalMoteur journalErreurs = new JournalMoteur(
+            JournalMoteur.CAPACITÉ_PAR_DÉFAUT);
+    private final AtomicReference<Integer> codeSortie = new AtomicReference<>();
     private volatile boolean closed;
 
     /**
@@ -57,23 +73,49 @@ public final class EngineConnection {
      */
     public EngineConnection(Process process, Consumer<BuildEvent> eventListener,
                             Consumer<Frame> spontaneousHandler, Runnable onDead) {
+        this(process, eventListener, spontaneousHandler, onDead, null);
+    }
+
+    /**
+     * Crée la connexion avec écoute du journal du moteur : chaque ligne écrite par le
+     * processus sur stderr est conservée dans le journal borné interne ET transmise au
+     * consommateur (appelé depuis le fil de drainage : rapide, jamais bloquant).
+     *
+     * @param process           processus du moteur (ses stdio portent le canal).
+     * @param eventListener     rappel des événements de build.
+     * @param spontaneousHandler rappel des trames spontanées hors requête.
+     * @param onDead            rappel de mort du moteur.
+     * @param stderrListener    consommateur des lignes de stderr (null : journal interne
+     *                          seul).
+     */
+    public EngineConnection(Process process, Consumer<BuildEvent> eventListener,
+                            Consumer<Frame> spontaneousHandler, Runnable onDead,
+                            Consumer<String> stderrListener) {
         this.process = process;
         this.eventListener = eventListener;
         this.spontaneousHandler = spontaneousHandler;
         this.onDead = onDead;
+        this.stderrListener = stderrListener;
         this.writer = new FrameWriter(process.getOutputStream());
         this.reader = new FrameReader(process.getInputStream());
         this.readerThread = new Thread(this::readLoop, "forge-lecteur-moteur");
         this.readerThread.setDaemon(true);
+        this.stderrThread = new Thread(this::drainerStderr, "forge-draine-stderr");
+        this.stderrThread.setDaemon(true);
+        this.sentinelThread = new Thread(this::surveillerSortie, "forge-sentinelle");
+        this.sentinelThread.setDaemon(true);
     }
 
     /**
-     * Démarre le thread lecteur. À appeler une fois, après construction.
+     * Démarre les fils (lecteur du canal, drainage de stderr, sentinelle de sortie).
+     * À appeler une fois, après construction.
      *
      * @return cette connexion (chaînage).
      */
     public EngineConnection start() {
         readerThread.start();
+        stderrThread.start();
+        sentinelThread.start();
         return this;
     }
 
@@ -146,6 +188,29 @@ public final class EngineConnection {
     }
 
     /**
+     * Journal d'erreurs du moteur : lignes de stderr capturées, bornées aux dernières
+     * {@link JournalMoteur#CAPACITÉ_PAR_DÉFAUT}.
+     *
+     * @return la copie des lignes (vide si le moteur n'a rien écrit).
+     */
+    public List<String> journalErreurs() {
+        return journalErreurs.copie();
+    }
+
+    /**
+     * Code de sortie du moteur publié par la sentinelle.
+     *
+     * <p>Convention Unix : 0 = arrêt propre ; négatif = mort par signal (le tueur de
+     * mémoire du noyau donne -9) ; positif = sortie explicite du moteur.</p>
+     *
+     * @return le code, ou {@code null} tant que le processus n'est pas fini (la
+     *         publication suit l'EOF de quelques instants au plus).
+     */
+    public Integer codeSortie() {
+        return codeSortie.get();
+    }
+
+    /**
      * Boucle du thread lecteur : distribue les réponses aux requêtes en attente et les
      * événements au rappel ; détecte la mort du moteur.
      */
@@ -198,6 +263,40 @@ public final class EngineConnection {
         }
     }
 
+    /**
+     * Boucle de drainage de stderr : chaque ligne rejoint le journal borné interne et,
+     * si fourni, le consommateur. Sans ce drainage, un moteur bavard finirait bloqué sur
+     * un tube plein — et ses diagnostics d'écroulement seraient perdus avec lui.
+     */
+    private void drainerStderr() {
+        try (BufferedReader lecteur = new BufferedReader(new InputStreamReader(
+                process.getErrorStream(), StandardCharsets.UTF_8))) {
+            String ligne;
+            while ((ligne = lecteur.readLine()) != null) {
+                journalErreurs.ajouter(ligne);
+                Consumer<String> consommateur = stderrListener;
+                if (consommateur != null) {
+                    consommateur.accept(ligne);
+                }
+            }
+        } catch (IOException canalFermé) {
+            // Le moteur est mort (ou a été détruit) : la sentinelle publie le code.
+        }
+    }
+
+    /**
+     * Sentinelle : publie le code de sortie dès que l'OS le rapporte. Indépendante de
+     * l'EOF du canal — un moteur tué par signal ferme ses flux, mais seul le code dit
+     * COMMENT il est mort (proprement, en échec, ou assassiné par le noyau).
+     */
+    private void surveillerSortie() {
+        try {
+            codeSortie.set(process.waitFor());
+        } catch (InterruptedException fin) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
     private static String channelodeMessage(Exception error) {
         return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
     }
@@ -209,11 +308,6 @@ public final class EngineConnection {
      */
     public Process process() {
         return process;
-    }
-
-    /** Flux de sortie du processus (diagnostics d'écroulement, stderr). */
-    public InputStream errorStream() {
-        return process.getErrorStream();
     }
 
     /** Exception de transport vers le moteur. */

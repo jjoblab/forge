@@ -16,6 +16,7 @@ import jo.forge.api.Status;
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
 import java.io.IOException;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionException;
 import java.util.concurrent.TimeUnit;
@@ -68,6 +69,31 @@ public final class EngineClient {
      */
     public static EngineClient launch(VmLauncher launcher, VmSpec spec, String shellVersion,
                                       Consumer<BuildEvent> eventConsumer, Runnable onDead) {
+        return launch(launcher, spec, shellVersion, eventConsumer, onDead, null);
+    }
+
+    /**
+     * Lance le moteur en écoutant, en plus, son journal de diagnostics : chaque ligne
+     * que le processus moteur écrit sur stderr (traces d'écroulement, exceptions non
+     * attrapées) est transmise au consommateur et conservée dans le journal borné du
+     * client ({@link #journalErreurs()}) — la coquille s'en sert pour déboguer une mort
+     * du moteur sur appareil.
+     *
+     * @param launcher      stratégie de lancement de la VM (appareil ou développement).
+     * @param spec          description de la VM moteur.
+     * @param shellVersion  version de la coquille (journal et diagnostic côté moteur).
+     * @param eventConsumer consommateur des événements de build (appelé depuis le thread
+     *                      lecteur ; doit être rapide et non bloquant).
+     * @param onDead        rappel de mort du moteur (redémarrage, diagnostic).
+     * @param journalMoteur consommateur des lignes de stderr du moteur (null : journal
+     *                      interne seul) ; appelé depuis le fil de drainage.
+     * @return le client connecté, protocole négocié.
+     * @throws EngineConnection.EngineConnectionException si le lancement, la poignée de
+     *         main ou la négociation échoue.
+     */
+    public static EngineClient launch(VmLauncher launcher, VmSpec spec, String shellVersion,
+                                      Consumer<BuildEvent> eventConsumer, Runnable onDead,
+                                      Consumer<String> journalMoteur) {
         Process process;
         try {
             process = launcher.start(spec);
@@ -77,7 +103,7 @@ public final class EngineClient {
         }
         CompletableFuture<Frame> helloFrame = new CompletableFuture<>();
         EngineConnection connection = new EngineConnection(process, eventConsumer,
-                helloFrame::complete, onDead);
+                helloFrame::complete, onDead, journalMoteur);
         connection.start();
 
         // La poignée de main est une trame spontanée : on l'attend sur le flux.
@@ -108,6 +134,26 @@ public final class EngineClient {
      */
     public Hello hello() {
         return hello;
+    }
+
+    /**
+     * Journal de diagnostics du moteur : lignes de stderr capturées en continu, bornées
+     * aux 500 dernières — vide si le moteur n'a rien écrit.
+     *
+     * @return la copie des lignes.
+     */
+    public List<String> journalErreurs() {
+        return connection.journalErreurs();
+    }
+
+    /**
+     * Code de sortie du moteur (0 = propre, négatif = signal, positif = échec interne),
+     * ou {@code null} tant que le processus vit.
+     *
+     * @return le code, ou null.
+     */
+    public Integer codeSortie() {
+        return connection.codeSortie();
     }
 
     /**
