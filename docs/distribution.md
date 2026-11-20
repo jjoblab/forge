@@ -133,6 +133,16 @@ moteur figé entre deux mises à jour de l'application, perte de l'installation 
 - **Dépendances embarquées dans le moteur** (toutes FLOSS, à mentionner dans les notices) :
   - ECJ (compilateur Java) : **EPL-2.0** — redistribution dans notre artefact acceptée ;
     compatible avec Apache-2.0 pour la redistribution (mention de licence requise) ;
+  - API `java.compiler` (`javax.lang.model`, `javax.annotation.processing`,
+    `javax.tools`, correctif v0.2.6) : classes extraites du module de l'**OpenJDK**
+    de la JVM d'assemblage — **GPLv2 avec exception de classpath** ; l'exception
+    autorise expressément la liaison et la redistribution depuis un programme de
+    toute licence, Apache-2.0 compris. Notice embarquée dans le composant
+    (`about-openjdk-java-compiler.txt`, conservée à côté du dex comme les autres
+    ressources). `javax.lang.model.SourceVersion` est une réécriture Forge
+    (Apache-2.0) : l'original lit `Runtime.version()`, absent d'ART — la
+    réécriture est documentée dans le dépôt
+    (`setup/src/compatArt/java/javax/lang/model/SourceVersion.java`) ;
   - d8/R8 (dexeur) : Apache-2.0 ;
   - apksig (signature) : Apache-2.0.
 - **Aucun code du moteur de référence** n'est embarqué (réimplémentation indépendante, voir

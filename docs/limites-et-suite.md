@@ -17,6 +17,7 @@ tout écart est consigné ici.
 | Post-4 — Correctif d'ouverture | **Fait** (2026-11-21) | La `v0.2.2` plantait à l'ouverture (boutons de journaux non branchés à leurs vues) ; correctif + journal d'écroulements de la coquille dans le rapport + garde de câblage des vues dans les tests + appels limités à l'API 28 (`List.of`/`String.lines`/`Files.readString` écartés), publication `v0.2.3`. |
 | Post-4 — Correctif ECJ sur ART | **Fait** (2026-11-21) | Constat `v0.2.3` (rapport de diagnostic copié depuis l'appareil) : `core:compileJava` échoue par `Can't find bundle for base name …batch.messages, locale fr_HT` — d8 ne convertit que les classes, les ressources d'ECJ (bundles de messages, tables `.rsc` du parseur et du scanner, ~1,04 Mo) étaient perdues au dexage, et sur JVM les tests ne le voyaient pas (jar complet au classpath). Correctif : les jars dexés conservent toute entrée non-classe des jars sources (manifeste et signatures du jar d'origine écartés — ils ne signent plus rien une fois fusionnés ; `about.html` d'ECJ conservé, notice EPL-2.0 exigée à la redistribution §7), car le classloader d'ART sert les entrées zip d'un jar du classpath (`DexPathList`/`ClassPathURLStreamHandler`, API 28+). Doublons identiques dédupliqués, conflits de contenu refusés, ordre et horodatages fixes (déterminisme des composants). Publication `v0.2.4`. |
 | Post-4 — Code de sortie honnête | **Fait** (2026-11-21) | Constat `v0.2.3` : le rapport disait « code de sortie : inconnu (processus encore vivant ou code non encore publié) » d'un moteur pourtant à l'arrêt. Deux causes : (1) `codeSortie()` ne publiait que ce que la sentinelle rapportait — une sentinelle muette (interrompue) laissait le code à `null` pour toujours ; il se guérit désormais seul (processus fini sans publication = `waitFor` immédiat, testé avec connexion sans aucun fil) ; (2) le sondage de mort (2,5 s) tournait sur la file mono-fil de la coquille et retardait l'arrêt du moteur mis en file derrière lui — le moteur restait vivant pendant qu'on l'attendait. La mort est publiée sur son propre fil, et un canal fermé sans code s'affiche désormais comme tel (« canal du moteur fermé, processus encore vivant ») au lieu de prétendre à un arrêt. Publication `v0.2.5`. |
+| Post-4 — API `java.compiler` sur ART | **Fait** (2026-11-21) | Constat `v0.2.5` (rapport de diagnostic depuis l'appareil) : `core:compileJava` échoue par `Failed resolution of: Ljavax/lang/model/SourceVersion;`. Audit des pools de constantes d'ECJ 3.36 : 63 classes référencées dans `javax.lang.model`/`javax.annotation.processing`/`javax.tools` — exactement le module `java.compiler` qu'Android n'embarque pas (`batch/FileSystem` appelle `SourceVersion.valueOf` à CHAQUE compilation, hors processeurs d'annotations) ; aucune référence `sun.*`/`jdk.*`/`Runtime$Version` (le relogement de la référence, REF-155, n'est pas nécessaire à cette version d'ECJ). Correctif : le composant `java-compiler` embarque l'API du module, extraite de l'image `jrt` de la JVM d'assemblage à chaque assemblage (JDK épinglé en CI), MOINS `javax.lang.model.SourceVersion`, réécrit pour ART — l'original lit `Runtime.version()` dans son initialiseur, classe absente d'ART et non redéfinissable (`java.*` interdit dans un dex) — et compilé par ECJ lui-même avec `android.jar` en chemin d'amorçage ; garde-fou d'assemblage : toute classe de l'API référencée par ECJ doit être servie par le jar produit (échec nommé sinon, jamais un composant incomplet en production). Audit des autres composants : apksig propre (0 référence absente), r8 en porte 4 (voir « Manques »). Même correctif de franchise : un `LinkageError` ne s'affiche plus « probablement un manque de mémoire » — classification par famille (`MessagesErreursGraves`) et diagnostic structuré dans la trace (elle était vide). Publication `v0.2.6`. |
 
 ### Phase 4 : détail par étape
 
@@ -79,13 +80,25 @@ tout écart est consigné ici.
   `app_process` du moteur. La rédaction de secrets reste heuristique (étiquettes
   usuelles FR/EN, porteurs) — un secret sans étiquette passe (limite consignée).
 
-- **Rien n'a encore été vérifié sur appareil réel (ART)** — la procédure de test
-  ci-dessous est en place depuis la `v0.2.0`, elle attend son premier passage. Tout est
-  testé sur JVM (dont des tests d'intégration avec de vrais processus séparés `java`). Les points spécifiquement à
-  valider sur ART : lancement `app_process` avec `CLASSPATH` (mécanisme éprouvé ailleurs,
-  D-01), comportement du chargeur sur jars dexés en lecture seule, restrictions
-  d'exécution du binaire `aapt2` téléchargé (D-04, `targetSdk` 28), tueur de processus
-  fantômes Android 12+ (D-02). Le repli `DexClassLoader` est conçu mais non câblé.
+- **Vérifications sur appareil réel (ART)** — la chaîne vit ses premiers passages depuis
+  `v0.2.2` (moto g06, Android 15, arm64) : lancement `app_process` + `CLASSPATH` **validé**
+  (le moteur démarre, répond et meurt proprement, D-01), arrêt des moteurs successifs
+  **validé**, `resolveDependencies` **validé** (deux modules en parallèle), capture du
+  stderr et rapports **validés** (c'est eux qui ont livré chaque diagnostic des
+  correctifs `v0.2.3`→`v0.2.6`). Restent à constater : le premier build COMPLET
+  (`compileJava` corrigé en `v0.2.6`, les maillons aval `jar` puis la chaîne Android
+  `dex`/`packageApk`/`signApk` sur ART), le binaire `aapt2` téléchargé (W^X, D-04),
+  l'installation par PackageInstaller et le tueur de processus Android 12+ (D-02). Le
+  repli `DexClassLoader` reste conçu mais non câblé.
+- **Audit ART des composants distribués (v0.2.6)** — mêmes outils d'audit que pour ECJ
+  (lecture des pools de constantes) : `apksig` **propre** (0 classe référencée absente
+  d'ART) ; `r8` en porte **4**, toutes hors du chemin D8 du dexage simple que Forge
+  exécute sur l'appareil : `sun.misc.Unsafe` (5 classes internes — la classe existe dans
+  le runtime Android, cachée), `javax.xml.stream` (rétrécisseur de ressources R8, jamais
+  appelé : Forge ne minifie pas) et `com.sun.management.HotSpotDiagnosticMXBean`
+  (diagnostics HotSpot, inexistants sur ART). Ces portes se refermeront si le pipeline
+  Android sur appareil en touche une — à reprendre dans la trace de tout échec
+  `app:dex` sur ART ; aucune action avant cela.
 - **Watchdog des sous-processus (D-09, constat S-8)** : pas encore implémenté. Précision
   après l'étape 8 : ECJ compile **en processus** (aucun sous-processus à surveiller) ; le
   watchdog et le registre des enfants viennent donc avec l'étape 10 (aapt2 natif). L'annulation
@@ -146,26 +159,30 @@ tout écart est consigné ici.
    `1b1a3052168a52f38a91ea03c87831a0d94c1fff`, jamais copié ni référencé hors de
    `docs/REFERENCES.md`.
 
-## Procédure de test sur appareil (v0.2.5)
+## Procédure de test sur appareil (v0.2.6)
 
-La chaîne est testable de bout en bout depuis la publication `v0.2.5` (la `v0.2.3`
+La chaîne est testable de bout en bout depuis la publication `v0.2.6` (la `v0.2.3`
 compilait encore son premier projet Java en échec : ressources d'ECJ perdues au
 dexage, `Can't find bundle … locale fr_HT` — corrigé en `v0.2.4` ; le code de
-sortie du moteur est honnête depuis la `v0.2.5`) :
+sortie du moteur est honnête depuis la `v0.2.5` ; le crash `SourceVersion` sur
+ART — API `java.compiler` absente d'Android — est corrigé en `v0.2.6`, et les
+messages d'erreurs graves ne prétendent plus systématiquement à un manque de
+mémoire) :
 
 1. **Installer la coquille** : APK signé de la clé d'essai joint à la version GitHub
-   `v0.2.5` (`app-debug.apk`), installation par chargement latéral (autoriser les
+   `v0.2.6` (`app-debug.apk`), installation par chargement latéral (autoriser les
    sources inconnues). Les versions de test successives s'installent l'une sur
    l'autre (clé d'essai stable, jetons CI) ; une installation antérieure signée
    autrement (clé de débogage éphémère d'un exécutant, comme l'APK d'artefact des
-   builds de branche) doit d'abord être désinstallée. Une `v0.2.1`-`v0.2.4` déjà
+   builds de branche) doit d'abord être désinstallée. Une `v0.2.1`-`v0.2.5` déjà
    installée se met à jour directement par-dessus.
 2. **Mettre à jour le moteur** : section *Installation du moteur* — *Charger le
    manifeste* puis *Réinstaller (mise à jour ou réparation)* : les composants Java
-   de la `v0.2.5` remplacent ceux des versions antérieures — ceux de la `v0.2.4`
-   portent le correctif ECJ (ressources conservées à côté du dex ; le composant
-   `java-compiler` passe d'environ 1,2 à 2,3 Mo décompressés), et ceux de la
-   `v0.2.5` embarquent aussi le client au code de sortie auto-guéri.
+   de la `v0.2.6` remplacent ceux des versions antérieures — le composant
+   `java-compiler` porte désormais l'API `java.compiler` pour ART (jar dexé ~1,3 Mo
+   téléchargés : ECJ + 146 classes de l'API, `SourceVersion` réécrit) ; ceux de la
+   `v0.2.4` portaient le correctif des ressources, ceux de la `v0.2.5` le client au
+   code de sortie auto-guéri.
 3. **Construire l'exemple Java** : bouton *Importer les projets d'exemple* (stockage
    privé, aucune permission), puis *Construire* — le moteur démarre dans son propre
    processus (`app_process`, tas dédié), ECJ compile sur ART, les jar sortent dans
@@ -196,22 +213,47 @@ objet tant que les composants Android ne sont pas publiés.
 
 ## Prochaines étapes (après la Phase 4)
 
-1. **Vérification sur appareil réel (ART)** — la grande inconnue restante, désormais
-   testable par la procédure ci-dessus : `app_process` + `CLASSPATH`, jars dexés en
-   lecture seule, ECJ et d8 sur ART, tueur de processus Android 12+. Le maillon ECJ
-   (chargement des classes ET des ressources sur ART) est déverrouillé par la
-   `v0.2.4` ; le premier build complet sur appareil reste à constater, de même que
-   les maillons aval (jar, dex) sur ART.
+1. **Vérification sur appareil réel (ART)** — le premier build COMPLET d'un projet
+   Java (compile corrigée `v0.2.6`, puis jar), puis les maillons Android (dex,
+   package, signature) dès que `aapt2` arm64 sera publié. Le maillon ECJ est
+   désormais doublement déverrouillé (ressources `v0.2.4`, API `java.compiler`
+   `v0.2.6`) ; chaque échec restant se lira dans un rapport qui classe les erreurs
+   graves par famille depuis la `v0.2.6`.
 2. **Prébuilt `aapt2` ANDROID (arm64)** — construction AOSP dédiée — puis publication
    des composants `aapt2`/`platform` après validation juridique de leur
    redistribution (`distribution.md` §7) : c'est ce qui débloque le pipeline Android
    complet sur appareil.
-3. **Signature de production** de la coquille (clé d'essai stable aujourd'hui,
+3. **Feuille de route langages — Kotlin, Compose, multiplate-forme** (état : Java
+   seul ; la référence prouve chaque maillon, voir REF-130..136 et REF-145) :
+   - *Kotlin (cibles JVM/Android)* : réalisable sur le même schéma que Java — un
+     composant `kotlin-compiler` dexé embarquant `kotlin-compiler-embeddable`
+     (distribué sur Maven Central, jar de ~55 Mo en 2.0.x — à comparer au ~65 Mo
+     mesuré par la référence pour son artefact fusionné, REF-130), avec sa propre
+     passe d'audit ART (la référence a dû instrumenter le compilateur en profondeur
+     pour l'exécuter sur ART : passes bytecode, shims, contournements JIT,
+     REF-133/REF-135 — notre liste de contrôle). Ordre proposé : compilation
+     `compileKotlin` d'un module simple, mixte Java/Kotlin (ECJ et kotlinc se
+     partagent le classpath résolu), incrémental (REF-131/REF-132), puis KSP plutôt
+     que KAPT pour Room/Hilt (choix de la référence également). La bibliothèque
+     standard et les coroutines passent par le résolveur Maven déjà livré.
+   - *Compose* : au-dessus de Kotlin — plugin compilateur Compose (embarqué avec
+     Kotlin 2.x, activation par sonde de classpath REF-136) + dépendances
+     `androidx.compose.*` résolues par Maven + la chaîne Android complète
+     (`aapt2` arm64, dex, package, signature). Suit donc strictement la feuille de
+     route Android ci-dessus ; la prévisualisation à l'édition relève de la coquille,
+     pas du moteur.
+   - *Kotlin Multiplateforme* : les cibles Android/JVM seront couvertes par le travail
+     Kotlin ci-dessus ; les cibles **native** (chaîne LLVM complète, hors de portée
+     d'un moteur embarqué) et **JS** (chaîne Node) ne sont PAS prévues sur appareil.
+     Un projet KMP se construirait sur ses cibles Android/JVM uniquement — écart à
+     assumer explicitement dans le modèle (la référence importe KMP une cible à la
+     fois, REF-145).
+4. **Signature de production** de la coquille (clé d'essai stable aujourd'hui,
    jetons CI — les APK de test successifs s'installent l'un sur l'autre ; la clé de
    production et sa rotation restent à produire) et génération des notices de
    licences des dépendances embarquées (§7).
-4. Améliorations priorisées restantes du registre de la conception : A-8 (cache de
+5. Améliorations priorisées restantes du registre de la conception : A-8 (cache de
    sorties par contenu), A-9 (ressources incrémentales par fichier), A-10 (empreintes
    d'ABI), AAR, multidex.
-5. Éditeur/gestion de projets dans la coquille (création, import, arborescence).
-6. Premier benchmark sur projet Android complet sur appareil.
+6. Éditeur/gestion de projets dans la coquille (création, import, arborescence).
+7. Premier benchmark sur projet Android complet sur appareil.
