@@ -10,8 +10,8 @@ tout écart est consigné ici.
 | 0 — Exploration | **Fait** | Dépôt de référence cloné hors du dépôt de travail, SHA épinglé, licence vérifiée et consignée, hooks anti-référence en place. |
 | 1 — Analyse | **Fait** | [`analyse-moteur-build.md`](analyse-moteur-build.md) (13 sections, cartographie avec REF-xxx). |
 | 2 — Revue critique | **Fait** | [`revue-moteur-build.md`](revue-moteur-build.md) (4 axes, 46 constats numérotés, compatibilité Android, comparaison Gradle). |
-| 3 — Conception | À faire | `conception.md` (architecture cible Java sous `jo.forge`, manifeste, installateur, contrat `api`, processus séparé, chargement du code, exécution des binaires, améliorations priorisées) et `distribution.md` (politiques des magasins, distribution hors magasin). |
-| 4 — Implémentation | À faire | 13 étapes du plan (squelette Gradle, module api + moteur factice, installateur, chargement réel, moteur de tâches, exécuteur, empreintes, pipeline Java, résolveur, pipeline Android, diagnostics, packaging/CI, import Gradle optionnel). |
+| 3 — Conception | **Fait** (2026-11-20) | [`conception.md`](conception.md) (12 décisions D-01..D-12 justifiées, registre des améliorations priorisées, ordre d'implémentation) et [`distribution.md`](distribution.md) (Play exclu, GitHub Releases + F-Droid, clés, licences, guidance appareil). |
+| 4 — Implémentation | **En cours** | Étapes 1-2 amorcées (squelette Gradle multi-modules, module `api` + moteur factice) ; suivi détaillé ci-dessous. |
 
 ## Hypothèses retenues (Phases 0-2)
 
