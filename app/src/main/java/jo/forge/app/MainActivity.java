@@ -14,6 +14,7 @@ import android.widget.TextView;
 import java.io.File;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
@@ -61,6 +62,7 @@ public class MainActivity extends Activity {
     private TextView résuméInstall;
     private Button boutonDésinstaller;
     private EditText cheminProjet;
+    private Button boutonImporterExemples;
     private Button construireButton;
     private Button annulerButton;
     private Button installerButton;
@@ -97,6 +99,7 @@ public class MainActivity extends Activity {
         résuméInstall = findViewById(R.id.install_summary);
         boutonDésinstaller = findViewById(R.id.action_uninstall_engine);
         cheminProjet = findViewById(R.id.build_project_path);
+        boutonImporterExemples = findViewById(R.id.action_import_examples);
         construireButton = findViewById(R.id.action_build);
         annulerButton = findViewById(R.id.action_cancel_build);
         installerButton = findViewById(R.id.action_install_apk);
@@ -116,6 +119,7 @@ public class MainActivity extends Activity {
         boutonAnnulerInstall.setOnClickListener(vue -> annulerInstallation());
         boutonDésinstaller.setOnClickListener(vue -> confirmerDésinstallation());
         construireButton.setOnClickListener(vue -> lancerBuild());
+        boutonImporterExemples.setOnClickListener(vue -> importerExemples());
         annulerButton.setOnClickListener(vue -> annulerBuild());
         installerButton.setOnClickListener(vue -> installerDernierApk());
     }
@@ -385,6 +389,59 @@ public class MainActivity extends Activity {
         } catch (Exception absent) {
             return 1;
         }
+    }
+
+    /**
+     * Importe les projets d'exemple embarqués dans l'APK (assets) vers le stockage
+     * privé, puis préremplit le chemin avec l'exemple Java — premier build sans
+     * aucune permission de stockage.
+     */
+    private void importerExemples() {
+        boutonImporterExemples.setEnabled(false);
+        afficherRésumé(getString(R.string.import_running));
+        exécuteur.submit(() -> {
+            try {
+                Path projets = Path.of(getFilesDir().getAbsolutePath(), "projets");
+                Files.createDirectories(projets);
+                List<String> importés = new ArrayList<>();
+                String[] noms = getAssets().list("exemples");
+                for (String nom : noms == null ? new String[0] : noms) {
+                    if (!nom.endsWith(".zip")) {
+                        continue;
+                    }
+                    Path temporaire = Files.createTempFile("forge-exemple-", ".zip");
+                    try (var entrée = getAssets().open("exemples/" + nom);
+                         var sortie = Files.newOutputStream(temporaire)) {
+                        entrée.transferTo(sortie);
+                    }
+                    String nomProjet = nom.substring(0, nom.length() - ".zip".length());
+                    Path destination = projets.resolve(nomProjet);
+                    // Réimport propre : l'ancien exemplaire (sorties de build incluses)
+                    // est supprimé — les fichiers du projet restent écrasables.
+                    jo.forge.setup.util.Files2.supprimerRecursivement(destination);
+                    new ArchiveExtractor().extract(temporaire, destination);
+                    Files.deleteIfExists(temporaire);
+                    importés.add(nomProjet);
+                }
+                if (importés.isEmpty()) {
+                    throw new IllegalStateException(
+                            "aucun exemple embarqué dans l'APK");
+                }
+                List<String> liste = List.copyOf(importés);
+                runOnUiThread(() -> {
+                    cheminProjet.setText(Path.of(getFilesDir().getAbsolutePath(),
+                            "projets", "multi-modules-java").toString());
+                    afficherRésumé(getString(R.string.import_done,
+                            String.join(", ", liste)));
+                    boutonImporterExemples.setEnabled(true);
+                });
+            } catch (Exception echec) {
+                runOnUiThread(() -> {
+                    afficherRésumé(getString(R.string.import_error, messageDe(echec)));
+                    boutonImporterExemples.setEnabled(true);
+                });
+            }
+        });
     }
 
     /**

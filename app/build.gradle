@@ -54,3 +54,33 @@ android {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Exemples embarqués : les projets d'exemple sont zippés en assets de la coquille
+// pour un premier build immédiat sur appareil — aucun accès au stockage partagé,
+// aucune permission : les projets atterrissent dans le stockage privé de l'app.
+// ---------------------------------------------------------------------------
+
+def exemplesAssets = layout.buildDirectory.dir('generated/exemplesAssets').get().asFile
+
+android {
+    sourceSets {
+        main {
+            assets.srcDirs += exemplesAssets
+        }
+    }
+}
+
+def tachesExemples = ['multi-modules-java', 'application-android'].collect { exemple ->
+    tasks.register("zipExemple-${exemple}", Zip) {
+        group = 'construction'
+        description = "Embarque examples/${exemple} en asset de la coquille."
+        archiveFileName = "${exemple}.zip"
+        destinationDirectory = new File(exemplesAssets, 'exemples')
+        from(rootProject.file("examples/${exemple}"))
+    }
+}
+
+tasks.named('preBuild') {
+    dependsOn tachesExemples
+}

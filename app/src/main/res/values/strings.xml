@@ -72,6 +72,12 @@
         d\'abord un projet avec un module application.</string>
     <string name="install_error">Installation impossible : %1$s</string>
 
+    <string name="action_import_examples">Importer les projets d\'exemple</string>
+    <string name="import_running">Import des exemples embarqués…</string>
+    <string name="import_done">Exemples importés dans le stockage privé (%1$s) —
+        chemin de l\'exemple Java prérempli.</string>
+    <string name="import_error">Import impossible : %1$s</string>
+
     <!-- Service hôte. -->
     <string name="host_notification_channel">Supervision du moteur</string>
     <string name="host_notification_title">Forge</string>
