@@ -35,6 +35,8 @@ class TaskExecutorTest {
         final List<BuildEvent.TaskStateEvent> etats =
                 new java.util.concurrent.CopyOnWriteArrayList<>();
         final List<String> journaux = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final List<jo.forge.engine.diag.Diagnostic> diagnosticsReçus =
+                new java.util.concurrent.CopyOnWriteArrayList<>();
         final AtomicInteger total = new AtomicInteger();
         final AtomicInteger done = new AtomicInteger();
         volatile BuildEvent.BuildFinished fin;
@@ -80,6 +82,11 @@ class TaskExecutorTest {
             if (premierEchec == null) {
                 premierEchec = taskName;
             }
+        }
+
+        @Override
+        public void diagnostic(jo.forge.engine.diag.Diagnostic diagnostic) {
+            diagnosticsReçus.add(diagnostic);
         }
 
         BuildEvent.TaskStateEvent etatDe(String tache) {
@@ -226,6 +233,57 @@ class TaskExecutorTest {
                 "le blocage est transitif");
         assertTrue(journal.journaux.stream().anyMatch(l -> l.contains("boom")),
                 "la cause de l'échec doit être journalisée");
+    }
+
+    @Test
+    @Timeout(30)
+    void erreurGraveClasséeSansFauxDiagnosticDeMémoire() {
+        // Constat v0.2.6 : le crash ECJ sur ART (NoClassDefFoundError) s'affichait
+        // « probablement un manque de mémoire » — un LinkageError n'est PAS un
+        // manque de mémoire, et la trace ne portait aucun diagnostic structuré.
+        Journal journal = new Journal("b-linkage");
+        Task quiMeurt = new TacheTest("core:compileJava", List.of(), () -> {
+            throw new NoClassDefFoundError(
+                    "Failed resolution of: Ljavax/lang/model/SourceVersion;");
+        });
+
+        TaskExecutor.BuildResult resultat = new TaskExecutor(
+                TaskGraph.of(List.of(quiMeurt)), journal, new CancellationFlag(),
+                UpToDateOracle.ALWAYS_RUN, 1).execute();
+
+        assertFalse(resultat.success());
+        assertEquals("core:compileJava", resultat.failedTask());
+        assertEquals(BuildEvent.TaskState.FAILED, journal.etatDe("core:compileJava").state());
+        String message = String.join(" | ", journal.journaux);
+        assertTrue(message.contains("classe ou membre manquant"),
+                "la vraie cause doit être nommée : " + message);
+        assertFalse(message.contains("manque de mémoire"),
+                "un LinkageError n'est pas un manque de mémoire : " + message);
+        assertEquals(1, journal.diagnosticsReçus.size(),
+                "l'erreur grave doit aussi partir en diagnostic structuré (trace)");
+        jo.forge.engine.diag.Diagnostic diagnostic = journal.diagnosticsReçus.get(0);
+        assertEquals(BuildEvent.Severity.ERROR, diagnostic.severity());
+        assertEquals("core:compileJava", diagnostic.tool());
+        assertTrue(diagnostic.message().contains("SourceVersion"));
+    }
+
+    @Test
+    @Timeout(30)
+    void manqueDeMémoireVraiConserveLeConseilEtSeDiagnostique() {
+        Journal journal = new Journal("b-oom");
+        Task quiSature = new TacheTest("app:dex", List.of(), () -> {
+            throw new OutOfMemoryError("Java heap space");
+        });
+
+        TaskExecutor.BuildResult resultat = new TaskExecutor(
+                TaskGraph.of(List.of(quiSature)), journal, new CancellationFlag(),
+                UpToDateOracle.ALWAYS_RUN, 1).execute();
+
+        assertFalse(resultat.success());
+        String message = String.join(" | ", journal.journaux);
+        assertTrue(message.contains("mode basse mémoire"),
+                "un vrai manque de mémoire garde son conseil : " + message);
+        assertEquals(1, journal.diagnosticsReçus.size());
     }
 
     @Test

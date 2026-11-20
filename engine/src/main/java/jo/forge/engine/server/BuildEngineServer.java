@@ -18,6 +18,7 @@ import jo.forge.api.ProtocolVersions;
 import jo.forge.api.Status;
 import jo.forge.engine.EngineVersion;
 import jo.forge.engine.diag.Diagnostic;
+import jo.forge.engine.diag.MessagesErreursGraves;
 import jo.forge.engine.exec.TaskExecutor;
 import jo.forge.engine.graph.GraphException;
 import jo.forge.engine.graph.TaskGraph;
@@ -242,20 +243,21 @@ public final class BuildEngineServer {
                             + (inattendu.getMessage() == null ? "" : " — "
                             + inattendu.getMessage()));
         } catch (Error erreurGrave) {
-            // Filet de sécurité, miroir de celui de l'exécuteur : un Error (mémoire
-            // saturée avant les tâches, pile rompue) doit terminer le build par un
-            // échec PROPRE — pas un fil qui meurt en silence et un client qui attend
-            // une fin qui ne viendra jamais. La trace part sur stderr : le client la
-            // capture désormais (journal du moteur).
+            // Filet de sécurité, miroir de celui de l'exécuteur : un Error avant les
+            // tâches doit terminer le build par un échec PROPRE — pas un fil qui
+            // meurt en silence et un client qui attend une fin qui ne viendra
+            // jamais. La trace part sur stderr : le client la capture (journal du
+            // moteur). Message classé honnêtement depuis v0.2.6 : la mémoire n'est
+            // qu'UNE cause possible, et le diagnostic structuré part aussi sur le
+            // canal (la trace n'est plus muette sur l'origine).
             diagnostics.println("Erreur grave dans le build " + buildId + " : "
                     + erreurGrave);
             erreurGrave.printStackTrace(diagnostics);
             try {
-                echecPropre(events, buildId, debut,
-                        "erreur grave du moteur ("
-                                + erreurGrave.getClass().getSimpleName()
-                                + ") — mémoire probablement insuffisante :"
-                                + " réessayez en mode basse mémoire");
+                String message = MessagesErreursGraves.pour(erreurGrave,
+                        "le build " + buildId);
+                events.diagnostic(Diagnostic.error("moteur", message));
+                echecPropre(events, buildId, debut, message);
             } catch (Throwable plusRien) {
                 // Le canal lui-même est épuisé : la trace stderr reste au client.
             }

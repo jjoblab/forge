@@ -2,6 +2,8 @@ package jo.forge.engine.exec;
 
 import jo.forge.api.BuildEvent;
 import jo.forge.api.FrameType;
+import jo.forge.engine.diag.Diagnostic;
+import jo.forge.engine.diag.MessagesErreursGraves;
 import jo.forge.engine.graph.TaskGraph;
 import jo.forge.engine.tasks.CancellationFlag;
 import jo.forge.engine.tasks.Task;
@@ -293,20 +295,19 @@ public final class TaskExecutor {
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
                     terminées, false);
         } catch (java.lang.Error erreurGrave) {
-            // Un Error (mémoire saturée du dexeur en particulier) ne doit JAMAIS
-            // rompre le comptage silencieusement : la tâche échoue proprement, la
-            // cause est journalisée, le build se termine avec un diagnostic lisible
-            // (correctif du constat « erreurs avalées » appliqué aux erreurs graves).
-            String cause = erreurGrave.getMessage() == null
-                    ? erreurGrave.getClass().getSimpleName() : erreurGrave.getMessage();
+            // Un Error ne doit JAMAIS rompre le comptage silencieusement : la tâche
+            // échoue proprement, la cause est journalisée ET diagnostiquée, le build
+            // se termine avec un message honnête — la mémoire n'est qu'UNE cause
+            // possible (correctif v0.2.6 : un LinkageError n'est pas un manque de
+            // mémoire ; le crash ECJ sur ART s'affichait sous un faux diagnostic et
+            // le rapport n'avait aucun diagnostic structuré).
+            String message = MessagesErreursGraves.pour(erreurGrave, task.name());
             events.tacheEchouee(task.name());
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
                     System.currentTimeMillis(), task.name(),
                     BuildEvent.TaskState.FAILED, System.currentTimeMillis() - debut));
-            events.log(BuildEvent.LogEvent.LogLevel.ERROR,
-                    "Erreur grave dans " + task.name() + " (" + cause + ")"
-                            + " — probablement un manque de mémoire :"
-                            + " réessayez en mode basse mémoire");
+            events.log(BuildEvent.LogEvent.LogLevel.ERROR, message);
+            events.diagnostic(Diagnostic.error(task.name(), message));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
                     terminées, false);
         } finally {
