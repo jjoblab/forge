@@ -1,0 +1,65 @@
+# CI légère de Forge : contrôle des termes interdits + emplacement des tests JVM.
+# Les tests s'activeront automatiquement quand les projets Gradle existeront (Phase 4) ;
+# en attendant, le workflow valide l'hygiène du dépôt à chaque push.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  hygiene:
+    name: Hygiène du dépôt (termes interdits, structure)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # l'historique complet est requis pour contrôler les messages de commit
+
+      - name: Configurer JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Contrôle des termes interdits
+        env:
+          # Secret optionnel (une expression par ligne) ; sans secret, le contrôle est ignoré.
+          FORBIDDEN_TERMS: ${{ secrets.FORBIDDEN_TERMS }}
+        run: ./tools/check-references.sh
+
+      - name: Structure du dépôt
+        run: |
+          test -f README.md
+          test -f docs/REFERENCES.md
+          test -f docs/analyse-moteur-build.md
+          test -f docs/revue-moteur-build.md
+          test -f docs/limites-et-suite.md
+          test -x tools/check-references.sh
+          test -x tools/hooks/pre-commit
+          test -x tools/hooks/commit-msg
+
+  tests:
+    name: Tests JVM (JDK 17)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configurer JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Phase 4 : ./gradlew check remplacera cette garde dès que les projets Gradle existeront.
+      - name: Tests (garde : aucun projet Gradle pour l'instant)
+        run: |
+          if [ -x ./gradlew ]; then
+            ./gradlew check --stacktrace
+          else
+            echo "Aucun wrapper Gradle pour l'instant (Phase 4) — étape sans objet."
+          fi
