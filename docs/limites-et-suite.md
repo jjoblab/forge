@@ -14,6 +14,7 @@ tout écart est consigné ici.
 | 4 — Implémentation | **Fait** (étapes 1-13, 2026-11-20) | Détail ci-dessous ; moteur Java ET Android jusqu'à l'APK signé, chaîne de publication complète. |
 | Post-4 — Assistant, jonction, exemples | **Fait** (2026-11-20) | Étape 14 du tableau ci-dessous : assistant d'installation câblé, jonction des outils, exemples embarqués, publications `v0.2.0` puis `v0.2.1` (clé d'essai stable). |
 | Post-4 — Diagnostic sur appareil | **Fait** (2026-11-20) | Étape 15 du tableau ci-dessous : stderr du moteur capturé, journaux copiables, moteurs successifs arrêtés, publication `v0.2.2`. |
+| Post-4 — Correctif d'ouverture | **Fait** (2026-11-21) | La `v0.2.2` plantait à l'ouverture (boutons de journaux non branchés à leurs vues) ; correctif + journal d'écroulements de la coquille dans le rapport + garde de câblage des vues dans les tests + appels limités à l'API 28 (`List.of`/`String.lines`/`Files.readString` écartés), publication `v0.2.3`. |
 
 ### Phase 4 : détail par étape
 
@@ -143,22 +144,23 @@ tout écart est consigné ici.
    `1b1a3052168a52f38a91ea03c87831a0d94c1fff`, jamais copié ni référencé hors de
    `docs/REFERENCES.md`.
 
-## Procédure de test sur appareil (v0.2.2)
+## Procédure de test sur appareil (v0.2.3)
 
-La chaîne est testable de bout en bout depuis la publication `v0.2.2` :
+La chaîne est testable de bout en bout depuis la publication `v0.2.3` (la `v0.2.2`
+plantait à l'ouverture — boutons de journaux branchés sans `findViewById`, corrigé) :
 
 1. **Installer la coquille** : APK signé de la clé d'essai joint à la version GitHub
-   `v0.2.2` (`app-debug.apk`), installation par chargement latéral (autoriser les
+   `v0.2.3` (`app-debug.apk`), installation par chargement latéral (autoriser les
    sources inconnues). Les versions de test successives s'installent l'une sur
    l'autre (clé d'essai stable, jetons CI) ; une installation antérieure signée
    autrement (clé de débogage éphémère d'un exécutant, comme l'APK d'artefact des
-   builds de branche) doit d'abord être désinstallée. Une `v0.2.1` déjà installée
-   se met à jour directement par-dessus.
+   builds de branche) doit d'abord être désinstallée. Une `v0.2.1` ou `v0.2.2` déjà
+   installée se met à jour directement par-dessus.
 2. **Mettre à jour le moteur** : section *Installation du moteur* — *Charger le
    manifeste* puis *Réinstaller (mise à jour ou réparation)* : les composants Java
-   de la `v0.2.2` remplacent ceux de la `0.2.1` (la capture du stderr vit dans la
-   coquille et fonctionnerait même avec un moteur plus ancien ; la mise à jour du
-   moteur apporte son filet de sécurité contre les erreurs graves).
+   de la `v0.2.3` remplacent ceux des versions antérieures (la capture du stderr vit
+   dans la coquille et fonctionnerait même avec un moteur plus ancien ; la mise à
+   jour du moteur apporte son filet de sécurité contre les erreurs graves).
 3. **Construire l'exemple Java** : bouton *Importer les projets d'exemple* (stockage
    privé, aucune permission), puis *Construire* — le moteur démarre dans son propre
    processus (`app_process`, tas dédié), ECJ compile sur ART, les jar sortent dans
@@ -172,13 +174,15 @@ La chaîne est testable de bout en bout depuis la publication `v0.2.2` :
 5. **En cas de problème (débogage)** : bouton *Copier les journaux* (presse-papiers)
    ou *Partager* (courriel, notes…) — le rapport contient le contexte (versions,
    appareil, projet), le journal du build, le **journal du moteur** (stderr capturé
-   en continu : la seule trace qui survit à une mort brutale du processus) et la
-   dernière trace JSON. Si le moteur meurt en cours de build, le journal affiché
-   reçoit automatiquement le **code de sortie** (0 = propre ; -9 ou 137 = tué par
-   le signal 9, typiquement le tueur de mémoire du système face à des VM
-   oisives — corrigé en `v0.2.2` ; positif = échec interne, la trace stderr dit
-   lequel) et les dernières lignes de stderr. C'est ce rapport qu'il faut joindre
-   à tout ticket.
+   en continu : la seule trace qui survit à une mort brutale du processus), les
+   **écroulements de la coquille** (depuis `v0.2.3` : piles d'appels des exceptions
+   non attrapées, écrites dans un journal borné avant la fermeture du processus —
+   un « force close » laisse donc sa trace) et la dernière trace JSON. Si le moteur
+   meurt en cours de build, le journal affiché reçoit automatiquement le **code de
+   sortie** (0 = propre ; -9 ou 137 = tué par le signal 9, typiquement le tueur de
+   mémoire du système face à des VM oisives — corrigé en `v0.2.2` ; positif = échec
+   interne, la trace stderr dit lequel) et les dernières lignes de stderr. C'est ce
+   rapport qu'il faut joindre à tout ticket.
 
 Points observés par ce test : lancement `app_process` avec `CLASSPATH` (D-01),
 jars dexés en lecture seule, tueur de processus Android 12+ (D-02). Le binaire

@@ -106,11 +106,16 @@ vers le SDK comme d'habitude.
   coquille (journal de build, journal du moteur, dernière trace), moteurs successifs
   arrêtés (plus de VM oisives qui s'accumulent), filet de sécurité du serveur contre
   les erreurs graves avant les tâches.
+- [x] Correctif d'ouverture + journal d'écroulements (`v0.2.3`) — la `v0.2.2` plantait
+  à l'ouverture (boutons de journaux branchés sans `findViewById`) ; les exceptions
+  non attrapées de la coquille s'écrivent maintenant dans un journal borné, exposé
+  dans le rapport copiable ; garde de câblage des vues dans les tests (le plantage
+  est attrapé avant l'installation, plus après).
 - [ ] Vérification sur appareil réel (ART) — procédure dans `docs/limites-et-suite.md`.
 
 ## Tester sur un appareil
 
-Depuis la publication [`v0.2.2`](https://github.com/jjoblab/forge/releases/latest) :
+Depuis la publication [`v0.2.3`](https://github.com/jjoblab/forge/releases/latest) :
 
 1. **Coquille** : installez l'APK joint à la version (chargement latéral ; clé d'essai
    stable — les versions de test successives s'installent l'une sur l'autre).
@@ -123,9 +128,10 @@ Depuis la publication [`v0.2.2`](https://github.com/jjoblab/forge/releases/lates
    (`app_process`) ; un second build est presque entièrement *à jour*.
 4. **En cas de problème** : bouton *Copier les journaux* (presse-papiers) ou
    *Partager* — le rapport contient le journal du build, le journal du moteur
-   (stderr capturé, la trace qui survit à une mort du processus) et la dernière
-   trace de build ; le code de sortie du moteur y est décrit (arrêt propre, signal
-   du tueur de mémoire, échec interne).
+   (stderr capturé, la trace qui survit à une mort du processus), les écroulements
+   de la coquille (piles d'appels écrites avant un « force close », depuis `v0.2.3`)
+   et la dernière trace de build ; le code de sortie du moteur y est décrit (arrêt
+   propre, signal du tueur de mémoire, échec interne).
 
 Le pipeline Android complet sur appareil (ressources → APK signé) attend la
 publication des composants `aapt2` (prébuilt arm64) et `platform` — voir
