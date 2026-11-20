@@ -1,0 +1,33 @@
+# ---- Build ----
+build/
+out/
+.gradle/
+local.properties
+
+# ---- IDE ----
+.idea/
+*.iml
+.vscode/
+.settings/
+.classpath
+.project
+
+# ---- Système ----
+.DS_Store
+Thumbs.db
+
+# ---- Artefacts ----
+*.apk
+*.aab
+*.ap_
+*.dex
+!**/src/test/resources/**
+
+# ---- Secrets et jetons (jamais versionnés) ----
+*.jks
+*.keystore
+*.pem
+*.key
+*.token
+secrets.properties
+keystore.properties
