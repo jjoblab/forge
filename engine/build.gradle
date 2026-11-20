@@ -8,7 +8,7 @@ plugins {
 }
 
 group = 'jo.forge'
-version = '0.2.5'
+version = '0.2.6'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -53,7 +53,7 @@ tasks.named('test') {
 // Publication (étape 12) : assemblage des composants du moteur et du manifeste.
 // ---------------------------------------------------------------------------
 
-def versionComposants = '0.2.5'
+def versionComposants = '0.2.6'
 
 tasks.register('composants', JavaExec) {
     group = 'publication'
@@ -97,6 +97,8 @@ tasks.register('composants', JavaExec) {
                      project(':client').tasks.jar.archiveFile.get().asFile.absolutePath,
                      project(':engine').tasks.jar.archiveFile.get().asFile.absolutePath,
                      '--compilateur', ecjJar?.absolutePath,
+                     '--compat-art',
+                     project(':setup').file('src/compatArt/java').absolutePath,
                      '--dexeur', r8Jar?.absolutePath,
                      '--signeur', apksigJar?.absolutePath]
     // Garde juridique (docs/distribution.md §7) : FORGE_SANS_OUTILS_ANDROID omet les

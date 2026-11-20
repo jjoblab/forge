@@ -6,6 +6,7 @@ import jo.forge.setup.manifest.ManifestCodec;
 import jo.forge.setup.util.Files2;
 
 import java.io.IOException;
+import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -54,13 +55,29 @@ import java.util.zip.ZipOutputStream;
  * fusionnés. {@code about.html} d'ECJ est conservé : c'est la notice EPL-2.0 exigée
  * à la redistribution (distribution.md §7).</p>
  *
+ * <p><b>Composants portant l'API java.compiler</b> (correctif v0.2.6) : ART
+ * n'embarque pas le module {@code java.compiler} alors qu'ECJ référence 63 de
+ * ses classes — dont {@code javax.lang.model.SourceVersion} sur le chemin par
+ * lots ({@code FileSystem} l'appelle à chaque compilation : crash réel sur
+ * appareil, {@code Failed resolution of: Ljavax/lang/model/SourceVersion;}). Le
+ * composant {@code java-compiler} embarque donc, à côté d'ECJ, l'API du module
+ * extraite de la JVM d'assemblage (image {@code jrt}) — MOINS
+ * {@code javax.lang.model.SourceVersion}, dont l'initialiseur statique appelle
+ * {@code Runtime.version()} (absent d'ART et non redéfinissable : {@code java.*}
+ * est interdit dans un dex), remplacé par la réécriture de
+ * {@code --compat-art} compilée par ECJ avec {@code android.jar} en chemin
+ * d'amorçage. Un garde-fou vérifie ensuite que TOUTE classe de l'API référencée
+ * par ECJ est servie par le jar produit (voir
+ * {@link #vérifierRéférencesApi}).</p>
+ *
  * <p>Usage :</p>
  * <pre>
  *   java jo.forge.setup.packaging.PackagerComposants
  *       --sortie &lt;répertoire&gt; --version &lt;x.y.z&gt;
  *       --d8 &lt;r8.jar&gt; --android-jar &lt;android.jar&gt; [--min-api 28]
- *       [--moteur jar1 jar2 …] [--compilateur ecj.jar] [--dexeur r8.jar]
- *       [--signeur apksig.jar] [--aapt2 binaire --abi arm64-v8a]
+ *       [--moteur jar1 jar2 …] [--compilateur ecj.jar]
+ *       [--compat-art &lt;répertoire de sources&gt;]
+ *       [--dexeur r8.jar] [--signeur apksig.jar] [--aapt2 binaire --abi arm64-v8a]
  *       [--clé-privée &lt;pkcs8-b64&gt;] [--sans-outils-android]
  * </pre>
  *
@@ -78,6 +95,21 @@ public final class PackagerComposants {
 
     /** Délai maximal d'un passage d8 (le gros jar, r8, prend environ une minute). */
     private static final long DÉLAI_D8_MS = TimeUnit.MINUTES.toMillis(10);
+
+    /** Paquets de l'API java.compiler, absents d'ART (module non embarqué). */
+    private static final List<String> PRÉFIXES_API = List.of(
+            "javax/lang/model/", "javax/annotation/processing/", "javax/tools/");
+
+    /** Classe de l'API réécrite pour ART (l'original lit {@code Runtime.version()}). */
+    static final String SOURCE_VERSION_RÉÉCRIT = "javax/lang/model/SourceVersion";
+
+    /** Notice OpenJDK embarquée dans le jar API (distribution.md §7). */
+    private static final String NOTICE_OPENJDK = ""
+            + "L'API javax.lang.model / javax.annotation.processing / javax.tools de ce\n"
+            + "fichier provient du module java.compiler de l'OpenJDK (GPLv2 avec\n"
+            + "exception de classpath), extraite à l'assemblage par Forge.\n"
+            + "javax.lang.model.SourceVersion est une réécriture ART-sûre de Forge\n"
+            + "(Apache-2.0) : l'original appelle Runtime.version(), absent d'ART.\n";
 
     private PackagerComposants() {
     }
@@ -101,15 +133,28 @@ public final class PackagerComposants {
         Files.createDirectories(sortie);
 
         List<ComponentManifest> composants = new ArrayList<>();
+        Path dirCompatArt = options.containsKey("compat-art")
+                ? Path.of(obligatoire(options, "compat-art")) : null;
         if (options.containsKey("moteur")) {
             composants.add(composantDexé(sortie, version, "engine-core",
                     "cœur du moteur (contrat, json, client, pipelines)",
                     List.of(), d8, androidJar, jars(options, "moteur")));
         }
         if (options.containsKey("compilateur")) {
+            List<Path> jarsCompilateur = new ArrayList<>(jars(options, "compilateur"));
+            if (dirCompatArt != null) {
+                if (androidJar == null || !Files.isRegularFile(androidJar)) {
+                    throw new IOException("--compat-art exige --android-jar "
+                            + "(chemin d'amorçage de la compilation des sources de "
+                            + "compatibilité)");
+                }
+                jarsCompilateur.add(assemblerApiCompiler(jarsCompilateur.get(0),
+                        androidJar, dirCompatArt));
+            }
             composants.add(composantDexé(sortie, version, "java-compiler",
-                    "compilateur Java embarqué (ECJ)", List.of("engine-core"),
-                    d8, androidJar, jars(options, "compilateur")));
+                    "compilateur Java embarqué (ECJ) et API java.compiler pour ART",
+                    List.of("engine-core"),
+                    d8, androidJar, jarsCompilateur));
         }
         if (options.containsKey("dexeur")) {
             composants.add(composantDexé(sortie, version, "dexeur",
@@ -222,6 +267,210 @@ public final class PackagerComposants {
         System.out.println("[composant " + id + "] " + archive.getFileName() + " ("
                 + Files.size(archive) + " octets) — " + description);
         return manifesteDe(archive, version, abis, dépendances);
+    }
+
+    /**
+     * Assemble le jar de l'API java.compiler pour ART (correctif v0.2.6) :
+     * classes du module extraites de l'image {@code jrt} de la JVM d'assemblage,
+     * MOINS {@code javax.lang.model.SourceVersion} (fatal sur ART : son
+     * initialiseur lit {@code Runtime.version()}) remplacé par la réécriture de
+     * {@code dirSources} compilée par ECJ avec {@code android.jar} en chemin
+     * d'amorçage.
+     *
+     * <p>Garde-fou : toute classe des paquets de l'API référencée par le jar du
+     * compilateur doit être servie par le jar produit — sinon échec nommé de
+     * l'assemblage (un ECJ futur qui référencerait une classe de plus casse la
+     * chaîne de publication proprement, pas le build sur l'appareil).</p>
+     *
+     * @param jarCompilateur jar ECJ (compilateur ET source des références à couvrir).
+     * @param androidJar     plate-forme Android (chemin d'amorçage de la compilation).
+     * @param dirSources     sources de compatibilité ({@code --compat-art}).
+     * @return le jar assemblé (fichier temporaire, à dexer avec ECJ).
+     * @throws IOException          en cas d'échec de lecture, compilation ou vérification.
+     * @throws InterruptedException si la compilation ECJ est interrompue.
+     */
+    static Path assemblerApiCompiler(Path jarCompilateur, Path androidJar,
+                                     Path dirSources)
+            throws IOException, InterruptedException {
+        Path classesCompat = Files.createTempDirectory("forge-compat-art");
+        Path jarSortie = Files.createTempFile("forge-api-java-compiler", ".jar");
+        compilerParEcj(jarCompilateur, androidJar, dirSources, classesCompat);
+        if (!Files.isRegularFile(classesCompat.resolve(
+                SOURCE_VERSION_RÉÉCRIT + ".class"))) {
+            throw new IOException("la compilation n'a pas produit "
+                    + SOURCE_VERSION_RÉÉCRIT + " — sources de --compat-art inattendues");
+        }
+        SortedMap<String, byte[]> classes = classesApiDepuisJrt();
+        // La compat REMPLACE les classes du JDK : seul SourceVersion a ce droit.
+        ajouterClassesCompilées(classes, classesCompat);
+        vérifierRéférencesApi(jarCompilateur, classes.keySet());
+        écrireJarApi(jarSortie, classes);
+        System.out.println("[composant java-compiler] API java.compiler pour ART : "
+                + classes.size() + " classes (" + SOURCE_VERSION_RÉÉCRIT
+                + " réécrit pour ART)");
+        return jarSortie;
+    }
+
+    /**
+     * Compile les sources de compatibilité avec ECJ lui-même, en Java 8
+     * (dexable partout), {@code android.jar} en chemin d'amorçage : c'est la
+     * seule façon de définir un type dans un paquet possédé par la plateforme
+     * ({@code javax.lang.model}) sans conflit avec le module {@code java.compiler}
+     * de la JVM qui compile.
+     */
+    private static void compilerParEcj(Path jarEcj, Path androidJar, Path dirSources,
+                                       Path sortieClasses)
+            throws IOException, InterruptedException {
+        List<Path> sources;
+        try (java.util.stream.Stream<Path> parcours = Files.walk(dirSources)) {
+            sources = parcours.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".java"))
+                    .sorted()
+                    .toList();
+        }
+        if (sources.isEmpty()) {
+            throw new IOException("aucune source de compatibilité ART dans "
+                    + dirSources);
+        }
+        List<String> commande = new ArrayList<>(List.of(
+                java(), "-cp", jarEcj.toString(),
+                "org.eclipse.jdt.internal.compiler.batch.Main",
+                "-1.8", "-nowarn", "-encoding", "UTF-8",
+                "-bootclasspath", androidJar.toString(),
+                "-d", sortieClasses.toString()));
+        sources.forEach(source -> commande.add(source.toString()));
+        Process processus = new ProcessBuilder(commande)
+                .redirectErrorStream(true)
+                .start();
+        byte[] bavardage = processus.getInputStream().readAllBytes();
+        boolean fini = processus.waitFor(DÉLAI_D8_MS, TimeUnit.MILLISECONDS);
+        if (!fini) {
+            processus.destroyForcibly();
+            throw new IOException("compat ART : ECJ a dépassé "
+                    + TimeUnit.MILLISECONDS.toMinutes(DÉLAI_D8_MS) + " minutes");
+        }
+        if (processus.exitValue() != 0) {
+            throw new IOException("compat ART : compilation ECJ échouée — "
+                    + new String(bavardage, java.nio.charset.StandardCharsets.UTF_8));
+        }
+    }
+
+    /**
+     * Extrait du module {@code java.compiler} de la JVM d'assemblage toutes les
+     * classes sous {@code javax/} ({@code module-info} exclu).
+     *
+     * <p>La JVM d'assemblage doit être un JDK (ou JRE) 9+ portant le module —
+     * vérifié pour JDK 17 (CI) et JRE 21. Le contenu suit la version de cette
+     * JVM : la CI l'épingle, ce qui rend les composants reproductibles.</p>
+     *
+     * @return classes vers octets, triées par chemin.
+     * @throws IOException si l'image {@code jrt} ou le module est indisponible.
+     */
+    static SortedMap<String, byte[]> classesApiDepuisJrt() throws IOException {
+        java.nio.file.FileSystem jrt;
+        try {
+            jrt = java.nio.file.FileSystems.getFileSystem(URI.create("jrt:/"));
+        } catch (Exception pasDeJrt) {
+            throw new IOException("la JVM d'assemblage n'expose pas d'image jrt "
+                    + "(JDK 9+ requis pour extraire l'API java.compiler)", pasDeJrt);
+        }
+        Path module = jrt.getPath("/modules/java.compiler");
+        if (!Files.isDirectory(module)) {
+            throw new IOException("module java.compiler absent de la JVM "
+                    + "d'assemblage — assemblez les composants sur un JDK 9+ complet");
+        }
+        List<Path> fichiers = new ArrayList<>();
+        try (java.util.stream.Stream<Path> parcours = Files.walk(module)) {
+            parcours.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".class"))
+                    .filter(p -> !p.getFileName().toString().equals("module-info.class"))
+                    .filter(p -> p.startsWith(module.resolve("javax")))
+                    .forEach(fichiers::add);
+        }
+        SortedMap<String, byte[]> classes = new TreeMap<>();
+        for (Path fichier : fichiers) {
+            classes.put(module.relativize(fichier).toString(),
+                    Files.readAllBytes(fichier));
+        }
+        return classes;
+    }
+
+    /**
+     * Ajoute au jar API les classes compilées de la compat ART (chemin relatif
+     * au répertoire de sortie d'ECJ). Le remplacement d'une classe du module
+     * n'est permis que pour {@link #SOURCE_VERSION_RÉÉCRIT} — tout autre
+     * masquage est une erreur (sources de compat inattendues).
+     */
+    private static void ajouterClassesCompilées(SortedMap<String, byte[]> classes,
+                                                Path classesCompat) throws IOException {
+        List<Path> fichiers;
+        try (java.util.stream.Stream<Path> parcours = Files.walk(classesCompat)) {
+            fichiers = parcours.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".class"))
+                    .sorted()
+                    .toList();
+        }
+        for (Path fichier : fichiers) {
+            String nom = classesCompat.relativize(fichier).toString();
+            byte[] précédent = classes.put(nom, Files.readAllBytes(fichier));
+            if (précédent != null
+                    && !nom.equals(SOURCE_VERSION_RÉÉCRIT + ".class")) {
+                throw new IOException("la classe de compatibilité " + nom
+                        + " masque une classe du module java.compiler — seul "
+                        + SOURCE_VERSION_RÉÉCRIT + " a ce droit");
+            }
+        }
+    }
+
+    /**
+     * Garde-fou de l'API embarquée : toute classe des paquets
+     * {@code javax.lang.model}, {@code javax.annotation.processing} et
+     * {@code javax.tools} référencée par le jar du compilateur doit être servie
+     * par le jar API — sinon échec nommé (le composant ne doit jamais partir
+     * incomplet : c'est ce qui tuait {@code core:compileJava} sur l'appareil).
+     *
+     * @param jarCompilateur jar ECJ dont on lit les références.
+     * @param classesServies chemins de classes servis par le jar API.
+     * @throws IOException nommant les classes manquantes.
+     */
+    static void vérifierRéférencesApi(Path jarCompilateur, java.util.Set<String> classesServies)
+            throws IOException {
+        List<String> manquantes = AnalyseurReferences.classesRéférencées(jarCompilateur)
+                .stream()
+                .filter(référence -> PRÉFIXES_API.stream().anyMatch(référence::startsWith))
+                .filter(référence -> !classesServies.contains(référence + ".class"))
+                .sorted()
+                .toList();
+        if (!manquantes.isEmpty()) {
+            throw new IOException("classes de l'API java.compiler référencées par "
+                    + "le compilateur mais absentes du jar API : " + manquantes);
+        }
+    }
+
+    /**
+     * Écrit le jar API : entrées triées, horodatage fixe (déterminisme), notice
+     * OpenJDK à la racine (elle traversera le dexage avec les autres ressources
+     * et restera lisible sur l'appareil).
+     */
+    private static void écrireJarApi(Path jarSortie, SortedMap<String, byte[]> classes)
+            throws IOException {
+        Path temporaire = jarSortie.resolveSibling(jarSortie.getFileName() + ".part");
+        try (ZipOutputStream jar = new ZipOutputStream(
+                Files.newOutputStream(temporaire))) {
+            for (Map.Entry<String, byte[]> classe : classes.entrySet()) {
+                ZipEntry entrée = new ZipEntry(classe.getKey());
+                entrée.setTime(HORODATAGE_FIXE);
+                jar.putNextEntry(entrée);
+                jar.write(classe.getValue());
+                jar.closeEntry();
+            }
+            ZipEntry notice = new ZipEntry("about-openjdk-java-compiler.txt");
+            notice.setTime(HORODATAGE_FIXE);
+            jar.putNextEntry(notice);
+            jar.write(NOTICE_OPENJDK.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            jar.closeEntry();
+        }
+        Files.move(temporaire, jarSortie, StandardCopyOption.REPLACE_EXISTING);
     }
 
     /**

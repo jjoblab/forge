@@ -1,5 +1,6 @@
 package jo.forge.setup.packaging;
 
+import jo.forge.setup.packaging.fixtures.ClasseQuiRéférenceLApi;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -10,6 +11,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
+import java.util.SortedMap;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
@@ -18,8 +21,10 @@ import java.util.zip.ZipOutputStream;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * Tests du layout des composants publiés : chaque entrée d'archive doit être posée à
@@ -33,6 +38,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * sur ART, c'est par les entrées zip du classpath que le classloader les sert, et leur
  * perte tuait la compilation sur l'appareil ({@code Can't find bundle for base name
  * …batch.messages}).</p>
+ *
+ * <p>Correctif v0.2.6 : le composant {@code java-compiler} embarque l'API
+ * {@code java.compiler} (absente d'ART, 63 références côté ECJ) extraite du module
+ * de la JVM d'assemblage, avec {@code javax.lang.model.SourceVersion} RÉÉCRIT —
+ * l'original lit {@code Runtime.version()} dans son initialiseur, classe absente
+ * d'ART et non redéfinissable ({@code java.*} interdit dans un dex). Le garde-fou
+ * de l'assemblage vérifie que toute classe de l'API référencée par le compilateur
+ * est servie par le jar produit.</p>
  */
 class PackagerComposantsTest {
 
@@ -162,6 +175,145 @@ class PackagerComposantsTest {
                 PackagerComposants.cheminOutil("aapt2-arm64-v8a"));
         assertEquals("components/platform-34/android.jar",
                 PackagerComposants.cheminOutil("platform-34"));
+    }
+
+    @Test
+    void apiJavaCompilerExtraiteDuJrtSansModuleInfo() throws IOException {
+        // L'extraction brute du module java.compiler : les trois paquets, sans
+        // module-info (d8 ne doit pas le voir), avant remplacement du SourceVersion.
+        SortedMap<String, byte[]> classes = PackagerComposants.classesApiDepuisJrt();
+        assertTrue(classes.size() > 100,
+                "l'API complète du module, pas un échantillon : " + classes.size());
+        assertTrue(classes.containsKey("javax/lang/model/SourceVersion.class"));
+        assertTrue(classes.containsKey("javax/annotation/processing/Processor.class"));
+        assertTrue(classes.containsKey("javax/tools/JavaCompiler.class"));
+        classes.keySet().forEach(nom -> assertTrue(nom.startsWith("javax/"),
+                "seule l'API javax du module est extraite : " + nom));
+        assertFalse(classes.containsKey("module-info.class"));
+    }
+
+    @Test
+    void gardeFouApiÉchoueEnNommantLesClassesManquantes() throws IOException {
+        // La fixture (compilée par javac) référence SourceVersion, JavaCompiler et
+        // Processor : le garde-fou doit les nommer TOUTES quand rien n'est servi.
+        Path jarRéférenceur = jarDeClasseCompilée(ClasseQuiRéférenceLApi.class);
+
+        IOException échec = assertThrows(IOException.class,
+                () -> PackagerComposants.vérifierRéférencesApi(jarRéférenceur, Set.of()));
+        for (String attendue : List.of("javax/lang/model/SourceVersion",
+                "javax/annotation/processing/Processor", "javax/tools/JavaCompiler")) {
+            assertTrue(échec.getMessage().contains(attendue),
+                    attendue + " doit être nommée : " + échec.getMessage());
+        }
+
+        // Tout est servi : le garde-fou se tait (références couvertes = assemblage OK).
+        PackagerComposants.vérifierRéférencesApi(jarRéférenceur, Set.of(
+                "javax/lang/model/SourceVersion.class",
+                "javax/annotation/processing/Processor.class",
+                "javax/tools/JavaCompiler.class"));
+    }
+
+    @Test
+    void sourceVersionRéécritEstArtSûr() throws Exception {
+        // Assemblage COMPLET du jar API avec le vrai ECJ et un vrai android.jar
+        // (chemin d'amorçage de la compilation) : ignoré si l'un manque — la CI
+        // les a tous deux.
+        Path jarEcj = jarEcjDuClasspath();
+        Path androidJar = androidJarDeTest();
+        assumeTrue(jarEcj != null && androidJar != null,
+                "ECJ (class de test) et android.jar (SDK ou copie locale) requis");
+
+        Path jarApi = PackagerComposants.assemblerApiCompiler(jarEcj, androidJar,
+                Path.of("src", "compatArt", "java"));
+
+        try (ZipFile jar = new ZipFile(jarApi.toFile())) {
+            // Le SourceVersion du jar est NOTRE réécriture : Java 8 (52, dexable
+            // partout), AUCUNE référence à Runtime$Version, gamme complète.
+            byte[] sourceVersion = jar.getInputStream(
+                    jar.getEntry("javax/lang/model/SourceVersion.class")).readAllBytes();
+            assertEquals(52, majeur(sourceVersion),
+                    "compilé par ECJ en -1.8");
+            String contenu = new String(sourceVersion, StandardCharsets.ISO_8859_1);
+            assertFalse(contenu.contains("Runtime$Version"),
+                    "l'original du JDK lit Runtime.version() dans son initialiseur —"
+                            + " absent d'ART, et java.* est interdit dans un dex");
+            assertTrue(contenu.contains("RELEASE_21"),
+                    "la gamme de constantes doit couvrir ce qu'ECJ sait énumérer");
+            assertTrue(contenu.contains("latestSupported"));
+            // L'API complète est servie à côté, notice OpenJDK comprise ; le
+            // garde-fou a déjà validé toutes les références d'ECJ avant l'écriture.
+            assertNotNull(jar.getEntry("javax/tools/JavaCompiler.class"));
+            assertNotNull(jar.getEntry("javax/annotation/processing/Processor.class"));
+            assertNotNull(jar.getEntry("about-openjdk-java-compiler.txt"));
+            assertNull(jar.getEntry("module-info.class"));
+        }
+    }
+
+    /**
+     * Emballe les octets compilés d'une classe de test en jar (le garde-fou lit
+     * des jars, pas des classes isolées).
+     */
+    private Path jarDeClasseCompilée(Class<?> classe) throws IOException {
+        byte[] octets;
+        try (java.io.InputStream flux = classe.getResourceAsStream(
+                classe.getSimpleName() + ".class")) {
+            assertNotNull(flux, "octets de " + classe.getName());
+            octets = flux.readAllBytes();
+        }
+        Path jar = temporaire.resolve("classe-" + compteur++ + ".jar");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(jar))) {
+            ZipEntry entrée = new ZipEntry(
+                    classe.getName().replace('.', '/') + ".class");
+            entrée.setTime(HORODATAGE_FIXE);
+            zip.putNextEntry(entrée);
+            zip.write(octets);
+            zip.closeEntry();
+        }
+        return jar;
+    }
+
+    /** Localise le jar ECJ du classpath de test (dépendance de test). */
+    private static Path jarEcjDuClasspath() {
+        for (String entrée : System.getProperty("java.class.path")
+                .split(java.io.File.pathSeparator)) {
+            Path jar = Path.of(entrée);
+            if (Files.isRegularFile(jar)
+                    && jar.getFileName().toString().startsWith("ecj-")) {
+                return jar;
+            }
+        }
+        return null;
+    }
+
+    /** Localise un android.jar réel (même convention que les tests du moteur). */
+    private static Path androidJarDeTest() {
+        String propriété = System.getProperty("forge.androidJar");
+        if (propriété != null && Files.isRegularFile(Path.of(propriété))) {
+            return Path.of(propriété);
+        }
+        Path locale = Path.of("/home/z/my-project/.jdk/android-34.jar");
+        if (Files.isRegularFile(locale)) {
+            return locale;
+        }
+        for (String variable : new String[]{"ANDROID_HOME", "ANDROID_SDK_ROOT"}) {
+            String racine = System.getenv(variable);
+            if (racine == null) {
+                continue;
+            }
+            for (int api = 34; api >= 28; api--) {
+                Path jar = Path.of(racine, "platforms", "android-" + api,
+                        "android.jar");
+                if (Files.isRegularFile(jar)) {
+                    return jar;
+                }
+            }
+        }
+        return null;
+    }
+
+    /** Version majeure d'un fichier de classe (octets 6-7, gros-boutiste). */
+    private static int majeur(byte[] classe) {
+        return ((classe[6] & 0xFF) << 8) | (classe[7] & 0xFF);
     }
 
     /**

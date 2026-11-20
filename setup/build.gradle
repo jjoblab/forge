@@ -7,7 +7,7 @@ plugins {
 }
 
 group = 'jo.forge'
-version = '0.2.5'
+version = '0.2.6'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -20,6 +20,10 @@ tasks.withType(JavaCompile).configureEach {
 
 dependencies {
     api project(':json')
+
+    // ECJ pour le test d'assemblage du jar API java.compiler (compat ART) :
+    // la compilation de secours d'ECJ elle-même est testée avec le vrai jar.
+    testImplementation 'org.eclipse.jdt:ecj:3.36.0'
 
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
