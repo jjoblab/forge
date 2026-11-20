@@ -17,8 +17,8 @@ android {
         // targetSdk 28 assumé : préserve l'exécution des binaires d'outils téléchargés
         // depuis le stockage privé (politique W^X d'Android 10+, voir docs/conception.md D-04).
         targetSdk 28
-        versionCode 1
-        versionName '0.1.0'
+        versionCode 2
+        versionName '0.2.0'
     }
 
     buildTypes {

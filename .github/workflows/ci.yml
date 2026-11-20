@@ -123,6 +123,12 @@ jobs:
         env:
           # Clé privée de signature (PKCS#8, base64) : JETON CI, jamais versionnée.
           FORGE_MANIFEST_KEY: ${{ secrets.FORGE_MANIFEST_KEY }}
+          # Premières publications SANS les composants redistribuables du SDK
+          # (platform-34 embarque android.jar, aapt2 le binaire des build-tools) :
+          # garde juridique docs/distribution.md §7 tant que les conditions de
+          # redistribution ne sont pas validées — et le binaire actuel est le prébuilt
+          # Linux, inutile sur appareil (arm64 attend une construction AOSP).
+          FORGE_SANS_OUTILS_ANDROID: '1'
         run: |
           echo "$FORGE_MANIFEST_KEY" > /tmp/cle-privee.b64
           FORGE_CLE_PRIVEE=/tmp/cle-privee.b64 ./gradlew --no-daemon :engine:composants
@@ -145,8 +151,11 @@ jobs:
             engine/build/composants/manifest.json /tmp/cle-publique.b64 \
             engine/build/composants/manifest.sig
 
-      - name: Assembler la coquille (APK de publication)
-        run: ./gradlew --no-daemon :app:assembleRelease --stacktrace || ./gradlew --no-daemon :app:assembleDebug --stacktrace
+      - name: Assembler la coquille (APK installable de test)
+        # APK de DÉBOGAGE signé (clé de débogage) : la signature de production reste
+        # une évolution consignée (limites-et-suite.md). L'APK non signé d'assembleRelease
+        # ne serait pas installable sur appareil.
+        run: ./gradlew --no-daemon :app:assembleDebug --stacktrace
 
       - name: Publier la version GitHub
         env:
@@ -156,5 +165,6 @@ jobs:
             engine/build/composants/*.zip \
             engine/build/composants/manifest.json \
             engine/build/composants/manifest.sig \
+            app/build/outputs/apk/debug/app-debug.apk \
             --title "Forge $GITHUB_REF_NAME" \
-            --notes "Composants du moteur (dexés pour ART), manifeste signé (ECDSA P-256) et coquille. Vérifiez le manifeste avec la clé publique épinglée dans la coquille (ClesForge) avant toute installation."
+            --notes "Composants du moteur (dexés pour ART — sans outils Android pour cette version, voir distribution.md §7), manifeste signé (ECDSA P-256) et coquille (APK de débogage, installable). Vérifiez le manifeste avec la clé publique épinglée dans la coquille (ClesForge) avant toute installation."
