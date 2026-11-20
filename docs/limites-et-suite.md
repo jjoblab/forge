@@ -13,6 +13,7 @@ tout écart est consigné ici.
 | 3 — Conception | **Fait** (2026-11-20) | [`conception.md`](conception.md) (12 décisions D-01..D-12 justifiées, registre des améliorations priorisées, ordre d'implémentation) et [`distribution.md`](distribution.md) (Play exclu, GitHub Releases + F-Droid, clés, licences, guidance appareil). |
 | 4 — Implémentation | **Fait** (étapes 1-13, 2026-11-20) | Détail ci-dessous ; moteur Java ET Android jusqu'à l'APK signé, chaîne de publication complète. |
 | Post-4 — Assistant, jonction, exemples | **Fait** (2026-11-20) | Étape 14 du tableau ci-dessous : assistant d'installation câblé, jonction des outils, exemples embarqués, publications `v0.2.0` puis `v0.2.1` (clé d'essai stable). |
+| Post-4 — Diagnostic sur appareil | **Fait** (2026-11-20) | Étape 15 du tableau ci-dessous : stderr du moteur capturé, journaux copiables, moteurs successifs arrêtés, publication `v0.2.2`. |
 
 ### Phase 4 : détail par étape
 
@@ -32,6 +33,7 @@ tout écart est consigné ici.
 | 12. Packaging et publication | **Fait** | Chaîne complète : `PackagerComposants` (setup) assemble les six composants dexés (engine-core 93 Ko, java-compiler 1,2 Mo, dexeur 3,2 Mo, signeur 165 Ko, aapt2-arm64-v8a 2,2 Mo, platform-34 24 Mo) en zips déterministes + manifeste JSON via le codec de l'installateur ; signature ECDSA P-256 du manifeste (outil `OutilManifeste` : génération, signature, vérification — round-trip testé avec le vérificateur de la coquille) ; **clé de production générée et épinglée** (publique : `ClesForge` dans la coquille ; privée : jeton CI `FORGE_MANIFEST_KEY`, posé par l'API GitHub, jamais versionnée) ; tâche `:engine:composants` ; job CI `release` sur étiquette `vX.Y.Z` (assemblage, signature, vérification contre la clé épinglée, version GitHub). La chaîne a été exécutée en entier dans le bac à sable : signature vérifiée VALIDE. |
 | 13. Import Gradle statique (optionnel) | **Fait** | Lecteur STATIQUE des scripts Groovy (aucun code évalué — même limite que la référence, assumée) : `include` du settings, plugins, dépôts (`google()`, `mavenCentral()`), dépendances (portées Gradle, notation `g:a:v` et `project(':x')`), bloc `android` (namespace, applicationId, min/target/compileSdk) ; blocs sur une ligne normalisés ; constructions inconnues ignorées AVEC avertissement ; le modèle produit passe le codec officiel (testé) ; application sans namespace refusée avec message actionnable. |
 | 14. Assistant, jonction, exemples (post-4) | **Fait** (2026-11-20) | Canal signé (`CanalMoteur` : manifeste + signature vérifiés contre la clé épinglée, HTTPS strict, plafonds) ; assistant d'installation dans la coquille (composants par ABI avec tailles, avertissement données mobiles, progression globale, annulation avec reprise, réparation, désinstallation) ; `FORGE_ENGINE_DIR` transmis au moteur (outils Android localisés dans le moteur installé) ; layout des composants publiés conforme à la convention d'installation (engine.jar, lib/, components/ — l'ancien layout à plat aurait écrasé les classes.dex à l'extraction) ; exemples embarqués en assets et importables sans permission ; publications `v0.2.0` puis `v0.2.1` SANS composants redistribuables du SDK (garde juridique §7), APK de test signé de la clé d'essai STABLE joint (jetons CI `FORGE_APK_KEYSTORE_B64`/`FORGE_APK_KEYSTORE_MDP` — sans elle, chaque exécutant éphémère signerait différemment et aucune version ne s'installerait sur la précédente) ; déclencheur CI des étiquettes corrigé (le job release ne se serait jamais exécuté). |
+| 15. Diagnostic sur appareil (post-4) | **Fait** (2026-11-20) | Constat de départ : premier test sur appareil (`v0.2.1`) — le moteur meurt au milieu de `compileJava` sans laisser de trace, et aucun journal ne sort de l'appareil. Livré : **capture continue du stderr du moteur** par le client (`JournalMoteur` borné 500 lignes, consommateur en flux, sentinelle du **code de sortie** — la trace qui survit à une mort brutale du processus, et le drainage évite qu'un tube non lu bloque un moteur bavard) ; **rapport copiable/partageable** dans la coquille (contexte versions/appareil, journal de build, journal du moteur, dernière trace JSON, description du code de sortie : propre / signal du tueur de mémoire / explicite) ; à la mort inattendue du moteur, code de sortie et dernières lignes de stderr sont affichés dans le journal (la génération du moteur distingue mort attendue et mort à signaler) ; **moteurs successifs arrêtés** (avant chaque build, à la fin du build, et dans le service hôte — des VM oisives s'accumulaient : un `app_process` de 512 Mo par build/test, mémoire saturée, tueur de processus déclenché au pire moment) ; **filet de sécurité du serveur** contre les `Error` avant les tâches (échec propre au lieu d'un fil mort en silence). Tests : capture de stderr de bout en bout dans un vrai processus (code 7), bornage du journal, moteur factice (code 0), rapport complet/vides/troncature/codes (JVM). |
 
 ## Manques et limites constatés (Phases 3-4, étapes 1-14)
 
@@ -141,30 +143,42 @@ tout écart est consigné ici.
    `1b1a3052168a52f38a91ea03c87831a0d94c1fff`, jamais copié ni référencé hors de
    `docs/REFERENCES.md`.
 
-## Procédure de test sur appareil (v0.2.1)
+## Procédure de test sur appareil (v0.2.2)
 
-La chaîne est testable de bout en bout depuis la publication `v0.2.1` :
+La chaîne est testable de bout en bout depuis la publication `v0.2.2` :
 
 1. **Installer la coquille** : APK signé de la clé d'essai joint à la version GitHub
-   `v0.2.1` (`app-debug.apk`), installation par chargement latéral (autoriser les
+   `v0.2.2` (`app-debug.apk`), installation par chargement latéral (autoriser les
    sources inconnues). Les versions de test successives s'installent l'une sur
    l'autre (clé d'essai stable, jetons CI) ; une installation antérieure signée
    autrement (clé de débogage éphémère d'un exécutant, comme l'APK d'artefact des
-   builds de branche) doit d'abord être désinstallée.
-2. **Installer le moteur** : section *Installation du moteur* de l'application — le
-   canal par défaut (version GitHub la plus récente) charge le manifeste signé,
-   vérifié contre la clé épinglée ; la liste des composants applicables s'affiche
-   avec tailles et avertissement données mobiles ; l'installation télécharge avec
-   reprise, vérifie les sommes et pose le moteur en lecture seule (~4,6 Mo pour les
-   quatre composants Java de la 0.2.1).
+   builds de branche) doit d'abord être désinstallée. Une `v0.2.1` déjà installée
+   se met à jour directement par-dessus.
+2. **Mettre à jour le moteur** : section *Installation du moteur* — *Charger le
+   manifeste* puis *Réinstaller (mise à jour ou réparation)* : les composants Java
+   de la `v0.2.2` remplacent ceux de la `0.2.1` (la capture du stderr vit dans la
+   coquille et fonctionnerait même avec un moteur plus ancien ; la mise à jour du
+   moteur apporte son filet de sécurité contre les erreurs graves).
 3. **Construire l'exemple Java** : bouton *Importer les projets d'exemple* (stockage
    privé, aucune permission), puis *Construire* — le moteur démarre dans son propre
    processus (`app_process`, tas dédié), ECJ compile sur ART, les jar sortent dans
    `<projet>/build/`. Un second build doit être presque entièrement *à jour*
-   (incrémentalité par empreintes).
+   (incrémentalité par empreintes). Depuis la `v0.2.2`, le moteur du build
+   précédent est arrêté avant chaque lancement et à la fin du build (plus de VM
+   oisives qui s'accumulent).
 4. **Limites attendues sur cette version** : l'exemple `application-android` échoue
    proprement (composants aapt2/plate-forme non publiés, message actionnable) ; la
    production d'un APK installable sur appareil attend le prébuilt aapt2 arm64.
+5. **En cas de problème (débogage)** : bouton *Copier les journaux* (presse-papiers)
+   ou *Partager* (courriel, notes…) — le rapport contient le contexte (versions,
+   appareil, projet), le journal du build, le **journal du moteur** (stderr capturé
+   en continu : la seule trace qui survit à une mort brutale du processus) et la
+   dernière trace JSON. Si le moteur meurt en cours de build, le journal affiché
+   reçoit automatiquement le **code de sortie** (0 = propre ; -9 ou 137 = tué par
+   le signal 9, typiquement le tueur de mémoire du système face à des VM
+   oisives — corrigé en `v0.2.2` ; positif = échec interne, la trace stderr dit
+   lequel) et les dernières lignes de stderr. C'est ce rapport qu'il faut joindre
+   à tout ticket.
 
 Points observés par ce test : lancement `app_process` avec `CLASSPATH` (D-01),
 jars dexés en lecture seule, tueur de processus Android 12+ (D-02). Le binaire

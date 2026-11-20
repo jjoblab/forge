@@ -101,11 +101,16 @@ vers le SDK comme d'habitude.
   d'installation, exemples embarqués importables sans permission, publications de
   test `v0.2.0`/`v0.2.1` (sans composants redistribuables du SDK — garde juridique ;
   `v0.2.1` signe les APK de test avec une clé d'essai stable).
+- [x] Diagnostic sur appareil (`v0.2.2`) — stderr du moteur capturé en continu par le
+  client (journal borné + code de sortie), rapport copiable/partageable depuis la
+  coquille (journal de build, journal du moteur, dernière trace), moteurs successifs
+  arrêtés (plus de VM oisives qui s'accumulent), filet de sécurité du serveur contre
+  les erreurs graves avant les tâches.
 - [ ] Vérification sur appareil réel (ART) — procédure dans `docs/limites-et-suite.md`.
 
 ## Tester sur un appareil
 
-Depuis la publication [`v0.2.1`](https://github.com/jjoblab/forge/releases/latest) :
+Depuis la publication [`v0.2.2`](https://github.com/jjoblab/forge/releases/latest) :
 
 1. **Coquille** : installez l'APK joint à la version (chargement latéral ; clé d'essai
    stable — les versions de test successives s'installent l'une sur l'autre).
@@ -116,6 +121,11 @@ Depuis la publication [`v0.2.1`](https://github.com/jjoblab/forge/releases/lates
 3. **Premier build** : bouton *Importer les projets d'exemple* puis *Construire* —
    l'exemple Java se compile sur l'appareil par ECJ dans le processus moteur
    (`app_process`) ; un second build est presque entièrement *à jour*.
+4. **En cas de problème** : bouton *Copier les journaux* (presse-papiers) ou
+   *Partager* — le rapport contient le journal du build, le journal du moteur
+   (stderr capturé, la trace qui survit à une mort du processus) et la dernière
+   trace de build ; le code de sortie du moteur y est décrit (arrêt propre, signal
+   du tueur de mémoire, échec interne).
 
 Le pipeline Android complet sur appareil (ressources → APK signé) attend la
 publication des composants `aapt2` (prébuilt arm64) et `platform` — voir
