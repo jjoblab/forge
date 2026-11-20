@@ -40,9 +40,16 @@ tout écart est consigné ici.
   (aucun code copié, noms distincts), mais le choix de notre licence (permissive, copyleft,
   exception pour `api/` ?) appartient au propriétaire du projet. **Décision requise avant toute
   publication.**
-- **Secret `FORBIDDEN_TERMS` de la CI** : le contrôle des termes interdits en CI nécessite de
-  définir ce secret sur le dépôt GitHub (une expression par ligne). S'il est absent, la CI
-  ignore le contrôle avec un avertissement — les hooks locaux restent la barrière principale.
+- **Secret `FORBIDDEN_TERMS` de la CI** : défini sur le dépôt GitHub (2026-11-20) — la CI
+  applique le même contrôle que les hooks locaux à chaque push.
+- **CI bloquée par la facturation du compte GitHub** : les jobs Actions ne démarrent pas
+  (« The job was not started because recent account payments have failed or your spending
+  limit needs to be increased »). Le workflow est valide (vérifié : YAML conforme, les deux
+  jobs sont créés) et toutes ses étapes ont été validées localement (contrôle des termes avec
+  la valeur exacte du secret, garde de structure, syntaxe des scripts). **Action requise côté
+  compte** : régler un moyen de paiement ou augmenter le plafond de dépense dans
+  *Settings → Billing & plans* (un dépôt privé consomme des minutes Actions ; un dépôt public
+  en bénéficierait gratuitement).
 - **Vérifications sur appareil réel** : rien n'a encore été vérifié sur ART (aucun code
   exécutable) ; les constats « sur appareil » cités dans l'analyse proviennent du code et des
   commentaires du moteur de référence, pas de nos propres mesures.
