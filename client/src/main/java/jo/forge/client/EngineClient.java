@@ -1,0 +1,274 @@
+package jo.forge.client;
+
+import jo.forge.api.BuildEvent;
+import jo.forge.api.BuildRequest;
+import jo.forge.api.BuildStarted;
+import jo.forge.api.Cancelled;
+import jo.forge.api.CancelRequest;
+import jo.forge.api.ClientHello;
+import jo.forge.api.Frame;
+import jo.forge.api.FrameType;
+import jo.forge.api.Hello;
+import jo.forge.api.MessageIO;
+import jo.forge.api.ProtocolVersions;
+import jo.forge.api.Status;
+
+import java.io.ByteArrayInputStream;
+import java.io.DataInputStream;
+import java.io.IOException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.CompletionException;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.function.Consumer;
+
+/**
+ * Client du moteur : lance la VM enfant, négocie le protocole puis expose les fonctions
+ * du contrat (ping, état, build, annulation, arrêt).
+ *
+ * <p>Utilisation :</p>
+ * <pre>{@code
+ * EngineClient client = EngineClient.launch(
+ *         new JavaVmLauncher(), spec, "1.2.3", événements -> ...);
+ * Status état = client.status().get(5, TimeUnit.SECONDS);
+ * client.startBuild(requête);
+ * client.shutdown().get(5, TimeUnit.SECONDS);
+ * }</pre>
+ *
+ * <p>La négociation suit la décision D-07 : le moteur annonce sa plage de protocole ;
+ * la coquille refuse proprement si sa version n'y entre pas, le moteur refuse
+ * proprement la version choisie si elle sort de la sienne. Les événements de build
+ * arrivent en flux vers le consommateur unique donné au lancement.</p>
+ */
+public final class EngineClient {
+
+    /** Délai par défaut des requêtes en secondes. */
+    private static final int DEFAULT_TIMEOUT_SECONDS = 15;
+
+    private final EngineConnection connection;
+    private final Hello hello;
+
+    private EngineClient(EngineConnection connection, Hello hello) {
+        this.connection = connection;
+        this.hello = hello;
+    }
+
+    /**
+     * Lance le moteur, attend sa poignée de main et répond la nôtre.
+     *
+     * @param launcher      stratégie de lancement de la VM (appareil ou développement).
+     * @param spec          description de la VM moteur.
+     * @param shellVersion  version de la coquille (journal et diagnostic côté moteur).
+     * @param eventConsumer consommateur des événements de build (appelé depuis le thread
+     *                      lecteur ; doit être rapide et non bloquant).
+     * @param onDead        rappel de mort du moteur (redémarrage, diagnostic).
+     * @return le client connecté, protocole négocié.
+     * @throws EngineConnection.EngineConnectionException si le lancement, la poignée de
+     *         main ou la négociation échoue.
+     */
+    public static EngineClient launch(VmLauncher launcher, VmSpec spec, String shellVersion,
+                                      Consumer<BuildEvent> eventConsumer, Runnable onDead) {
+        Process process;
+        try {
+            process = launcher.start(spec);
+        } catch (IOException ioError) {
+            throw new EngineConnection.EngineConnectionException(
+                    "Lancement du moteur impossible : " + ioError.getMessage(), ioError);
+        }
+        CompletableFuture<Frame> helloFrame = new CompletableFuture<>();
+        EngineConnection connection = new EngineConnection(process, eventConsumer,
+                helloFrame::complete, onDead);
+        connection.start();
+
+        // La poignée de main est une trame spontanée : on l'attend sur le flux.
+        HelloHandshake handshake = awaitHello(connection, helloFrame);
+        int chosen = chooseProtocol(handshake.hello());
+        ClientHello clientHello = new ClientHello(shellVersion, chosen);
+        Frame acknowledgement = connection
+                .request(FrameType.CLIENT_HELLO, out -> MessageIO.writeClientHello(
+                        out, clientHello))
+                .orTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS).join();
+        if (acknowledgement.type() == FrameType.PROTOCOL_ERROR) {
+            connection.kill();
+            throw new EngineConnection.EngineConnectionException(
+                    "Moteur incompatible : " + decodeError(acknowledgement));
+        }
+        if (acknowledgement.type() != FrameType.CLIENT_HELLO) {
+            connection.kill();
+            throw new EngineConnection.EngineConnectionException(
+                    "Accusé de poignée de main inattendu : " + acknowledgement.type());
+        }
+        return new EngineClient(connection, handshake.hello());
+    }
+
+    /**
+     * Poignée de main reçue au lancement.
+     *
+     * @return le message {@code HELLO} du moteur.
+     */
+    public Hello hello() {
+        return hello;
+    }
+
+    /**
+     * Interroge l'état du moteur.
+     *
+     * @return le futur de l'état.
+     */
+    public CompletableFuture<Status> status() {
+        return connection.request(FrameType.STATUS_REQUEST, out -> { })
+                .thenApply(frame -> decode(frame, MessageIO::readStatus));
+    }
+
+    /**
+     * Sonde la vivacité du moteur.
+     *
+     * @return le futur de l'horodatage moteur du pong.
+     */
+    public CompletableFuture<Long> ping() {
+        return connection.request(FrameType.PING, out -> { })
+                .thenApply(frame -> decode(frame, MessageIO::readPong).engineTimestamp());
+    }
+
+    /**
+     * Lance un build ; les événements arrivent en flux vers le consommateur.
+     *
+     * @param request la requête de build.
+     * @return le futur de l'accusé de démarrage (identifiant acté par le moteur).
+     */
+    public CompletableFuture<BuildStarted> startBuild(BuildRequest request) {
+        return connection.request(FrameType.START_BUILD,
+                        out -> MessageIO.writeBuildRequest(out, request))
+                .thenApply(frame -> decode(frame, MessageIO::readBuildStarted));
+    }
+
+    /**
+     * Annule un build ; l'accusé n'arrive qu'une fois le build totalement arrêté
+     * (exigence D-08).
+     *
+     * @param buildId identifiant du build à annuler.
+     * @return le futur de l'accusé d'annulation.
+     */
+    public CompletableFuture<Cancelled> cancel(String buildId) {
+        return connection.request(FrameType.CANCEL_BUILD,
+                        out -> MessageIO.writeCancelRequest(out, new CancelRequest(buildId)))
+                .thenApply(frame -> decode(frame, MessageIO::readCancelled));
+    }
+
+    /**
+     * Demande l'arrêt propre du moteur puis ferme le canal.
+     *
+     * @return le futur complété quand l'arrêt est envoyé (la mort suit de près).
+     */
+    public CompletableFuture<Void> shutdown() {
+        return connection.request(FrameType.SHUTDOWN, out -> { })
+                .thenApply(frame -> null);
+    }
+
+    /**
+     * Détruit immédiatement le moteur (moteur fou, dernier recours).
+     */
+    public void kill() {
+        connection.kill();
+    }
+
+    /**
+     * Attend la fin effective du processus moteur.
+     *
+     * @return le code de sortie.
+     * @throws InterruptedException si l'attente est interrompue.
+     */
+    public int awaitExit() throws InterruptedException {
+        return connection.awaitExit();
+    }
+
+    // ---- Aides -------------------------------------------------------------
+
+    /**
+     * Attend la trame HELLO spontanée du moteur.
+     */
+    private static HelloHandshake awaitHello(EngineConnection connection,
+                                              CompletableFuture<Frame> helloFrame) {
+        try {
+            Frame frame = helloFrame.get(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS);
+            if (frame.type() != FrameType.HELLO) {
+                throw new EngineConnection.EngineConnectionException(
+                        "Première trame inattendue : " + frame.type());
+            }
+            return new HelloHandshake(decode(frame, MessageIO::readHello));
+        } catch (TimeoutException timeout) {
+            connection.kill();
+            throw new EngineConnection.EngineConnectionException(
+                    "Le moteur n'a pas salué (démarrage trop lent ou écroulé)");
+        } catch (Exception failure) {
+            connection.kill();
+            throw new EngineConnection.EngineConnectionException(
+                    "Poignée de main échouée : " + rootMessage(failure), failure);
+        }
+    }
+
+    /**
+     * Choisit la version de protocole commune la plus haute, ou refuse proprement.
+     */
+    private static int chooseProtocol(Hello hello) {
+        int min = Math.max(ProtocolVersions.PROTOCOL_MIN, hello.protocolMin());
+        int max = Math.min(ProtocolVersions.PROTOCOL_MAX, hello.protocolMax());
+        if (min > max) {
+            throw new EngineConnection.EngineConnectionException(
+                    "Protocoles incompatibles : coquille "
+                            + ProtocolVersions.PROTOCOL_MIN + "-" + ProtocolVersions.PROTOCOL_MAX
+                            + ", moteur " + hello.protocolMin() + "-" + hello.protocolMax());
+        }
+        return max;
+    }
+
+    /**
+     * Décode une trame avec le décodeur donné.
+     */
+    private static <T> T decode(Frame frame, Decoder<T> decoder) {
+        try {
+            DataInputStream in = new DataInputStream(
+                    new ByteArrayInputStream(frame.payload()));
+            return decoder.readFrom(in);
+        } catch (IOException ioError) {
+            throw new EngineConnection.EngineConnectionException(
+                    "Charge utile illisible (" + frame.type() + ") : " + ioError.getMessage(),
+                    ioError);
+        }
+    }
+
+    private static String decodeError(Frame frame) {
+        try {
+            DataInputStream in = new DataInputStream(
+                    new ByteArrayInputStream(frame.payload()));
+            return MessageIO.readErrorMessage(in);
+        } catch (IOException ioError) {
+            return "message illisible";
+        }
+    }
+
+    private static String rootMessage(Throwable error) {
+        if (error instanceof CompletionException && error.getCause() != null) {
+            return rootMessage(error.getCause());
+        }
+        return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+    }
+
+    /** Décodeur de charge utile. */
+    @FunctionalInterface
+    private interface Decoder<T> {
+
+        /**
+         * Décode un message.
+         *
+         * @param in flux source.
+         * @return le message.
+         * @throws IOException en cas d'erreur de lecture.
+         */
+        T readFrom(DataInputStream in) throws IOException;
+    }
+
+    /** Porteur interne de la poignée de main. */
+    private record HelloHandshake(Hello hello) {
+    }
+}

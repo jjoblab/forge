@@ -21,6 +21,10 @@ tasks.withType(JavaCompile).configureEach {
 dependencies {
     api project(':api')
 
+    // Le test d'intégration lance le moteur factice (module engine) dans un vrai
+    // processus séparé : ses classes doivent être sur le classpath de test.
+    testImplementation project(':engine')
+
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
