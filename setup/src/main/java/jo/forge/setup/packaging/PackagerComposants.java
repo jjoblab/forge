@@ -31,6 +31,14 @@ import java.util.zip.ZipOutputStream;
  * machine sont omis avec un avertissement : la CI, qui a le SDK complet, produit
  * l'ensemble entier.</p>
  *
+ * <p>Layout interne des archives — il épouse la convention d'installation des étapes
+ * 3-4 (chaque entrée est posée à son chemin de destination, l'extracteur ne fait
+ * aucun remappage) : le dex du cœur s'appelle {@code engine.jar} à la racine du
+ * répertoire moteur, les dex compagnons vivent en {@code lib/&lt;id&gt;.jar}, le binaire
+ * aapt2 en {@code components/aapt2-&lt;abi&gt;/aapt2} et la plate-forme en
+ * {@code components/platform-&lt;api&gt;/android.jar} (chemins attendus par la session
+ * de la coquille et par le localisateur d'outils du moteur).</p>
+ *
  * <p>Usage :</p>
  * <pre>
  *   java jo.forge.setup.packaging.PackagerComposants
@@ -38,8 +46,15 @@ import java.util.zip.ZipOutputStream;
  *       --d8 &lt;r8.jar&gt; --android-jar &lt;android.jar&gt; [--min-api 28]
  *       [--moteur jar1 jar2 …] [--compilateur ecj.jar] [--dexeur r8.jar]
  *       [--signeur apksig.jar] [--aapt2 binaire --abi arm64-v8a]
- *       [--clé-privée &lt;pkcs8-b64&gt;]
+ *       [--clé-privée &lt;pkcs8-b64&gt;] [--sans-outils-android]
  * </pre>
+ *
+ * <p>{@code --sans-outils-android} omet les composants redistribuables de la
+ * plate-forme ({@code platform-&lt;api&gt;} et {@code aapt2-&lt;abi&gt;}) tout en conservant
+ * {@code android.jar} pour le DEXAGE (modélisation de bibliothèque de d8, jamais
+ * redistribué) : c'est la configuration des premières publications, le temps que les
+ * conditions de redistribution des éléments du SDK soient validées
+ * (docs/distribution.md §7).</p>
  */
 public final class PackagerComposants {
 
@@ -65,6 +80,7 @@ public final class PackagerComposants {
         Path d8 = Path.of(obligatoire(options, "d8"));
         Path androidJar = options.containsKey("android-jar")
                 ? Path.of(obligatoire(options, "android-jar")) : null;
+        boolean sansOutilsAndroid = options.containsKey("sans-outils-android");
         String cléPrivée = options.containsKey("clé-privée")
                 ? Files.readString(Path.of(obligatoire(options, "clé-privée"))) : null;
         Files.createDirectories(sortie);
@@ -90,13 +106,17 @@ public final class PackagerComposants {
                     "signature d'APK (apksig)", List.of("engine-core"),
                     d8, androidJar, jars(options, "signeur")));
         }
-        if (options.containsKey("aapt2")) {
+        if (options.containsKey("aapt2") && !sansOutilsAndroid) {
             String abi = options.getOrDefault("abi", List.of("arm64-v8a")).get(0);
             composants.add(composantFichier(sortie, version, "aapt2-" + abi,
                     "outil de ressources Android (aapt2)", List.of("engine-core"),
                     List.of(abi), Path.of(obligatoire(options, "aapt2"))));
         }
-        if (androidJar != null && Files.isRegularFile(androidJar)) {
+        if (sansOutilsAndroid) {
+            System.out.println("[avertissement] composants d'outils Android omis "
+                    + "(option --sans-outils-android : garde juridique "
+                    + "docs/distribution.md §7)");
+        } else if (androidJar != null && Files.isRegularFile(androidJar)) {
             int api = options.containsKey("min-api")
                     ? Integer.parseInt(obligatoire(options, "min-api"))
                     : versionApi(androidJar);
@@ -170,7 +190,7 @@ public final class PackagerComposants {
             throw new IOException("composant " + id + " : d8 n'a pas produit de dex");
         }
         Path archive = sortie.resolve(id + "-" + version + ".zip");
-        zipperFichier(archive, dex, "classes.dex");
+        emballerJarDexe(dex, archive, cheminDexe(id));
         System.out.println("[composant " + id + "] " + archive.getFileName() + " ("
                 + Files.size(archive) + " octets) — " + description);
         return manifesteDe(archive, version, List.of("all"), dépendances);
@@ -183,10 +203,52 @@ public final class PackagerComposants {
             String id, String description, List<String> dépendances,
             List<String> abis, Path fichier) throws IOException {
         Path archive = sortie.resolve(id + "-" + version + ".zip");
-        zipperFichier(archive, fichier, fichier.getFileName().toString());
+        zipperFichier(archive, fichier, cheminOutil(id));
         System.out.println("[composant " + id + "] " + archive.getFileName() + " ("
                 + Files.size(archive) + " octets) — " + description);
         return manifesteDe(archive, version, abis, dépendances);
+    }
+
+    /**
+     * Chemin d'installation d'un composant dexé : le cœur devient {@code engine.jar}
+     * (première entrée du CLASSPATH de la VM moteur), les compagnons vivent en
+     * {@code lib/<id>.jar} (ajoutés au CLASSPATH par la session de la coquille).
+     */
+    static String cheminDexe(String id) {
+        return "engine-core".equals(id) ? "engine.jar" : "lib/" + id + ".jar";
+    }
+
+    /**
+     * Chemin d'installation d'un composant d'outil : sous {@code components/<id>/},
+     * avec le nom attendu par le localisateur du moteur (aapt2 par ABI, android.jar
+     * par niveau d'API).
+     */
+    static String cheminOutil(String id) {
+        String nom = id.startsWith("platform-") ? "android.jar" : "aapt2";
+        return "components/" + id + "/" + nom;
+    }
+
+    /**
+     * Emballe un dex produit par d8 en jar (zip à entrée unique {@code classes.dex}),
+     * puis l'archive du composant avec ce jar posé à son chemin de destination.
+     * ART charge le {@code classes.dex} d'un jar exactement comme celui d'un APK.
+     */
+    static void emballerJarDexe(Path dex, Path archive, String cheminDestination)
+            throws IOException {
+        Path travail = Files.createTempFile("forge-jar-dexe", ".jar");
+        try {
+            try (ZipOutputStream jar = new ZipOutputStream(
+                    Files.newOutputStream(travail))) {
+                ZipEntry entree = new ZipEntry("classes.dex");
+                entree.setTime(HORODATAGE_FIXE);
+                jar.putNextEntry(entree);
+                Files.copy(dex, jar);
+                jar.closeEntry();
+            }
+            zipperFichier(archive, travail, cheminDestination);
+        } finally {
+            Files.deleteIfExists(travail);
+        }
     }
 
     /**

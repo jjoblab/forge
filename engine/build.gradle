@@ -99,11 +99,19 @@ tasks.register('composants', JavaExec) {
                      '--compilateur', ecjJar?.absolutePath,
                      '--dexeur', r8Jar?.absolutePath,
                      '--signeur', apksigJar?.absolutePath]
+    // Garde juridique (docs/distribution.md §7) : FORGE_SANS_OUTILS_ANDROID omet les
+    // composants redistribuables du SDK (platform-<api>, aapt2-<abi>) — android.jar
+    // reste utilisé pour le DEXAGE, jamais redistribué. Les premières publications
+    // l'activent tant que les conditions de redistribution ne sont pas validées.
+    def sansOutilsAndroid = System.getenv('FORGE_SANS_OUTILS_ANDROID')
     if (cheminAndroidJar) {
         arguments.addAll(['--android-jar', cheminAndroidJar])
     }
-    if (cheminAapt2) {
+    if (cheminAapt2 && !sansOutilsAndroid) {
         arguments.addAll(['--aapt2', cheminAapt2, '--abi', 'arm64-v8a'])
+    }
+    if (sansOutilsAndroid) {
+        arguments.add('--sans-outils-android')
     }
     def cléPrivée = System.getenv('FORGE_CLE_PRIVEE')
     if (cléPrivée) {
