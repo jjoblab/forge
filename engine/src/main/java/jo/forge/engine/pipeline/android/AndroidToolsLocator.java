@@ -101,6 +101,47 @@ public final class AndroidToolsLocator {
                 + "forge.androidJar / ANDROID_HOME");
     }
 
+    /**
+     * Niveau d'API le plus élevé des plate-formes installées dans le moteur.
+     *
+     * <p>Sert aux modules sans facette Android (bibliothèques Java sur ART) :
+     * ils compilent contre la plate-forme installée, puisque leur code tourne
+     * sur l'appareil qui porte cette installation.</p>
+     *
+     * @param engineHome racine du moteur installé (peut être null).
+     * @return le niveau le plus élevé, ou {@code -1} si aucune plate-forme.
+     */
+    public static int plateformeLaPlusHaute(Path engineHome) {
+        if (engineHome == null) {
+            return -1;
+        }
+        Path composants = engineHome.resolve("components");
+        if (!Files.isDirectory(composants)) {
+            return -1;
+        }
+        int laPlusHaute = -1;
+        try (var plateformes = Files.list(composants)) {
+            for (Path répertoire : plateformes.filter(Files::isDirectory).toList()) {
+                if (!Files.isRegularFile(répertoire.resolve("android.jar"))) {
+                    continue;
+                }
+                String nom = répertoire.getFileName().toString();
+                if (!nom.startsWith("platform-")) {
+                    continue;
+                }
+                try {
+                    laPlusHaute = Math.max(laPlusHaute,
+                            Integer.parseInt(nom.substring("platform-".length())));
+                } catch (NumberFormatException ignorée) {
+                    // Répertoire non conforme : ignoré.
+                }
+            }
+        } catch (Exception ignorée) {
+            // Composants illisibles : aucune plate-forme retenue.
+        }
+        return laPlusHaute;
+    }
+
     private static Path cheminPropriété(String propriété) {
         String valeur = System.getProperty(propriété);
         if (valeur == null || valeur.isBlank()) {

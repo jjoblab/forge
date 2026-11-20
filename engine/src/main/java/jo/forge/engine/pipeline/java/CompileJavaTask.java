@@ -23,6 +23,7 @@ import java.util.stream.Stream;
  * <p>Entrées de l'oracle d'up-to-date : répertoires sources du module (contenu haché
  * récursivement), répertoires de classes des dépendances (le changement d'une classe
  * amont invalide la compilation — c'est l'incrémentalité par contenu, décision D-12),
+ * bibliothèque de plate-forme (contenu — changer de composant platform recompile),
  * niveau Java, version du compilateur. Sortie : le répertoire de classes.</p>
  *
  * <p>Les diagnostics de compilation (erreurs localisées fichier/ligne/colonne) sont
@@ -32,14 +33,14 @@ import java.util.stream.Stream;
 public final class CompileJavaTask implements Task {
 
     /** Version du code de cette tâche (invalide les passages précédents si elle change). */
-    static final String TASK_VERSION = "1";
+    static final String TASK_VERSION = "2";
 
     private final ForgeModule module;
     private final ProjectLayout layout;
     private final List<String> compileDependencies;
     private final List<Path> classpathDirs;
     private final List<Path> sourcesSupplémentaires;
-    private final List<Path> classpathSupplémentaire;
+    private final List<Path> plateforme;
     private final Path classpathFile;
 
     /**
@@ -52,21 +53,23 @@ public final class CompileJavaTask implements Task {
      * @param classpathDirs     répertoires de classes des dépendances de projet.
      * @param sourcesSupplémentaires répertoires de sources générées à compiler aussi
      *                               (ex. classes R d'un module Android).
-     * @param classpathSupplémentaire entrées de classpath additionnelles (ex.
-     *                                {@code android.jar} d'un module Android).
+     * @param plateforme        bibliothèque de plate-forme de la compilation
+     *                          ({@code android.jar} — obligatoire sur ART où ECJ ne
+     *                          peut emprunter aucune classe de l'hôte ; vide sur JVM
+     *                          de bureau, qui prête les siennes).
      * @param classpathFile     fichier de classpath Maven résolu (entrée d'empreinte et
      *                          source des jars à l'exécution).
      */
     public CompileJavaTask(ForgeModule module, ProjectLayout layout,
                            List<String> compileDependencies, List<Path> classpathDirs,
                            List<Path> sourcesSupplémentaires,
-                           List<Path> classpathSupplémentaire, Path classpathFile) {
+                           List<Path> plateforme, Path classpathFile) {
         this.module = module;
         this.layout = layout;
         this.compileDependencies = List.copyOf(compileDependencies);
         this.classpathDirs = List.copyOf(classpathDirs);
         this.sourcesSupplémentaires = List.copyOf(sourcesSupplémentaires);
-        this.classpathSupplémentaire = List.copyOf(classpathSupplémentaire);
+        this.plateforme = List.copyOf(plateforme);
         this.classpathFile = classpathFile;
     }
 
@@ -86,7 +89,11 @@ public final class CompileJavaTask implements Task {
     public TaskIO io() {
         List<Path> entrees = new ArrayList<>(layout.existingSourceDirs(module));
         entrees.addAll(classpathDirs);
-        return new TaskIO(List.of(classpathFile), entrees,
+        // La plate-forme participe à l'empreinte PAR SON CONTENU : un composant
+        // platform mis à jour recompile les modules qui l'utilisent.
+        List<Path> fichiers = new ArrayList<>(List.of(classpathFile));
+        fichiers.addAll(plateforme);
+        return new TaskIO(fichiers, entrees,
                 Map.of("release", Integer.toString(module.javaRelease()),
                         "compilateur", "ecj:" + EcjCompiler.compilerVersion()),
                 List.of(layout.classesDir(module.name())), TASK_VERSION);
@@ -117,12 +124,11 @@ public final class CompileJavaTask implements Task {
         }
         context.logger().debug(sources.size() + " fichiers à compiler");
         List<Path> classpath = new ArrayList<>(classpathDirs);
-        classpath.addAll(classpathSupplémentaire);
         if (Files.isRegularFile(classpathFile)) {
             classpath.addAll(ClasspathFile.lireJarsCompilation(classpathFile));
         }
         EcjCompiler.CompileResult resultat = EcjCompiler.compile(sources, classpath,
-                sortie, module.javaRelease(), context.diagnostics());
+                plateforme, sortie, module.javaRelease(), context.diagnostics());
         for (String ligne : resultat.consoleLines()) {
             context.logger().debug(ligne);
         }
@@ -134,14 +140,12 @@ public final class CompileJavaTask implements Task {
     }
 
     /**
-     * Compte des erreurs pour le message d'échec (approximation volontaire : les
-     * diagnostics détaillés sont déjà partis dans le puits).
+     * Compte des erreurs pour le message d'échec (les diagnostics détaillés sont
+     * déjà partis dans le puits).
      */
     private String nombreErreurs(EcjCompiler.CompileResult resultat) {
-        long erreurs = resultat.consoleLines().stream()
-                .filter(ligne -> ligne.contains("ERROR in"))
-                .count();
-        return erreurs > 0 ? erreurs + " erreur(s)" : "erreurs";
+        return resultat.errorCount() > 0 ? resultat.errorCount() + " erreur(s)"
+                : "erreurs";
     }
 
     /**

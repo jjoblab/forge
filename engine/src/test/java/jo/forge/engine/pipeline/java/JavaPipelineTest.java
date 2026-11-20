@@ -56,6 +56,124 @@ class JavaPipelineTest {
                 .contains("core:resolveDependencies"));
     }
 
+    /**
+     * Correctif v0.2.7 : sur ART, une bibliothèque Java reçoit android.jar du
+     * moteur installé comme bibliothèque de plate-forme (sans elle, ECJ ne
+     * résout pas java.lang.Object — constat appareil). La plate-forme entre
+     * dans l'empreinte PAR SON CONTENU.
+     */
+    @Test
+    void bibliothèqueJavaReçoitLaPlateformeSurArt() throws IOException {
+        Projets.projetDeuxModules(temporaire);
+        Path maison = temporaire.resolve("engines/0.2.7");
+        Files.createDirectories(maison.resolve("components/platform-34"));
+        Files.write(maison.resolve("components/platform-34/android.jar"),
+                new byte[]{0x50, 0x4b, 0x03, 0x04});
+
+        String ancienJar = System.clearProperty("forge.androidJar");
+        try {
+            ForgeModel modèle = ModelCodec.read(temporaire);
+            List<Task> tâches = JavaPipeline.tasksFor(modèle, temporaire, false,
+                    "arm64-v8a", maison, true);
+            Task compilation = tâches.stream()
+                    .filter(tache -> tache.name().equals("core:compileJava"))
+                    .findFirst().orElseThrow();
+            assertTrue(compilation.io().inputFiles().stream()
+                            .anyMatch(entrée -> entrée.toString()
+                                    .endsWith("components/platform-34/android.jar")),
+                    "android.jar du moteur installé doit être entrée d'empreinte : "
+                            + compilation.io().inputFiles());
+        } finally {
+            if (ancienJar != null) {
+                System.setProperty("forge.androidJar", ancienJar);
+            }
+        }
+    }
+
+    /**
+     * Sur une JVM de bureau, la plate-forme des bibliothèques Java reste vide :
+     * ECJ emprunte les classes de l'hôte, sémantique JDK (comportement
+     * historique inchangé — les tests existants en dépendent).
+     */
+    @Test
+    void horsArtLaPlateformeResteVide() throws IOException {
+        Projets.projetDeuxModules(temporaire);
+        Path maison = temporaire.resolve("engines/0.2.7");
+        Files.createDirectories(maison.resolve("components/platform-34"));
+        Files.write(maison.resolve("components/platform-34/android.jar"),
+                new byte[]{0x50, 0x4b, 0x03, 0x04});
+
+        ForgeModel modèle = ModelCodec.read(temporaire);
+        List<Task> tâches = JavaPipeline.tasksFor(modèle, temporaire, false,
+                "arm64-v8a", maison, false);
+        Task compilation = tâches.stream()
+                .filter(tache -> tache.name().equals("core:compileJava"))
+                .findFirst().orElseThrow();
+        assertTrue(compilation.io().inputFiles().stream()
+                        .noneMatch(entrée -> entrée.toString().contains("components/")),
+                "aucune entrée de plate-forme hors ART : "
+                        + compilation.io().inputFiles());
+    }
+
+    /**
+     * La plate-forme d'un projet MIXTE suit le targetSdk de ses modules
+     * Android (cohérence de compilation au sein du projet), même si une
+     * plate-forme plus récente est installée.
+     */
+    @Test
+    void projetMixteSuitLeTargetSdkDuProjet() throws IOException {
+        Projets.projetDeuxModules(temporaire);
+        Projets.fichier(temporaire, "forge.json", """
+                { "modelVersion": 1,
+                  "repositories": [],
+                  "modules": [
+                    { "name": "core", "type": "java-library" },
+                    { "name": "app", "type": "application",
+                      "android": { "manifest": "src/main/AndroidManifest.xml",
+                                   "res": ["src/main/res"],
+                                   "minSdk": 28, "targetSdk": 34,
+                                   "namespace": "demo.app" } }
+                  ] }
+                """);
+        Projets.fichier(temporaire, "app/src/main/AndroidManifest.xml", """
+                <?xml version="1.0" encoding="utf-8"?>
+                <manifest package="demo.app" />
+                """);
+        Path maison = temporaire.resolve("engines/0.2.7");
+        for (int api : new int[]{34, 35}) {
+            Files.createDirectories(maison.resolve("components/platform-" + api));
+            Files.write(maison.resolve("components/platform-" + api + "/android.jar"),
+                    new byte[]{0x50, 0x4b, 0x03, 0x04});
+        }
+        // aapt2 requis par le module application : composant factice.
+        Files.createDirectories(maison.resolve("components/aapt2-arm64-v8a"));
+        Files.writeString(maison.resolve("components/aapt2-arm64-v8a/aapt2"),
+                "binaire factice");
+
+        String ancienJar = System.clearProperty("forge.androidJar");
+        String ancienAapt2 = System.clearProperty("forge.aapt2");
+        try {
+            ForgeModel modèle = ModelCodec.read(temporaire);
+            List<Task> tâches = JavaPipeline.tasksFor(modèle, temporaire, false,
+                    "arm64-v8a", maison, true);
+            Task compilation = tâches.stream()
+                    .filter(tache -> tache.name().equals("core:compileJava"))
+                    .findFirst().orElseThrow();
+            assertTrue(compilation.io().inputFiles().stream()
+                            .anyMatch(entrée -> entrée.toString()
+                                    .endsWith("components/platform-34/android.jar")),
+                    "la bibliothèque compile contre la plate-forme du targetSdk du "
+                            + "projet (34), pas la plus haute installée (35)");
+        } finally {
+            if (ancienJar != null) {
+                System.setProperty("forge.androidJar", ancienJar);
+            }
+            if (ancienAapt2 != null) {
+                System.setProperty("forge.aapt2", ancienAapt2);
+            }
+        }
+    }
+
     @Test
     void buildCompletPuisToutÀJour() throws Exception {
         Projets.projetDeuxModules(temporaire);

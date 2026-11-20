@@ -6,6 +6,7 @@ import jo.forge.engine.model.ModuleDependency;
 import jo.forge.engine.model.ModuleType;
 import jo.forge.engine.model.ModelException;
 import jo.forge.engine.pipeline.ProjectLayout;
+import jo.forge.engine.pipeline.android.AndroidToolsLocator;
 import jo.forge.engine.tasks.Task;
 
 import java.nio.file.Path;
@@ -33,6 +34,14 @@ import java.util.stream.Collectors;
  * chaîne du pipeline Android (étape 10) : {@code application} va jusqu'à l'APK signé
  * (aapt2, d8, packaging, signature), {@code android-library} compile ses classes
  * contre {@code android.jar} (v1 — voir {@code AndroidPipeline}).</p>
+ *
+ * <p><b>Bibliothèque de plate-forme sur ART</b> (correctif v0.2.7) : un module
+ * {@code java-library} compilé sur l'ART d'un appareil reçoit lui AUSSI
+ * {@code android.jar} en bibliothèque de plate-forme. Sans elle, ECJ ne trouve
+ * aucune classe {@code java.*} (le runtime expose des dex, pas un jimage) et
+ * échoue sur {@code java.lang.Object} — le constat appareil v0.2.6. Sur une JVM
+ * de bureau, la plate-forme reste vide : ECJ emprunte les classes de l'hôte,
+ * sémantique JDK d'une bibliothèque Java.</p>
  */
 public final class JavaPipeline {
 
@@ -92,8 +101,38 @@ public final class JavaPipeline {
      */
     public static List<Task> tasksFor(ForgeModel model, Path projectRoot,
                                       boolean horsLigne, String abi, Path engineHome) {
+        return tasksFor(model, projectRoot, horsLigne, abi, engineHome,
+                EcjCompiler.surArt());
+    }
+
+    /**
+     * Construit les tâches de tous les modules du projet, forme complète avec
+     * détection ART injectée (tests : la plate-forme des bibliothèques Java
+     * n'est câblée que sur ART).
+     *
+     * @param model       modèle validé.
+     * @param projectRoot racine du projet.
+     * @param horsLigne   mode hors ligne : la résolution n'utilise que le cache.
+     * @param abi         ABI de l'appareil (ex. {@code arm64-v8a}).
+     * @param engineHome  répertoire du moteur installé (outils Android embarqués :
+     *                   aapt2 par ABI, android.jar par API), ou {@code null} sur
+     *                   machine de développement (SDK local).
+     * @param surArt      le moteur tourne sur l'ART d'un appareil.
+     * @return les tâches, dans un ordre quelconque (le graphe les ordonne).
+     */
+    static List<Task> tasksFor(ForgeModel model, Path projectRoot,
+                               boolean horsLigne, String abi, Path engineHome,
+                               boolean surArt) {
         Map<String, ForgeModule> parNom = model.modules().stream()
                 .collect(Collectors.toMap(ForgeModule::name, Function.identity()));
+
+        // Plate-forme des modules sans facette Android : la plus haute facette
+        // du projet (cohérence avec l'application), sinon la plus haute
+        // plate-forme installée, sinon celle de la publication.
+        List<Path> plateformeJava = surArt
+                ? List.of(AndroidToolsLocator.androidJar(
+                        apiCible(model, engineHome), engineHome))
+                : List.of();
 
         List<Task> tasks = new ArrayList<>();
         for (ForgeModule module : model.modules()) {
@@ -116,11 +155,29 @@ public final class JavaPipeline {
                     model.repositories(), horsLigne);
             tasks.add(resolve);
             tasks.add(new CompileJavaTask(module, layout, dependances,
-                    new ArrayList<>(classpath), List.of(), List.of(),
+                    new ArrayList<>(classpath), List.of(), plateformeJava,
                     resolve.cheminClasspath()));
             tasks.add(new JarTask(module, layout));
         }
         return tasks;
+    }
+
+    /**
+     * Niveau d'API de la plate-forme de compilation des modules sans facette
+     * Android : le {@code targetSdk} le plus élevé du projet s'il en a un, sinon
+     * la plus haute plate-forme installée dans le moteur, sinon celle de la
+     * publication (34 à ce jour).
+     */
+    private static int apiCible(ForgeModel model, Path engineHome) {
+        int desFacettes = model.modules().stream()
+                .flatMap(module -> module.android().stream())
+                .mapToInt(facette -> facette.targetSdk())
+                .max().orElse(-1);
+        if (desFacettes > 0) {
+            return desFacettes;
+        }
+        int installée = AndroidToolsLocator.plateformeLaPlusHaute(engineHome);
+        return installée > 0 ? installée : 34;
     }
 
     /**
