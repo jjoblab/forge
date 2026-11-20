@@ -35,8 +35,9 @@ class EngineClientRealVmTest {
     }
 
     private static VmSpec moteurFactice() {
+        // --fake : moteur scripté de l'étape 2 (le défaut est le vrai moteur, étape 8).
         return new VmSpec(List.of(classpath()),
-                "jo.forge.engine.bootstrap.EngineMain", 256, List.of());
+                "jo.forge.engine.bootstrap.EngineMain", 256, List.of("--fake"));
     }
 
     private static BuildRequest requete(String buildId) {

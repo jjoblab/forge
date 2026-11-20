@@ -24,14 +24,24 @@ tout écart est consigné ici.
 | 5. Moteur de tâches | **Fait** | Graphe (Kahn par niveaux, cycle cité, ordre déterministe, dépendances explicites), contrat `Task` avec entrées/sorties déclarées. |
 | 6. Exécuteur | **Fait** | File de prêtes, parallélisme plafonné calculé, échec bloquant transitif, branches saines menées à terme, annulation par interruption immédiate des threads, événements en flux. |
 | 7. Empreintes et magasin | **Fait** | Empreintes par contenu (fichiers, répertoires en flux, propriétés triées, version de code), magasin atomique versionné à somme de contrôle, noms injectifs, corruption = périmé, sorties revérifiées ; incrémentalité prouvée par test (toucher un fichier ne relance que sa tâche). |
-| 8. Pipeline Java | À faire | ECJ en travailleur, classpath normalisé, Jar déterministe. |
+| 8. Pipeline Java | **Fait** | Modèle déclaratif `forge.json` strict (codec testé), ECJ en processus avec diagnostics par l'API (fichier/ligne/colonne/code), tâches `compileJava`/`jar` câblées par portées (fermeture `api`), jar déterministe (testé octet par octet), **vrai serveur de build** câblé dans `EngineMain` (défaut ; `--fake` garde le moteur scripté pour les tests de contrat), exemple `examples/multi-modules-java`, benchmark complet vs incrémental (première mesure : 6/6 → 4/6 tâches). Parseur JSON extrait dans le module `json/` partagé. |
 | 9. Résolveur | À faire | POM/BOM XML durci, médiation nearest-wins, échec-sur-conflit réel, cache, intégrité, hors ligne. |
 | 10. Pipeline Android | À faire | aapt2 natif (D-04), dex (d8), packaging, signature, installation, fusion de manifestes, ressources incrémentales. |
 | 11. Diagnostics et console | À faire | Rédaction de secrets, tampon borné, trace exportable, écran de build dans la coquille. |
 | 12. Packaging et publication | À faire | CI de construction des composants, dexage, manifeste signé, artefacts de release. |
 | 13. Import Gradle statique (optionnel) | À faire | Lecteur statique vers `forge.json`. |
 
-## Manques et limites constatés (Phases 3-4, étapes 1-7)
+## Manques et limites constatés (Phases 3-4, étapes 1-8)
+
+- **Écarts du pipeline Java avec le moteur de référence** (détail dans la section
+  « Comparaison après implémentation » de [`REFERENCES.md`](REFERENCES.md)) :
+  processeurs d'annotations désactivés (parité, à documenter comme décision), compilation
+  incrémentale fine par fichier et cache d'ABI absents (améliorations A-8/A-10 non livrées —
+  l'up-to-date par tâche et l'empreinte de classpath par contenu donnent déjà l'essentiel),
+  variante « compilateur sans image » pour ART non câblée (repli `-source/-target`),
+  `processResources` Java fusionné dans le jar (v1), chaîne de tests par module non livrée.
+- **Aucune dépendance Maven résolue à ce jour** : le pipeline refuse proprement les
+  coordonnées Maven (message citant l'étape 9) — le résolveur arrive à l'étape suivante.
 
 - **Rien n'a été vérifié sur appareil réel (ART)**. Tout est testé sur JVM (dont des tests
   d'intégration avec de vrais processus séparés `java`). Les points spécifiquement à
@@ -39,18 +49,17 @@ tout écart est consigné ici.
   D-01), comportement du chargeur sur jars dexés en lecture seule, restrictions
   d'exécution du binaire `aapt2` téléchargé (D-04, `targetSdk` 28), tueur de processus
   fantômes Android 12+ (D-02). Le repli `DexClassLoader` est conçu mais non câblé.
-- **Watchdog des sous-processus (D-09, constat S-8)** : pas encore implémenté — aucune
-  tâche ne lance encore de sous-processus ; il viendra avec l'étape 8 (ECJ) et le registre
-  des processus enfants avec l'étape 10 (aapt2). L'annulation des threads est, elle, en
-  place et testée.
+- **Watchdog des sous-processus (D-09, constat S-8)** : pas encore implémenté. Précision
+  après l'étape 8 : ECJ compile **en processus** (aucun sous-processus à surveiller) ; le
+  watchdog et le registre des enfants viennent donc avec l'étape 10 (aapt2 natif). L'annulation
+  des threads est, elle, en place et testée.
 - **Écarts assumés avec le moteur de référence** (voir la section « Comparaison après
   implémentation » de [`REFERENCES.md`](REFERENCES.md)) : pas de `mustRunAfter`/
   `mustRunBefore`, pas de statut `NO-SOURCE`, pas d'arêtes inférées producteur→consommateur
   (refus délibéré, constat C-5). À combler selon les besoins des pipelines (étapes 8-10).
-- **Le serveur de build réel n'est pas encore câblé dans `EngineMain`** : l'entrée lance
-  toujours le moteur factice de l'étape 2 ; l'assemblage orchestrateur (modèle `forge.json`
-  → graphe → exécuteur → trames) viendra avec les étapes 8-10 — le contrat, l'exécuteur et
-  le magasin sont prêts et testés indépendamment.
+- **Le serveur de build réel est câblé depuis l'étape 8** : `EngineMain` lance par défaut le
+  `BuildEngineServer` (modèle `forge.json` → pipeline → graphe → exécuteur → trames) ; le moteur
+  factice reste accessible par l'option `--fake` (tests de contrat du canal).
 - **Éditeur/gestion de projets dans la coquille** : minimal (état du moteur, bouton de
   test) ; l'assistant d'installation complet (listes, tailles, avertissement mobile,
   progression, annulation — exigences §2.2) sera câblé sur `setup` à l'étape 11 ; la

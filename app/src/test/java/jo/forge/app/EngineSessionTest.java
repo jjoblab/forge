@@ -66,16 +66,17 @@ class EngineSessionTest {
      * contrat api, comme l'artefact de production les disposera.
      */
     private ComponentManifest composantMoteur(Path paquets) throws IOException {
-        Path archive = paquets.resolve("engine-core-0.1.0.zip");
+        String version = jo.forge.engine.EngineVersion.CURRENT;
+        Path archive = paquets.resolve("engine-core-" + version + ".zip");
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
             zip.putNextEntry(new ZipEntry("engine.jar"));
-            Files.copy(jarDuClasspath("engine-0.1.0.jar"), zip);
+            Files.copy(jarDuClasspath("engine-" + version + ".jar"), zip);
             zip.closeEntry();
             zip.putNextEntry(new ZipEntry("lib/api.jar"));
-            Files.copy(jarDuClasspath("api-0.1.0.jar"), zip);
+            Files.copy(jarDuClasspath("api-" + version + ".jar"), zip);
             zip.closeEntry();
         }
-        return new ComponentManifest("engine-core", "0.1.0", Files.size(archive),
+        return new ComponentManifest("engine-core", version, Files.size(archive),
                 Files2.sha256(archive), List.of("https://exemple.fr/engine-core.zip"),
                 List.of("all"), 1, List.of());
     }
@@ -87,7 +88,8 @@ class EngineSessionTest {
         Path paquets = tempDir.resolve("paquets");
         Files.createDirectories(paquets);
         ComponentManifest composant = composantMoteur(paquets);
-        EngineManifest manifeste = new EngineManifest(1, "0.1.0", 1, "2026-11-20",
+        String versionMoteur = jo.forge.engine.EngineVersion.CURRENT;
+        EngineManifest manifeste = new EngineManifest(1, versionMoteur, 1, "2026-11-20",
                 List.of(composant));
 
         // 1. Installation (module setup) : atomique, sommes, lecture seule.
@@ -95,7 +97,7 @@ class EngineSessionTest {
                 new ComponentSource.LocalDirectory(paquets), new ArchiveExtractor());
         InstalledState etat = installateur.install(manifeste, "arm64-v8a", null,
                 new CancellationToken());
-        assertEquals("0.1.0", etat.engineVersion());
+        assertEquals(versionMoteur, etat.engineVersion());
         assertTrue(installateur.verify().isEmpty());
 
         // 2. Chargement depuis l'état installé (EngineSession).
@@ -106,9 +108,9 @@ class EngineSessionTest {
 
         // 3. Lancement dans un vrai processus séparé + poignée de main + ping + état.
         EngineClient client = EngineSession.launchInstalled(
-                new JavaVmLauncher(), home, etat, "0.1.0-test",
+                new JavaVmLauncher(), home, etat, versionMoteur + "-test",
                 (BuildEvent evenement) -> { }, () -> { }, false);
-        assertEquals("0.1.0", client.hello().engineVersion());
+        assertEquals(versionMoteur, client.hello().engineVersion());
         long pong = client.ping().get(15, TimeUnit.SECONDS);
         assertTrue(pong > 0);
         Status statut = client.status().get(15, TimeUnit.SECONDS);
@@ -128,12 +130,12 @@ class EngineSessionTest {
 
         EngineInstaller installateur = new EngineInstaller(home,
                 new ComponentSource.LocalDirectory(paquets), new ArchiveExtractor());
-        installateur.install(new EngineManifest(1, "0.1.0", 1, "2026-11-20",
+        installateur.install(new EngineManifest(1, jo.forge.engine.EngineVersion.CURRENT, 1, "2026-11-20",
                 List.of(composant)), "arm64-v8a", null, new CancellationToken());
 
         // Sabotage : engine.jar retiré de l'installation (réécriture autorisée pour le
         // besoin du test).
-        Path moteur = home.engineDir("0.1.0");
+        Path moteur = home.engineDir(jo.forge.engine.EngineVersion.CURRENT);
         moteur.toFile().setWritable(true);
         Files.delete(moteur.resolve("engine.jar"));
 

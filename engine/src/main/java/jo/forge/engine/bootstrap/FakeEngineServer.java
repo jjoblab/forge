@@ -53,8 +53,8 @@ import java.util.concurrent.TimeUnit;
  */
 public final class FakeEngineServer {
 
-    /** Version annoncée par ce moteur factice. */
-    public static final String ENGINE_VERSION = "0.1.0";
+    /** Version annoncée par ce moteur factice (source unique : EngineVersion). */
+    public static final String ENGINE_VERSION = jo.forge.engine.EngineVersion.CURRENT;
 
     /** Capacités annoncées dans la poignée de main. */
     public static final List<String> CAPABILITIES = List.of("ping", "status", "fake-build");

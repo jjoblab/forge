@@ -1,0 +1,19 @@
+{
+  "modelVersion": 1,
+  "repositories": [
+    "https://repo.maven.apache.org/maven2"
+  ],
+  "modules": [
+    {
+      "name": "core",
+      "type": "java-library"
+    },
+    {
+      "name": "app",
+      "type": "java-library",
+      "dependencies": [
+        { "project": "core", "scope": "api" }
+      ]
+    }
+  ]
+}

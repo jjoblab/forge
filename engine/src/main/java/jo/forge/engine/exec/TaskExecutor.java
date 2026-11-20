@@ -48,9 +48,10 @@ public final class TaskExecutor {
     private final CancellationFlag cancellation;
     private final UpToDateOracle oracle;
     private final int parallelism;
+    private final java.nio.file.Path projectRoot;
 
     /**
-     * Crée l'exécuteur.
+     * Crée l'exécuteur (racine de projet : répertoire courant).
      *
      * @param graph         graphe validé à exécuter.
      * @param events        puits d'événements du build (journal, états, progression).
@@ -61,11 +62,30 @@ public final class TaskExecutor {
      */
     public TaskExecutor(TaskGraph graph, BuildEvents events, CancellationFlag cancellation,
                         UpToDateOracle oracle, int parallelism) {
+        this(graph, events, cancellation, oracle, parallelism, java.nio.file.Path.of("."));
+    }
+
+    /**
+     * Crée l'exécuteur avec la racine du projet construit (résolution des chemins des
+     * tâches).
+     *
+     * @param graph         graphe validé à exécuter.
+     * @param events        puits d'événements du build (journal, états, progression).
+     * @param cancellation  jeton d'annulation partagé (posé à la réception d'un
+     *                      CANCEL_BUILD).
+     * @param oracle        oracle d'up-to-date (empreintes).
+     * @param parallelism   parallélisme demandé (plafonné, minimum 1).
+     * @param projectRoot   racine du projet, fournie aux tâches par leur contexte.
+     */
+    public TaskExecutor(TaskGraph graph, BuildEvents events, CancellationFlag cancellation,
+                        UpToDateOracle oracle, int parallelism,
+                        java.nio.file.Path projectRoot) {
         this.graph = graph;
         this.events = events;
         this.cancellation = cancellation;
         this.oracle = oracle == null ? UpToDateOracle.ALWAYS_RUN : oracle;
         this.parallelism = Math.max(1, Math.min(parallelism, MAX_HARD_PARALLELISM));
+        this.projectRoot = java.util.Objects.requireNonNull(projectRoot, "projectRoot");
     }
 
     /**
@@ -186,7 +206,7 @@ public final class TaskExecutor {
         // Inscription pour l'interruption immédiate à l'annulation (décision D-08).
         cancellation.registerCurrent();
         try {
-            task.execute(new ContexteTache(task, events, cancellation));
+            task.execute(new ContexteTache(task, events, cancellation, projectRoot));
             if (cancellation.isCancelled()) {
                 // Réussie mais annulation demandée pendant l'exécution : annulée.
                 throw new TaskCancelledException("annulation pendant l'exécution");
@@ -322,6 +342,15 @@ public final class TaskExecutor {
          * @param taskName nom de la tâche.
          */
         void tacheEchouee(String taskName);
+
+        /**
+         * Émet un diagnostic structuré (erreur localisée, avertissement) — distinct du
+         * journal texte. Implémentation par défaut : ignore (tests sans diagnostics).
+         *
+         * @param diagnostic le diagnostic.
+         */
+        default void diagnostic(jo.forge.engine.diag.Diagnostic diagnostic) {
+        }
     }
 
     /** Contexte d'exécution donné aux tâches (journal tamponné au nom de la tâche). */
@@ -330,16 +359,24 @@ public final class TaskExecutor {
         private final Task task;
         private final BuildEvents events;
         private final CancellationFlag cancellation;
+        private final java.nio.file.Path projectRoot;
 
-        ContexteTache(Task task, BuildEvents events, CancellationFlag cancellation) {
+        ContexteTache(Task task, BuildEvents events, CancellationFlag cancellation,
+                      java.nio.file.Path projectRoot) {
             this.task = task;
             this.events = events;
             this.cancellation = cancellation;
+            this.projectRoot = projectRoot;
         }
 
         @Override
         public java.nio.file.Path projectRoot() {
-            return java.nio.file.Path.of(".");
+            return projectRoot;
+        }
+
+        @Override
+        public jo.forge.engine.diag.DiagnosticSink diagnostics() {
+            return events::diagnostic;
         }
 
         @Override

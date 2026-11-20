@@ -72,8 +72,8 @@ jobs:
           yes | sdkmanager --licenses > /dev/null || true
           sdkmanager --install "platforms;android-34" "build-tools;34.0.0" > /dev/null
 
-      - name: Tests JVM (api, client, setup, engine)
-        run: ./gradlew --no-daemon :api:test :client:test :setup:test :engine:test --stacktrace
+      - name: Tests JVM (api, json, client, setup, engine)
+        run: ./gradlew --no-daemon :api:test :json:test :client:test :setup:test :engine:test --stacktrace
 
       - name: Tests de la coquille (chargement du moteur installé)
         run: ./gradlew --no-daemon :app:testDebugUnitTest --stacktrace

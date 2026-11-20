@@ -29,8 +29,11 @@ atomique, contrat application ↔ moteur) est décrite dans la documentation.
 |---|---|
 | `app/` | La coquille : interface Android, gestion des projets, assistant d'installation. |
 | `api/` | Le contrat partagé application ↔ moteur : minimal, stable, versionné. |
+| `json/` | Lecture/écriture JSON strictes, sans dépendance (manifeste, état, `forge.json`). |
+| `client/` | Supervision du moteur : lancement de VM, poignée de main, reconnexion. |
 | `setup/` | Logique d'installation et de mise à jour du moteur, testable sans interface. |
 | `engine/` | Le moteur : cœur, pipelines Java et Android. Construit comme artefact téléchargeable. |
+| `examples/` | Projets d'exemple construits par le moteur (`forge.json`). |
 | `tools/` | Scripts de packaging, de publication et hooks de contrôle locaux. |
 | `docs/` | Analyse, revue, conception et suivi du projet. |
 

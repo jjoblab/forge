@@ -8,7 +8,7 @@ plugins {
 }
 
 group = 'jo.forge'
-version = '0.1.0'
+version = '0.2.0'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -21,6 +21,10 @@ tasks.withType(JavaCompile).configureEach {
 
 dependencies {
     api project(':api')
+    api project(':json')
+
+    // Compilateur Java embarqué (pur Java, EPL-2.0 — voir docs/distribution.md §7).
+    implementation 'org.eclipse.jdt:ecj:3.36.0'
 
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'

@@ -1,5 +1,7 @@
 package jo.forge.engine.tasks;
 
+import jo.forge.engine.diag.DiagnosticSink;
+
 import java.nio.file.Path;
 
 /**
@@ -36,6 +38,16 @@ public interface TaskContext {
      * @return le journal.
      */
     TaskLogger logger();
+
+    /**
+     * Puits de diagnostics structurés de la tâche (erreurs localisées, avertissements) —
+     * distinct du journal texte : ces diagnostics sont exploitables par l'éditeur.
+     *
+     * @return le puits (puits vide par défaut).
+     */
+    default DiagnosticSink diagnostics() {
+        return DiagnosticSink.NOOP;
+    }
 
     /**
      * Jeton d'annulation du build.
