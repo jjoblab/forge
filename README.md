@@ -40,6 +40,10 @@ atomique, contrat application ↔ moteur) est décrite dans la documentation.
   référence qui a servi de point de départ (Phases 0-1).
 - [`docs/revue-moteur-build.md`](docs/revue-moteur-build.md) — revue critique du moteur de
   référence : sécurité, performance, correction, maintenabilité (Phase 2).
+- [`docs/conception.md`](docs/conception.md) — architecture cible et décisions justifiées
+  D-01..D-12, améliorations priorisées, ordre d'implémentation (Phase 3).
+- [`docs/distribution.md`](docs/distribution.md) — politiques de distribution (magasins,
+  hors magasin, clés, licences) (Phase 3).
 - [`docs/REFERENCES.md`](docs/REFERENCES.md) — registre des références `REF-xxx` (seul fichier du
   dépôt autorisé à citer le moteur de référence).
 - [`docs/limites-et-suite.md`](docs/limites-et-suite.md) — ce qui est fait, ce qui reste, les
@@ -63,13 +67,29 @@ Les hooks refusent tout commit dont le contenu ou le message contient un terme i
 que dans `docs/REFERENCES.md`. La CI applique le même contrôle à chaque push (secret
 `FORBIDDEN_TERMS`).
 
+### Build et tests
+
+Prérequis : JDK 17 et un SDK Android (plateforme 34, build-tools 34) — pointer `local.properties`
+vers le SDK comme d'habitude.
+
+```sh
+./gradlew :api:test :client:test :setup:test :engine:test   # tests des modules purs (JVM)
+./gradlew :app:testDebugUnitTest                            # tests de la coquille
+./gradlew :app:assembleDebug                                # APK de la coquille
+```
+
 ## État du projet
 
 - [x] Phase 0 — exploration du moteur de référence, épinglage du SHA, vérification de la licence.
 - [x] Phase 1 — analyse complète (`docs/analyse-moteur-build.md`).
 - [x] Phase 2 — revue critique (`docs/revue-moteur-build.md`).
-- [ ] Phase 3 — conception de Forge (`docs/conception.md`, `docs/distribution.md`).
-- [ ] Phase 4 — implémentation (squelette, api, installateur, moteur, pipelines, CI complète).
+- [x] Phase 3 — conception (`docs/conception.md`, `docs/distribution.md`).
+- [x] Phase 4, étapes 1-7 — squelette Gradle, contrat `api` + moteur factice en processus
+  séparé, installateur vérifié (manifeste signé, reprise, installation atomique), chargement réel, moteur de
+  tâches, exécuteur borné annulable, empreintes et magasin persistant.
+- [ ] Phase 4, étapes 8-13 — pipeline Java (ECJ), résolveur, pipeline Android (aapt2, dex,
+  signature), diagnostics/console, packaging et publication CI, import Gradle optionnel.
+- [ ] Vérification sur appareil réel (ART) — voir `docs/limites-et-suite.md`.
 
 ## Licence
 

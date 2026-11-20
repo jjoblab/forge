@@ -11,55 +11,79 @@ tout écart est consigné ici.
 | 1 — Analyse | **Fait** | [`analyse-moteur-build.md`](analyse-moteur-build.md) (13 sections, cartographie avec REF-xxx). |
 | 2 — Revue critique | **Fait** | [`revue-moteur-build.md`](revue-moteur-build.md) (4 axes, 46 constats numérotés, compatibilité Android, comparaison Gradle). |
 | 3 — Conception | **Fait** (2026-11-20) | [`conception.md`](conception.md) (12 décisions D-01..D-12 justifiées, registre des améliorations priorisées, ordre d'implémentation) et [`distribution.md`](distribution.md) (Play exclu, GitHub Releases + F-Droid, clés, licences, guidance appareil). |
-| 4 — Implémentation | **En cours** | Étapes 1-2 amorcées (squelette Gradle multi-modules, module `api` + moteur factice) ; suivi détaillé ci-dessous. |
+| 4 — Implémentation | **En cours** (étapes 1-7 faites, 8-13 restantes) | Détail ci-dessous. |
 
-## Hypothèses retenues (Phases 0-2)
+### Phase 4 : détail par étape
 
-1. **Portée de la session** : Phases 0 à 2 seulement (décision du 2026-11-20) ; la conception
-   attend la validation de l'analyse par le propriétaire du projet.
-2. **Squelette sans projets Gradle** : les répertoires `app/`, `api/`, `setup/`, `engine/`
-   contiennent leur charte (README) mais pas encore de build Gradle — la CI a une étape de
-   tests conditionnelle qui s'activera avec l'étape 1 de la Phase 4 (décision du 2026-11-20).
-3. **Répertoire de travail du moteur de référence** : cloné hors du dépôt (répertoire local de
-   l'environnement de travail), jamais en sous-module, jamais copié.
-4. **Vérification d'acyclicité** : faite par script sur les dépendances de production déclarées
-   dans les fichiers de build du dépôt de référence (84 modules, 259 arêtes, 0 cycle) ; les
-   cycles passant par le harnais de test ont été exclus explicitement (documentés comme bénins
-   par le dépôt lui-même). Limite : le script lit les déclarations `project(...)` des
-   configurations de production connues ; une configuration custom échapperait à l'analyse.
+| Étape | État | Contenu livré |
+|---|---|---|
+| 1. Squelette | **Fait** | Build Gradle multi-modules (`api`, `client`, `setup`, `engine`, `app`), wrapper 8.10.2, AGP 8.5.2, CI build+tests+APK, coquille minimale (cible API 34, `targetSdk` 28 assumé). |
+| 2. Contrat + moteur factice | **Fait** | Trames stdio, négociation de version, messages et événements scellés ; moteur factice (ping, état, builds scriptés, annulation) ; client (lanceurs `app_process`/`java`, connexion, corrélation) ; test d'intégration avec VRAI processus séparé. |
+| 3. Installateur | **Fait** | JSON strict maison, manifeste signé ECDSA P-256 (octets exacts), HTTPS exigé, téléchargeur reprenable (Range, rejet des 206 non sollicités), extracteur anti-zip-slip plafonné, installation atomique (staging + renommage + lecture seule), mise à jour/réparation/désinstallation/hors ligne. Tests avec serveurs HTTP locaux réels (coupure à mi-corps puis reprise vérifiée). |
+| 4. Chargement réel | **Fait** | `EngineSession` (description de VM depuis l'état installé, refus clair si incomplet), `ForgeHostService` (service premier plan), interface branchée ; test de bout en bout : le VRAI moteur installé comme composant puis lancé et interrogé. |
+| 5. Moteur de tâches | **Fait** | Graphe (Kahn par niveaux, cycle cité, ordre déterministe, dépendances explicites), contrat `Task` avec entrées/sorties déclarées. |
+| 6. Exécuteur | **Fait** | File de prêtes, parallélisme plafonné calculé, échec bloquant transitif, branches saines menées à terme, annulation par interruption immédiate des threads, événements en flux. |
+| 7. Empreintes et magasin | **Fait** | Empreintes par contenu (fichiers, répertoires en flux, propriétés triées, version de code), magasin atomique versionné à somme de contrôle, noms injectifs, corruption = périmé, sorties revérifiées ; incrémentalité prouvée par test (toucher un fichier ne relance que sa tâche). |
+| 8. Pipeline Java | À faire | ECJ en travailleur, classpath normalisé, Jar déterministe. |
+| 9. Résolveur | À faire | POM/BOM XML durci, médiation nearest-wins, échec-sur-conflit réel, cache, intégrité, hors ligne. |
+| 10. Pipeline Android | À faire | aapt2 natif (D-04), dex (d8), packaging, signature, installation, fusion de manifestes, ressources incrémentales. |
+| 11. Diagnostics et console | À faire | Rédaction de secrets, tampon borné, trace exportable, écran de build dans la coquille. |
+| 12. Packaging et publication | À faire | CI de construction des composants, dexage, manifeste signé, artefacts de release. |
+| 13. Import Gradle statique (optionnel) | À faire | Lecteur statique vers `forge.json`. |
 
-## Manques et limites constatés (Phases 0-2)
+## Manques et limites constatés (Phases 3-4, étapes 1-7)
 
-- **Aucun code de production** : pas encore de module Gradle, pas de test, pas de démonstration
-  exécutable — attendu à la Phase 4.
-- **`docs/distribution.md` non écrit** : la question des politiques de magasin (téléchargement
-  de code exécutable) est seulement amorcée dans la revue (section Compatibilité Android) ; le
-  document complet arrive en Phase 3.
-- **Licence de Forge non choisie** : le moteur de référence est GPL-3.0-or-lister avec exception
-  de linkage sur ses modules SPI (voir `REFERENCES.md`). Notre réimplémentation est indépendante
-  (aucun code copié, noms distincts), mais le choix de notre licence (permissive, copyleft,
-  exception pour `api/` ?) appartient au propriétaire du projet. **Décision requise avant toute
-  publication.**
-- **Secret `FORBIDDEN_TERMS` de la CI** : défini sur le dépôt GitHub (2026-11-20) — la CI
-  applique le même contrôle que les hooks locaux à chaque push.
-- **CI bloquée par la facturation du compte GitHub** : les jobs Actions ne démarrent pas
-  (« The job was not started because recent account payments have failed or your spending
-  limit needs to be increased »). Le workflow est valide (vérifié : YAML conforme, les deux
-  jobs sont créés) et toutes ses étapes ont été validées localement (contrôle des termes avec
-  la valeur exacte du secret, garde de structure, syntaxe des scripts). **Action requise côté
-  compte** : régler un moyen de paiement ou augmenter le plafond de dépense dans
-  *Settings → Billing & plans* (un dépôt privé consomme des minutes Actions ; un dépôt public
-  en bénéficierait gratuitement).
-- **Vérifications sur appareil réel** : rien n'a encore été vérifié sur ART (aucun code
-  exécutable) ; les constats « sur appareil » cités dans l'analyse proviennent du code et des
-  commentaires du moteur de référence, pas de nos propres mesures.
+- **Rien n'a été vérifié sur appareil réel (ART)**. Tout est testé sur JVM (dont des tests
+  d'intégration avec de vrais processus séparés `java`). Les points spécifiquement à
+  valider sur ART : lancement `app_process` avec `CLASSPATH` (mécanisme éprouvé ailleurs,
+  D-01), comportement du chargeur sur jars dexés en lecture seule, restrictions
+  d'exécution du binaire `aapt2` téléchargé (D-04, `targetSdk` 28), tueur de processus
+  fantômes Android 12+ (D-02). Le repli `DexClassLoader` est conçu mais non câblé.
+- **Watchdog des sous-processus (D-09, constat S-8)** : pas encore implémenté — aucune
+  tâche ne lance encore de sous-processus ; il viendra avec l'étape 8 (ECJ) et le registre
+  des processus enfants avec l'étape 10 (aapt2). L'annulation des threads est, elle, en
+  place et testée.
+- **Écarts assumés avec le moteur de référence** (voir la section « Comparaison après
+  implémentation » de [`REFERENCES.md`](REFERENCES.md)) : pas de `mustRunAfter`/
+  `mustRunBefore`, pas de statut `NO-SOURCE`, pas d'arêtes inférées producteur→consommateur
+  (refus délibéré, constat C-5). À combler selon les besoins des pipelines (étapes 8-10).
+- **Le serveur de build réel n'est pas encore câblé dans `EngineMain`** : l'entrée lance
+  toujours le moteur factice de l'étape 2 ; l'assemblage orchestrateur (modèle `forge.json`
+  → graphe → exécuteur → trames) viendra avec les étapes 8-10 — le contrat, l'exécuteur et
+  le magasin sont prêts et testés indépendamment.
+- **Éditeur/gestion de projets dans la coquille** : minimal (état du moteur, bouton de
+  test) ; l'assistant d'installation complet (listes, tailles, avertissement mobile,
+  progression, annulation — exigences §2.2) sera câblé sur `setup` à l'étape 11 ; la
+  logique testable existe déjà.
+- **Licence de Forge non choisie** : décision propriétaire requise avant toute publication
+  (voir `distribution.md` §7) ; recommandation : Apache-2.0.
+- **Clé publique ECDSA de production** : pas encore générée ; une clé de test est créée à
+  la volée dans les tests. À épingler à l'étape 12 (procédure `distribution.md` §4).
+
+## Hypothèses retenues (Phases 0-3)
+
+1. **`targetSdk 28`** pour la coquille (D-04) : préserve l'exécution des binaires
+   téléchargés depuis le stockage privé ; cohérent avec une distribution hors magasin.
+2. **Transport stdio + VM enfant** (D-01) : remplacé par `DexClassLoader` + tubes si un
+   appareil bloque `app_process` — seul le lanceur change.
+3. **ECDSA P-256** pour la signature du manifeste : Ed25519 n'est disponible qu'à partir
+   de l'API 33, hors de notre `minSdk` 28.
+4. **Le moteur est pur Java** : aucune API Android dans `engine/`, `client/`, `setup/`,
+   `api/` — paramètres d'environnement injectés par la coquille.
+5. **Répertoire de travail du moteur de référence** : cloné hors du dépôt, SHA épinglé
+   `1b1a3052168a52f38a91ea03c87831a0d94c1fff`, jamais copié ni référencé hors de
+   `docs/REFERENCES.md`.
 
 ## Prochaines étapes (ordre proposé)
 
-1. Valider l'analyse et la revue (retours sur `analyse-moteur-build.md` et
-   `revue-moteur-build.md`).
-2. Phase 3 : rédiger `conception.md` (trancher : mécanisme de communication application ↔
-   moteur, exécution des binaires natifs téléchargés — voir revue §5.1, découpage des composants
-   du manifeste, améliorations retenues) puis `distribution.md`.
-3. Phase 4, étapes 1-2 : squelette Gradle multi-modules + module `api` avec moteur factice.
-4. Définir le secret `FORBIDDEN_TERMS` sur le dépôt GitHub et la licence.
+1. **Étape 8 — pipeline Java** : intégrer ECJ (compilation en travailleur, `--release`
+   configurable, processeurs d'annotation), normalisation du classpath pour l'empreinte,
+   Jar déterministe ; câbler le premier build réel dans un `BuildEngineServer` remplaçant
+   le moteur factice.
+2. **Étape 9 — résolveur** de dépendances (POM durci, médiation, intégrité, hors ligne).
+3. **Étape 10 — pipeline Android** (aapt2 via `NativeResourceCompiler`, dex d8, signature
+   apksig, packaging, installation) + registre des processus enfants + watchdogs.
+4. **Assistant d'installation complet** et écran de build (étape 11), puis packaging et
+   publication CI (étape 12).
+5. Vérification sur appareil réel (liste au début de cette section) et benchmark
+   complet vs incrémental sur un projet multi-modules (modèle REF-152).
