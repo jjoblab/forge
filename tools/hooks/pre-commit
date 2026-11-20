@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Hook pre-commit : refuse le commit si un terme interdit (insensible à la casse) apparaît
+# dans les fichiers indexés, hors docs/REFERENCES.md (seule exception autorisée), ou dans
+# l'historique des messages de commit.
+# La liste des termes est lue depuis .git/info/forbidden-terms.txt (fichier NON versionné,
+# une expression par ligne, les lignes vides et commençant par # sont ignorées).
+set -uo pipefail
+
+cd "$(git rev-parse --show-toplevel)" || exit 1
+TERMS_FILE="$(git rev-parse --git-dir)/info/forbidden-terms.txt"
+
+if [ ! -f "$TERMS_FILE" ]; then
+  echo "pre-commit : liste de termes interdits introuvable : $TERMS_FILE" >&2
+  echo "  Lancez ./tools/setup-local.sh puis peuplez ce fichier avant de committer." >&2
+  exit 1
+fi
+
+# Lit les termes (une expression par ligne, sans les commentaires ni lignes vides).
+mapfile -t TERMS < <(grep -vE '^\s*(#|$)' "$TERMS_FILE" || true)
+if [ "${#TERMS[@]}" -eq 0 ]; then
+  echo "pre-commit : la liste de termes interdits est vide — peuplez $TERMS_FILE." >&2
+  exit 1
+fi
+
+failed=0
+
+# Vérifie un contenu (stdin) contre tous les termes ; affiche les correspondances.
+check_content() {
+  local label="$1"
+  local content
+  content="$(cat)"
+  for term in "${TERMS[@]}"; do
+    if printf '%s' "$content" | grep -Finq -- "$term"; then
+      echo "  terme interdit « ${term} » trouvé dans ${label}" >&2
+      printf '%s' "$content" | grep -Fin -- "$term" | head -3 | sed 's/^/    /' >&2
+      failed=1
+    fi
+  done
+}
+
+# 1. Fichiers indexés (ajoutés, modifiés, renommés, copiés), hors exception.
+while IFS= read -r file; do
+  [ -z "$file" ] && continue
+  case "$file" in
+    docs/REFERENCES.md) continue ;;
+  esac
+  if [ -f "$file" ]; then
+    if content="$(git show ":$file" 2>/dev/null)"; then
+      printf '%s' "$content" | check_content "$file"
+    fi
+  fi
+done < <(git diff --cached --name-only --diff-filter=ACMR)
+
+# 2. Historique des messages de commit (le nouveau commit ne doit pas s'ajouter à un
+#    historique déjà contaminé ; rappel de la règle).
+if git rev-parse HEAD >/dev/null 2>&1; then
+  for term in "${TERMS[@]}"; do
+    if git log --format='%s%n%b' | grep -Finq -- "$term"; then
+      echo "  terme interdit « ${term} » trouvé dans l'historique des messages de commit" >&2
+      failed=1
+    fi
+  done
+fi
+
+if [ "$failed" -ne 0 ]; then
+  echo "" >&2
+  echo "Commit refusé : termes interdits détectés (exception unique : docs/REFERENCES.md)." >&2
+  echo "Corrigez le contenu ou le message, ou déplacez la citation vers docs/REFERENCES.md." >&2
+fi
+exit "$failed"
