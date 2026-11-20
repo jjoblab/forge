@@ -58,9 +58,9 @@ class BuildEngineServerTest {
                                     && t.taskName().equals("core:compileJava")),
                     "la compilation de core doit réussir");
             // Trace exportable (A-13) : écrite à la racine du projet, atomique.
-            assertTrue(Files.isRegularFile(temporaire.resolve(".forge/traces/b1.json")),
+            assertTrue(Files.isRegularFile(temporaire.resolve(".forge/traces/b2.json")),
                     "la trace du premier build doit exister");
-            assertTrue(Files.readString(temporaire.resolve(".forge/traces/b1.json"))
+            assertTrue(Files.readString(temporaire.resolve(".forge/traces/b2.json"))
                             .contains("core:compileJava"),
                     "la trace contient les tâches");
 

@@ -28,8 +28,8 @@ public final class SecretRedactor {
 
     /** Affectations étiquetées : mot-clé puis = ou : puis la valeur. */
     private static final Pattern AFFECTATION = Pattern.compile(
-            "(?i)\\b(password|passwd|passphrase|secret|token|jeton|api[-_]?key|"
-                    + "cl[ée]{1,2}(?:[-_ ]secret)?)\\s*[:=]\\s*([^\\s,;)\"]+)");
+            "(?i)\\b(password|passwd|passphrase|motdepasse|mot[-_ ]?de[-_ ]?passe|secret|token|jeton|api[-_]?key|"
+                    + "cl[ée]{1,2}(?:[-_ ]secr[èe]te?)?)\\s*[:=]\\s*([^\\s,;)\"]+)");
 
     /** Jetons Bearer des en-têtes HTTP. */
     private static final Pattern PORTEUR = Pattern.compile(
@@ -37,7 +37,7 @@ public final class SecretRedactor {
 
     /** Longues valeurs hexadécimales ou base64 après un mot de secret. */
     private static final Pattern VALEUR_LONGUE = Pattern.compile(
-            "(?i)\\b(secret|token|jeton|cl[ée]{1,2})\\s+(\\S{24,})");
+            "(?i)\\b(secret|secr[èe]te|token|jeton|cl[ée]{1,2})\\s+(\\S{24,})");
 
     private SecretRedactor() {
     }

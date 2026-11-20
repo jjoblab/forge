@@ -140,7 +140,9 @@ public final class MainActivity extends Activity {
         Enregistreur journal = new Enregistreur();
         TaskExecutor.BuildResult premier = exécuter(racine, journal);
         assertTrue(premier.success(), "le build Android complet doit réussir : "
-                + journal.erreurs + journal.diagnostics);
+                + journal.erreurs + journal.diagnostics + " états=" + journal.états
+                + " journal=" + journal.toutesLignes
+                + " échec=" + premier.failedTask());
 
         Path apk = racine.resolve("build/app/outputs/app-debug.apk");
         assertTrue(Files.isRegularFile(apk), "l'APK signé doit exister : " + apk);
@@ -276,6 +278,7 @@ public final class MainActivity extends Activity {
         final Map<jo.forge.api.BuildEvent.TaskState, List<String>> états =
                 new HashMap<>();
         final List<jo.forge.engine.diag.Diagnostic> diagnostics = new ArrayList<>();
+        final List<String> toutesLignes = new ArrayList<>();
         final StringBuilder erreurs = new StringBuilder();
         private String premierÉchec;
 
@@ -296,6 +299,7 @@ public final class MainActivity extends Activity {
 
         @Override
         public void log(jo.forge.api.BuildEvent.LogEvent.LogLevel level, String message) {
+            toutesLignes.add(level + " " + message);
             if (level == jo.forge.api.BuildEvent.LogEvent.LogLevel.ERROR) {
                 erreurs.append(message).append('\n');
             }

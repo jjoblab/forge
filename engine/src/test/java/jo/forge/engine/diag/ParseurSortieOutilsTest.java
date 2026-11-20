@@ -54,7 +54,8 @@ class ParseurSortieOutilsTest {
                 "src/A.java:1:1: error: package absent does not exist",
                 "src/B.java:4: warning: unused variable",
                 "build finished with 1 error"), "javac");
-        assertEquals(2, diagnostics.size(), "bruit ignoré, deux diagnostics gardés");
+        assertEquals(3, diagnostics.size(), "bruit ignoré : localisée + avertissement"
+                + " + la ligne de synthèse « 1 error » (diagnostic global)");
         assertTrue(diagnostics.stream().anyMatch(d -> d.line() == 1
                 && d.severity() == jo.forge.api.BuildEvent.Severity.ERROR));
     }

@@ -176,8 +176,17 @@ class FakeEngineServerTest {
 
         versServeur.write(FrameType.CANCEL_BUILD, 7, out ->
                 MessageIO.writeCancelRequest(out, new CancelRequest("slow-1")));
-        Frame accuse = lire();
-        assertEquals(FrameType.CANCELLED, accuse.type());
+        // Les événements du build scripté peuvent précéder l'accusé (threads
+        // distincts, ordre non garanti) : on draine jusqu'à l'accusé.
+        Frame accuse = null;
+        for (int i = 0; i < 10 && accuse == null; i++) {
+            Frame trame = lire();
+            if (trame.type() == FrameType.CANCELLED) {
+                accuse = trame;
+            }
+        }
+        org.junit.jupiter.api.Assertions.assertNotNull(accuse,
+                "l'accusé d'annulation doit arriver (après les événements en vol)");
         Cancelled annulation = charge(accuse, MessageIO::readCancelled);
         assertEquals("slow-1", annulation.buildId());
         assertTrue(annulation.wasRunning(), "le build était en cours");
