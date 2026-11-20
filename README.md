@@ -95,7 +95,29 @@ vers le SDK comme d'habitude.
   (aapt2 borné, d8, packaging déterministe), diagnostics/rédaction de secrets/trace
   exportable + écran de build dans la coquille, chaîne de publication (composants dexés,
   manifeste signé, clé de production épinglée, job CI de release), import Gradle statique.
-- [ ] Vérification sur appareil réel (ART) — voir `docs/limites-et-suite.md`.
+- [x] Post-4 — assistant d'installation câblé dans la coquille (canal signé, composants
+  avec tailles, progression, reprise), jonction des outils Android au moteur installé
+  (`FORGE_ENGINE_DIR`), layout des composants publiés conforme à la convention
+  d'installation, exemples embarqués importables sans permission, première publication
+  `v0.2.0` (sans composants redistribuables du SDK — garde juridique).
+- [ ] Vérification sur appareil réel (ART) — procédure dans `docs/limites-et-suite.md`.
+
+## Tester sur un appareil
+
+Depuis la publication [`v0.2.0`](https://github.com/jjoblab/forge/releases/tag/v0.2.0) :
+
+1. **Coquille** : installez l'APK joint à la version (chargement latéral).
+2. **Moteur** : dans l'application, section *Installation du moteur* — le canal par
+   défaut (version GitHub la plus récente) charge le manifeste signé (vérifié contre
+   la clé épinglée dans la coquille), affiche les composants avec tailles, puis
+   télécharge (reprise en cas de coupure) et installe le moteur en lecture seule.
+3. **Premier build** : bouton *Importer les projets d'exemple* puis *Construire* —
+   l'exemple Java se compile sur l'appareil par ECJ dans le processus moteur
+   (`app_process`) ; un second build est presque entièrement *à jour*.
+
+Le pipeline Android complet sur appareil (ressources → APK signé) attend la
+publication des composants `aapt2` (prébuilt arm64) et `platform` — voir
+`docs/distribution.md` §7 et `docs/limites-et-suite.md`.
 
 ## Licence
 
