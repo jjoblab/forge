@@ -7,6 +7,9 @@ name: CI
 on:
   push:
     branches: [main]
+    # Les étiquettes de version déclenchent la chaîne de publication (job release) :
+    # sans filtre tags, un push d'étiquette n'exécute AUCUN job du workflow.
+    tags: ['v*']
   pull_request:
 
 permissions:
