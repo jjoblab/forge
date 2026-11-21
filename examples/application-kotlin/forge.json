@@ -1,0 +1,28 @@
+{
+  "modelVersion": 1,
+  "repositories": [
+    "https://repo.maven.apache.org/maven2"
+  ],
+  "modules": [
+    {
+      "name": "core",
+      "type": "java-library"
+    },
+    {
+      "name": "app",
+      "type": "application",
+      "language": "kotlin",
+      "dependencies": [
+        { "project": "core", "scope": "api" },
+        { "maven": "org.jetbrains.kotlin:kotlin-stdlib:2.0.21" }
+      ],
+      "android": {
+        "manifest": "src/main/AndroidManifest.xml",
+        "res": ["src/main/res"],
+        "minSdk": 28,
+        "targetSdk": 34,
+        "namespace": "demo.app"
+      }
+    }
+  ]
+}

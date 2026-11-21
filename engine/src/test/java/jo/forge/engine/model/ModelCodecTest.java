@@ -113,7 +113,7 @@ class ModelCodecTest {
     }
 
     @Test
-    void langageInconnuOuKotlinAndroidRefusés() throws IOException {
+    void langageInconnuRefuséKotlinAndroidAdmis() throws IOException {
         Files.writeString(temporaire.resolve("forge.json"), """
                 { "modelVersion": 1,
                   "modules": [ { "name": "a", "type": "java-library",
@@ -124,8 +124,9 @@ class ModelCodecTest {
         assertTrue(inconnu.getMessage().contains("langage inconnu"),
                 "le message cite le langage refusé : " + inconnu.getMessage());
 
-        // Kotlin sur un module Android : refus EXPLICITE (v1, feuille de route) —
-        // jamais des sources .kt ignorées en silence par le pipeline Android.
+        // Kotlin sur un module Android : ADMIS depuis v0.2.11 — la chaîne
+        // Android enchaîne compileKotlin (compilation jointe, R compris) avant
+        // compileJava. (Refusé en v0.2.9-v0.2.10, « feuille de route ».)
         Files.writeString(temporaire.resolve("forge.json"), """
                 { "modelVersion": 1,
                   "modules": [ { "name": "app", "type": "application",
@@ -134,10 +135,11 @@ class ModelCodecTest {
                                               "minSdk": 28, "targetSdk": 34,
                                               "namespace": "demo.app" } } ] }
                 """);
-        ModelException tropTôt = assertThrows(ModelException.class,
-                () -> ModelCodec.read(temporaire));
-        assertTrue(tropTôt.getMessage().contains("feuille de route"),
-                "le message renvoie à la feuille de route : " + tropTôt.getMessage());
+        ForgeModule app = ModelCodec.read(temporaire).module("app").orElseThrow();
+        assertTrue(app.estKotlin(),
+                "le module application Kotlin est admis tel quel");
+        assertEquals(java.util.List.of("src/main/kotlin", "src/main/java"),
+                app.sources(), "les sources Kotlin précèdent le Java du module");
     }
 
     @Test

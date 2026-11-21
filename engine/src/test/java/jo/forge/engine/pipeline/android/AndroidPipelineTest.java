@@ -229,6 +229,104 @@ public final class MainActivity extends Activity {
     }
 
     @Test
+    void chaîneKotlinJusquÀLApkSigné() throws Exception {
+        Assumptions.assumeTrue(
+                jo.forge.engine.pipeline.java.KotlinCompiler.disponible(),
+                "kotlin-compiler-embeddable requis sur le classpath de test");
+        Path racine = temporaire.resolve("projet-kotlin");
+        projetAndroid(racine);
+        // Le module app passe en KOTLIN : l'activité en Kotlin (elle référence
+        // le R.java généré — compilation jointe — et un utilitaire Kotlin), une
+        // classe Java du module l'appelle (mixte, comme sur l'appareil).
+        Projets.fichier(racine, "forge.json", """
+                { "modelVersion": 1,
+                  "repositories": [],
+                  "modules": [
+                    { "name": "core", "type": "java-library" },
+                    { "name": "app", "type": "application", "language": "kotlin",
+                      "dependencies": [ { "project": "core", "scope": "api" } ],
+                      "android": { "manifest": "src/main/AndroidManifest.xml",
+                                   "res": ["src/main/res"],
+                                   "minSdk": 28, "targetSdk": 34,
+                                   "namespace": "demo.app" } }
+                  ] }
+                """);
+        java.nio.file.Files.delete(racine.resolve(
+                "app/src/main/java/demo/app/MainActivity.java"));
+        Projets.fichier(racine, "app/src/main/kotlin/demo/app/Outils.kt", """
+                package demo.app
+
+                object Outils {
+                    fun légende(salutation: String, nom: String): String =
+                            "${salutation} $nom"
+                }
+                """);
+        Projets.fichier(racine, "app/src/main/kotlin/demo/app/MainActivity.kt", """
+                package demo.app
+
+                import android.app.Activity
+                import android.os.Bundle
+                import android.widget.TextView
+                import demo.core.Salutations
+
+                class MainActivity : Activity() {
+                    override fun onCreate(etat: Bundle?) {
+                        super.onCreate(etat)
+                        val texte = TextView(this)
+                        texte.text = Outils.légende(Salutations.app(),
+                                getString(R.string.app_name))
+                        setContentView(texte)
+                    }
+                }
+                """);
+        Projets.fichier(racine, "app/src/main/java/demo/app/Vérificateur.java", """
+                package demo.app;
+
+                /** Java du module KOTLIN : compile CONTRE les classes Kotlin. */
+                public final class Vérificateur {
+                    private Vérificateur() { }
+
+                    public static String légende() {
+                        return Outils.INSTANCE.légende("Salut", "Forge");
+                    }
+                }
+                """);
+
+        Enregistreur journal = new Enregistreur();
+        TaskExecutor.BuildResult résultat = exécuter(racine, journal);
+        assertTrue(résultat.success(), "le build Android KOTLIN complet doit "
+                + "réussir : " + journal.erreurs + journal.diagnostics
+                + " états=" + journal.états + " journal=" + journal.toutesLignes
+                + " échec=" + résultat.failedTask());
+
+        // L'APK signé existe ET sa signature est vérifiée (v1+v2, comme la
+        // chaîne Java) ; les classes des DEUX langages sont émises.
+        Path apk = racine.resolve("build/app/outputs/app-debug.apk");
+        assertTrue(Files.isRegularFile(apk), "l'APK signé doit exister : " + apk);
+        ApkVerifier.Result vérification = new ApkVerifier.Builder(apk.toFile())
+                .setMinCheckedPlatformVersion(1)
+                .build().verify();
+        assertTrue(vérification.isVerified(), "signature vérifiée : "
+                + vérification.getErrors());
+        assertTrue(Files.isRegularFile(racine.resolve(
+                        "build/app/classes/demo/app/MainActivity.class")),
+                "la classe Kotlin de l'activité est émise");
+        assertTrue(Files.isRegularFile(racine.resolve(
+                        "build/app/classes/demo/app/Outils.class")),
+                "l'objet Kotlin est émis");
+        assertTrue(Files.isRegularFile(racine.resolve(
+                        "build/app/classes/demo/app/Vérificateur.class")),
+                "la classe Java du module Kotlin est émise (par ECJ)");
+
+        // Ordre : compileKotlin suit processResources (R joint) et précède
+        // compileJava.
+        assertTrue(journal.tâches(jo.forge.api.BuildEvent.TaskState.SUCCEEDED)
+                        .containsAll(List.of("app:processResources",
+                                "app:compileKotlin", "app:compileJava")),
+                "la chaîne complète est passée : " + journal.états);
+    }
+
+    @Test
     void diagnosticDeRessourceLocaliséRemonte() throws Exception {
         Path racine = temporaire.resolve("projet-fautif");
         projetAndroid(racine);

@@ -94,7 +94,7 @@ android {
     }
 }
 
-def tachesExemples = ['multi-modules-java', 'application-android', 'kotlin-simple'].collect { exemple ->
+def tachesExemples = ['multi-modules-java', 'application-android', 'kotlin-simple', 'application-kotlin'].collect { exemple ->
     tasks.register("zipExemple-${exemple}", Zip) {
         group = 'construction'
         description = "Embarque examples/${exemple} en asset de la coquille."

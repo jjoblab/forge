@@ -8,6 +8,8 @@ import jo.forge.engine.pipeline.ProjectLayout;
 import jo.forge.engine.pipeline.java.CompileJavaTask;
 import jo.forge.engine.pipeline.java.JavaPipeline;
 import jo.forge.engine.pipeline.java.JarTask;
+import jo.forge.engine.pipeline.java.KotlinCompiler;
+import jo.forge.engine.pipeline.java.KotlinCompilerTask;
 import jo.forge.engine.pipeline.java.ResolveDependenciesTask;
 import jo.forge.engine.tasks.Task;
 
@@ -26,8 +28,10 @@ import java.util.stream.Collectors;
  * traitement des ressources de bibliothèque et l'AAR restent une évolution consignée).
  *
  * <p>Chaîne {@code application} : {@code resolveDependencies} →
- * {@code processResources} (aapt2 : APK de base + sources R) → {@code compileJava}
- * (ECJ, R générées sur le chemin des sources, {@code android.jar} au classpath) →
+ * {@code processResources} (aapt2 : APK de base + sources R) →
+ * {@code compileKotlin} pour un module Kotlin (v0.2.11 : compilation jointe,
+ * R.java compris) → {@code compileJava} (ECJ, R générées sur le chemin des
+ * sources, {@code android.jar} au classpath) →
  * {@code dex} (d8 en processus) → {@code packageApk} (assemblage déterministe) →
  * {@code signApk} (v1+v2, clé de débogage du projet).</p>
  */
@@ -64,17 +68,37 @@ public final class AndroidPipeline {
         List<String> dépendancesCompilation = new ArrayList<>();
         List<Path> classesDépendances = new ArrayList<>();
         for (ModuleDependency.ProjectDependency dep : CompileJavaTask.compileDeps(module)) {
-            dépendancesCompilation.add(dep.module() + ":compileJava");
+            // La tâche d'un frère porte SON langage (kotlin → compileKotlin) —
+            // un module Android peut être Kotlin depuis v0.2.11.
+            ForgeModule frère = parNom.get(dep.module());
+            dépendancesCompilation.add(frère != null && frère.estKotlin()
+                    ? frère.kotlinCompileTaskName() : dep.module() + ":compileJava");
             classesDépendances.add(layout.classesDir(dep.module()));
         }
+        Path jarKotlinCompilateur = KotlinCompiler.jarComposant(engineHome);
 
         if (module.type() == ModuleType.ANDROID_LIBRARY) {
             // V1 : une bibliothèque Android compile comme une bibliothèque Java
             // contre android.jar (pas de ressources, pas d'AAR — écart consigné).
             Path androidJar = AndroidToolsLocator.androidJar(
                     module.android().orElseThrow().targetSdk(), engineHome);
-            tâches.add(new CompileJavaTask(module, layout, dépendancesCompilation,
-                    classesDépendances, List.of(), List.of(androidJar),
+            List<String> depsJava = new ArrayList<>(dépendancesCompilation);
+            List<Path> classpathJava = new ArrayList<>(classesDépendances);
+            if (module.estKotlin()) {
+                tâches.add(new KotlinCompilerTask(module, layout,
+                        dépendancesCompilation, classesDépendances,
+                        List.of(androidJar), resolve.cheminClasspath(),
+                        List.of(), jarKotlinCompilateur));
+                depsJava.add(module.kotlinCompileTaskName());
+                // Le Java du module compile CONTRE les classes Kotlin fraîches
+                // (même répertoire de sortie — le jar n'y voit qu'un module).
+                // Cette entrée reste HORS classesDépendances : le dexeur embarque
+                // déjà le répertoire propre du module, la doubler ferait échouer
+                // d8 sur « defined multiple times ».
+                classpathJava.add(layout.classesDir(module.name()));
+            }
+            tâches.add(new CompileJavaTask(module, layout, depsJava,
+                    classpathJava, List.of(), List.of(androidJar),
                     resolve.cheminClasspath()));
             tâches.add(new JarTask(module, layout));
             return tâches;
@@ -91,8 +115,25 @@ public final class AndroidPipeline {
 
         List<String> depsCompilation = new ArrayList<>(dépendancesCompilation);
         depsCompilation.add(ressources.name());
+        List<Path> classpathJava = new ArrayList<>(classesDépendances);
+        if (module.estKotlin()) {
+            // Kotlin d'application (v0.2.11) : compileKotlin suit processResources
+            // — le R.java généré participe à la compilation jointe — et précède
+            // compileJava ; le Kotlin et le Java partagent le répertoire de
+            // classes, le dexeur n'y voit qu'un module.
+            tâches.add(new KotlinCompilerTask(module, layout, depsCompilation,
+                    classesDépendances, List.of(androidJar), resolve.cheminClasspath(),
+                    List.of(ressources.sourcesR()), jarKotlinCompilateur));
+            depsCompilation.add(module.kotlinCompileTaskName());
+            // Le Java du module compile CONTRE les classes Kotlin fraîches
+            // (même répertoire de sortie). Cette entrée reste HORS
+            // classesDépendances : le dexeur embarque déjà le répertoire propre
+            // du module, la doubler ferait échouer d8 sur « defined multiple
+            // times ».
+            classpathJava.add(layout.classesDir(module.name()));
+        }
         tâches.add(new CompileJavaTask(module, layout, depsCompilation,
-                classesDépendances, List.of(ressources.sourcesR()),
+                classpathJava, List.of(ressources.sourcesR()),
                 List.of(androidJar), resolve.cheminClasspath()));
 
         DexTask dex = new DexTask(module, layout, classesDépendances,

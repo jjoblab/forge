@@ -82,14 +82,10 @@ public record ForgeModule(String name, ModuleType type, int javaRelease,
                     + language + "\" (attendu : " + LANGUAGE_JAVA + " ou "
                     + LANGUAGE_KOTLIN + ")");
         }
-        if (LANGUAGE_KOTLIN.equals(language) && androidType) {
-            // Refus explicite plutôt que sources .kt ignorées en silence : le
-            // pipeline Android ne sait pas encore enchaîner compileKotlin (v1,
-            // feuille de route langages — Compose viendra avec).
-            throw new ModelException("Module " + name + " : le langage " + language
-                    + " n'est pas encore câblé pour le type " + type.wireName()
-                    + " (java-library d'abord — feuille de route langages)");
-        }
+        // Android+Kotlin est admis depuis v0.2.11 : la chaîne Android enchaîne
+        // compileKotlin (compilation jointe avec le R.java compris) avant
+        // compileJava — même politique que les java-library. Compose, lui, reste
+        // au-delà (plugin compilateur + dépendances, feuille de route).
         if (androidType && android.isEmpty()) {
             throw new ModelException("Module " + name
                     + " : le type " + type.wireName() + " exige une facette Android");
