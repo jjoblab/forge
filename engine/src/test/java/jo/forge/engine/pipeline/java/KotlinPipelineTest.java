@@ -225,17 +225,24 @@ class KotlinPipelineTest {
                 "kotlin-compiler-embeddable requis sur le classpath de test");
         projetKotlin();
         // Le composant kotlin-compiler tel que l'installateur le pose sur
-        // l'appareil : components/kotlin-compiler/lib/kotlin-compiler.jar (ici la
-        // copie du jar embarqué du classpath de test — les arguments -kotlin-home
-        // et -Xintellij-plugin-root sont les mêmes, correctif v0.2.11).
+        // l'appareil : lib/kotlin-compiler.jar, à plat (convention réelle,
+        // v0.2.12 — les composants applicatifs vont dans lib/, seuls les
+        // outils par ABI vont dans components/ ; ici la copie du jar embarqué
+        // du classpath de test, les arguments -kotlin-home et
+        // -Xintellij-plugin-root sont les mêmes).
         Path jarEmbarqué = KotlinCompiler.jarDeLaClasse(
                 "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler");
         assertNotNull(jarEmbarqué,
                 "le jar du compilateur doit être localisable sur le classpath de test");
         Path maison = temporaire.resolve("engines/0.2.11");
-        Files.createDirectories(maison.resolve("components/kotlin-compiler/lib"));
+        Files.createDirectories(maison.resolve("lib"));
         Files.copy(jarEmbarqué,
-                maison.resolve("components/kotlin-compiler/lib/kotlin-compiler.jar"));
+                maison.resolve("lib/kotlin-compiler.jar"));
+        // Le jar posé doit être celui que le pipeline localise (sinon le test
+        // ne teste rien : jarComposant retournerait null silencieusement).
+        assertEquals(maison.resolve("lib/kotlin-compiler.jar"),
+                KotlinCompiler.jarComposant(maison),
+                "le pipeline doit localiser le jar à la convention d'installation");
 
         ForgeModel modèle = ModelCodec.read(temporaire);
         List<Task> tâches = JavaPipeline.tasksFor(modèle, temporaire,

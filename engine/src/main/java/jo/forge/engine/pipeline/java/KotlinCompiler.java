@@ -28,10 +28,10 @@ import java.util.List;
  * avec un message actionnable (et NON un NoClassDefFoundError au milieu d'un
  * build).</p>
  *
- * <p><b>Audit ART (v0.2.11)</b> : le premier {@code compileKotlin} sur l'appareil
- * (rapport v0.2.10, projet kotlin-simple) mourait par
- * {@code IllegalStateException: Resource not found: …/PathUtil.class} — le
- * compilateur s'auto-localise par {@code ClassLoader.getResource("…class")},
+ * <p><b>Audit ART (v0.2.11, corrigé réellement en v0.2.12)</b> : le premier
+ * {@code compileKotlin} sur l'appareil (rapport v0.2.10, projet kotlin-simple)
+ * mourait par {@code IllegalStateException: Resource not found: …/PathUtil.class}
+ * — le compilateur s'auto-localise par {@code ClassLoader.getResource("…class")},
  * or le jar dexé ne porte PLUS d'entrées {@code .class} (remplacées par les
  * dex). Le bytecode 2.0.21 lu montre DEUX appels distincts de cette
  * auto-localisation, tous deux évitables par arguments publics, SANS la
@@ -43,7 +43,10 @@ import java.util.List;
  * <ol>
  *   <li>{@code computeKotlinPaths} : {@code -kotlin-home <répertoire existant>}
  *       court-circuite la recherche par ressource (le répertoire doit exister —
- *       sinon « Kotlin home does not exist or is not a directory ») ;</li>
+ *       sinon « Kotlin home does not exist or is not a directory »). Le
+ *       rapport appareil v0.2.11 a montré que l'argument n'était JAMAIS posé :
+ *       le jar du composant était cherché sous {@code components/} alors que
+ *       l'installateur l'extrait à plat dans {@code lib/} (v0.2.12) ;</li>
  *   <li>le démarrage de l'environnement ({@code KotlinCoreEnvironment}) :
  *       {@code -Xintellij-plugin-root <kotlin-compiler.jar>} désigne le jar réel
  *       qui porte la configuration des points d'extension.</li>
@@ -123,10 +126,17 @@ public final class KotlinCompiler {
     }
 
     /**
-     * Localise le jar du composant kotlin-compiler installé dans le moteur
-     * (appareil : {@code components/kotlin-compiler/lib/kotlin-compiler.jar}),
-     * ou {@code null} s'il n'y est pas (JVM de développement : le compilateur
-     * vient du classpath de test et n'a besoin ni de maison ni de racine).
+     * Localise le jar du composant kotlin-compiler installé dans le moteur :
+     * {@code lib/kotlin-compiler.jar} — la convention RÉELLE d'installation
+     * (l'installateur extrait les composants applicatifs à plat dans
+     * {@code lib/}, comme java-compiler, dexeur et signeur ; seuls les outils
+     * par ABI vont dans {@code components/}). Le correctif v0.2.11 cherchait
+     * {@code components/kotlin-compiler/lib/…}, un chemin que le packaging ne
+     * produit JAMAIS : le rapport appareil v0.2.11 (moto g06, Android 15)
+     * montrait {@code -kotlin-home} jamais posé et le crash {@code PathUtil}
+     * intact. Retourne {@code null} s'il n'y est pas (JVM de développement :
+     * le compilateur vient du classpath de test et n'a besoin ni de maison ni
+     * de racine).
      *
      * @param engineHome racine du moteur installé (peut être null).
      * @return le chemin du jar dexé, ou null.
@@ -135,8 +145,7 @@ public final class KotlinCompiler {
         if (engineHome == null) {
             return null;
         }
-        Path jar = engineHome.resolve("components").resolve("kotlin-compiler")
-                .resolve("lib").resolve("kotlin-compiler.jar");
+        Path jar = engineHome.resolve("lib").resolve("kotlin-compiler.jar");
         return Files.isRegularFile(jar) ? jar : null;
     }
 
@@ -211,10 +220,13 @@ public final class KotlinCompiler {
         if (EcjCompiler.surArt() || !plateforme.isEmpty()) {
             argumentsCli.add("-no-jdk");
         }
-        // Maison Kotlin et racine de configuration IntelliJ (correctif v0.2.11,
-        // audit ART en tête de classe) : -kotlin-home EXIGE un répertoire
-        // existant — la racine du composant (parent de lib/) l'est toujours
-        // quand le jar existe.
+        // Maison Kotlin et racine de configuration IntelliJ (correctifs v0.2.11
+        // puis v0.2.12 — le premier cherchait le jar du composant sous
+        // components/, chemin jamais produit par l'installateur : sur
+        // l'appareil, -kotlin-home n'était JAMAIS posé et computeKotlinPaths
+        // retombait dans l'auto-localisation qui tue ART). Avec le jar réel
+        // (lib/kotlin-compiler.jar), la maison est le répertoire moteur
+        // lui-même — un répertoire existant, ce que le bytecode exige.
         Path maisonKotlin = null;
         if (jarCompilateur != null && jarCompilateur.getParent() != null
                 && jarCompilateur.getParent().getParent() != null
@@ -224,6 +236,19 @@ public final class KotlinCompiler {
             argumentsCli.add(maisonKotlin.toString());
             argumentsCli.add("-Xintellij-plugin-root");
             argumentsCli.add(jarCompilateur.toString());
+        }
+        if (EcjCompiler.surArt() && maisonKotlin == null) {
+            // Franchise du diagnostic (politique du projet) : sans maison
+            // explicite sur ART, le compilateur mourra par l'auto-localisation
+            // (jar dexé sans entrées .class) — autant le dire AVANT, avec la
+            // réparation, plutôt qu'une IllegalStateException obscure.
+            String message = "composant kotlin-compiler introuvable dans le "
+                    + "moteur installé (lib/kotlin-compiler.jar attendu) — sur "
+                    + "ART le compilateur ne peut pas s'auto-localiser depuis un "
+                    + "jar dexé ; réparez l'installation du moteur (bouton "
+                    + "Réparer de l'assistant)";
+            sink.report(Diagnostic.error(TOOL, message));
+            return new CompileResult(false, List.of("erreur : " + message), 1);
         }
         if (!cheminComplet.isEmpty()) {
             argumentsCli.add("-classpath");

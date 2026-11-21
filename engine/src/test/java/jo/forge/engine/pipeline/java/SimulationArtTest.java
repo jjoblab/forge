@@ -33,11 +33,15 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * système), localisation réelle du composant, compilation réelle contre
  * android.jar réel (tranches lambda embarquées comprises), jusqu'aux jars.</p>
  *
- * <p>v0.2.11 — même simulation pour KOTLIN : le composant kotlin-compiler est
- * posé dans la maison (jar réel du classpath de test, comme l'installateur le
- * lie) et le premier compileKotlin — celui qui mourait sur l'appareil par
- * {@code Resource not found: …/PathUtil.class} (rapport v0.2.10) — doit passer
- * par la maison et la racine de configuration explicites.</p>
+ * <p>v0.2.11 — même simulation pour KOTLIN ; v0.2.12 : le composant
+ * kotlin-compiler est posé à la convention RÉELLE d'installation
+ * ({@code lib/kotlin-compiler.jar} — l'installateur extrait les composants
+ * applicatifs à plat dans {@code lib/}). La simulation v0.2.11 fabriquait
+ * {@code components/kotlin-compiler/lib/…}, un chemin que le packaging ne
+ * produit pas : le test validait une convention inventée et laissait filer
+ * le crash appareil ({@code -kotlin-home} jamais posé). Désormais le test
+ * reflète l'installation réelle : c'est lui qui doit attraper toute
+ * divergence future entre packaging et localisation.</p>
  */
 class SimulationArtTest {
 
@@ -185,7 +189,10 @@ class SimulationArtTest {
 
         // Le moteur installé sur l'appareil : platform-34 ET le composant
         // kotlin-compiler (jar réel — copie de l'embarqué du classpath de test,
-        // l'installateur lie le dexé de la même façon).
+        // posé à la convention d'installation réelle : lib/kotlin-compiler.jar,
+        // comme l'installateur l'extrait à plat du zip publié — v0.2.12, le
+        // rapport appareil v0.2.11 a montré le coût d'une convention simulée
+        // différente du packaging).
         Path maison = temporaire.resolve("engines/0.2.11");
         Files.createDirectories(maison.resolve("components/platform-34"));
         Files.copy(androidJar,
@@ -194,9 +201,9 @@ class SimulationArtTest {
                 "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler");
         assertNotNull(jarCompilateur,
                 "le jar du compilateur doit être localisable sur le classpath de test");
-        Files.createDirectories(maison.resolve("components/kotlin-compiler/lib"));
+        Files.createDirectories(maison.resolve("lib"));
         Files.copy(jarCompilateur,
-                maison.resolve("components/kotlin-compiler/lib/kotlin-compiler.jar"));
+                maison.resolve("lib/kotlin-compiler.jar"));
 
         // Le moteur croit être sur ART : la chaîne compile contre android.jar
         // avec -no-jdk, la maison et la racine de configuration explicites.

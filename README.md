@@ -151,7 +151,7 @@ vers le SDK comme d'habitude.
   DOCTYPE rejeté par scan du prologue (portable, même position que Maven),
   durcissement au mieux (motif `runCatching` de la référence), diagnostic honnête
   (invalide ≠ introuvable).
-- [x] Premier `compileKotlin` sur ART corrigé + Android+Kotlin (`v0.2.11`) — le crash
+- [x] Premier `compileKotlin` sur ART corrigé + Android+Kotlin (`v0.2.11`-`v0.2.12`) — le crash
   `Resource not found: …/PathUtil.class` (rapport `v0.2.10` : le jar dexé ne porte
   plus d'entrées `.class`, le compilateur ne peut plus s'auto-localiser) est corrigé
   par arguments publics uniquement : `-kotlin-home` (répertoire existant) et
@@ -162,13 +162,19 @@ vers le SDK comme d'habitude.
   (la stdlib n'était JAMAIS posée sur JVM), compilation JOINTE (le Kotlin voit le
   Java du module, `R.java` compris), Android+Kotlin admis jusqu'à l'APK signé
   (exemple `application-kotlin`, validé sur JVM avec résolution Maven réelle).
+  Le rapport appareil `v0.2.11` a montré le correctif INCOMPLET — `-kotlin-home`
+  n'était jamais posé : le jar du composant était cherché sous `components/` alors
+  que l'installation l'extrait à plat dans `lib/` (le test simulait une convention
+  inventée) ; `v0.2.12` cherche le chemin réel (`lib/kotlin-compiler.jar`), refuse
+  franchement sur ART si le composant est introuvable, et les tests reproduisent la
+  convention du packaging publié.
 - [ ] Vérification sur appareil réel (ART) — reste : installation PackageInstaller de
   l'APK produit, validation appareil du `compileKotlin` corrigé (`kotlin-simple`,
   puis `application-kotlin`) ; procédure dans `docs/limites-et-suite.md`.
 
 ## Tester sur un appareil
 
-Depuis la publication [`v0.2.11`](https://github.com/jjoblab/forge/releases/latest) :
+Depuis la publication [`v0.2.12`](https://github.com/jjoblab/forge/releases/latest) :
 
 1. **Coquille** : installez l'APK joint à la version (chargement latéral ; clé d'essai
    stable — les versions de test successives s'installent l'une sur l'autre).
@@ -177,7 +183,7 @@ Depuis la publication [`v0.2.11`](https://github.com/jjoblab/forge/releases/late
    la clé épinglée dans la coquille), affiche les composants avec tailles, puis
    télécharge (reprise en cas de coupure) et installe le moteur en lecture seule.
    Depuis la `v0.2.9`, un contenu déjà téléchargé ne passe PLUS par le réseau (cache
-   par empreinte de contenu : la mise à jour `v0.2.10` → `v0.2.11` ne re-télécharge que
+   par empreinte de contenu : la mise à jour `v0.2.11` → `v0.2.12` ne re-télécharge que
    le cœur, ~0,1 Mo — compilateurs, plateforme et aapt2 sont liés localement) ; le
    composant `kotlin-compiler` (~19 Mo) est proposé, expérimental sur ART.
 3. **Premier build** : bouton *Importer les projets d'exemple* puis *Construire* —
@@ -185,9 +191,10 @@ Depuis la publication [`v0.2.11`](https://github.com/jjoblab/forge/releases/late
    (`app_process`) ; un second build est presque entièrement *à jour*. L'exemple
    `application-android` est VALIDÉ de bout en bout (APK signé v1+v2, rapport
    `v0.2.9`) ; l'exemple `kotlin-simple` (Kotlin+Java mélangés, `compileKotlin`
-   puis `compileJava`) est corrigé sur ART en `v0.2.11` — voir l'étape suivante.
+   puis `compileJava`) est corrigé sur ART en `v0.2.12` — voir l'étape suivante.
 4. **Premier build Kotlin** : `kotlin-simple` (le crash `compileKotlin` de la
-   `v0.2.10` est corrigé en `v0.2.11` — rapport attendu), puis `application-kotlin`
+   `v0.2.10` — puis le correctif incomplet de la `v0.2.11` — sont corrigés en
+   `v0.2.12` : rapport attendu), puis `application-kotlin`
    (Android+Kotlin, admis depuis la `v0.2.11`, validé sur JVM jusqu'à l'APK signé
    avec résolution Maven réelle de la stdlib).
 5. **En cas de problème** : bouton *Copier les journaux* (presse-papiers) ou
@@ -200,9 +207,11 @@ Depuis la publication [`v0.2.11`](https://github.com/jjoblab/forge/releases/late
 Le pipeline Android complet est VALIDÉ sur appareil jusqu'à l'APK signé v1+v2
 (`v0.2.9`, rapport du 2026-11-21) ; reste à constater l'installation PackageInstaller
 de l'APK produit. Le composant `kotlin-compiler` est publié depuis la `v0.2.9` ;
-le premier `compileKotlin` sur ART est corrigé en `v0.2.11` (constat `v0.2.10` :
+le premier `compileKotlin` sur ART est corrigé en `v0.2.12` (constat `v0.2.10` :
 `PathUtil` ne peut s'auto-localiser depuis un jar dexé — maison et racine de
-configuration posées par arguments publics), validation appareil attendue.
+configuration posées par arguments publics ; le correctif `v0.2.11` était incomplet :
+maison jamais posée, chemin du composant inventé, constaté par le rapport appareil
+`v0.2.11`), validation appareil attendue.
 Voir `docs/distribution.md` §7 et `docs/limites-et-suite.md`.
 
 ## Licence
