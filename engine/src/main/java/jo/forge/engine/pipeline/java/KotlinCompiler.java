@@ -227,6 +227,8 @@ public final class KotlinCompiler {
         // retombait dans l'auto-localisation qui tue ART). Avec le jar réel
         // (lib/kotlin-compiler.jar), la maison est le répertoire moteur
         // lui-même — un répertoire existant, ce que le bytecode exige.
+        // L'option AVANCÉE prend la forme « = » (rapport appareil v0.2.12 :
+        // « Advanced option value is passed in an obsolete form »).
         Path maisonKotlin = null;
         if (jarCompilateur != null && jarCompilateur.getParent() != null
                 && jarCompilateur.getParent().getParent() != null
@@ -234,8 +236,7 @@ public final class KotlinCompiler {
             maisonKotlin = jarCompilateur.getParent().getParent();
             argumentsCli.add("-kotlin-home");
             argumentsCli.add(maisonKotlin.toString());
-            argumentsCli.add("-Xintellij-plugin-root");
-            argumentsCli.add(jarCompilateur.toString());
+            argumentsCli.add("-Xintellij-plugin-root=" + jarCompilateur);
         }
         if (EcjCompiler.surArt() && maisonKotlin == null) {
             // Franchise du diagnostic (politique du projet) : sans maison
@@ -247,6 +248,22 @@ public final class KotlinCompiler {
                     + "ART le compilateur ne peut pas s'auto-localiser depuis un "
                     + "jar dexé ; réparez l'installation du moteur (bouton "
                     + "Réparer de l'assistant)";
+            sink.report(Diagnostic.error(TOOL, message));
+            return new CompileResult(false, List.of("erreur : " + message), 1);
+        }
+        if (EcjCompiler.surArt() && !ombreUnsafeActive()) {
+            // Garde franche v0.2.13 : le jar du compilateur porte un conteneur
+            // Unsafe dont l'initialiseur avide meurt sur ART (API cachée
+            // copyMemory, rapport v0.2.12) — l'ombre tolérante vit dans
+            // engine.jar, PREMIER du classpath moteur ; si le chargeur retient
+            // l'originale (ordre cassé, installation corrompue), le compilateur
+            // mourra d'un java.lang.Error opaque : autant le nommer avant.
+            String message = "l'ombre Forge d'Unsafe (org.jetbrains.kotlin.com."
+                    + "intellij.util.containers.Unsafe, tolérante aux API cachées "
+                    + "d'ART) n'est pas la classe chargée — engine.jar doit "
+                    + "précéder lib/kotlin-compiler.jar sur le classpath moteur ; "
+                    + "réparez l'installation du moteur (bouton Réparer de "
+                    + "l'assistant)";
             sink.report(Diagnostic.error(TOOL, message));
             return new CompileResult(false, List.of("erreur : " + message), 1);
         }
@@ -428,6 +445,25 @@ public final class KotlinCompiler {
             return Class.forName(CLASSE_COMPILATEUR);
         } catch (ClassNotFoundException absent) {
             return null;
+        }
+    }
+
+    /**
+     * Vérifie que l'ombre Forge du conteneur Unsafe du compilateur (tolérante aux
+     * API cachées d'ART — {@code copyMemory} notamment, rapport v0.2.12) est bien
+     * la classe que le chargeur retient : elle porte le champ marqueur
+     * {@code OMBRE_FORGE}, absent de l'originale. Ne s'exécute que sur ART (sur
+     * JVM, l'originale fonctionne et l'ombre n'a rien à sauver… mais elle est
+     * quand même première, et les tests la traversent).
+     */
+    private static boolean ombreUnsafeActive() {
+        try {
+            Class<?> ombre = Class.forName(
+                    "org.jetbrains.kotlin.com.intellij.util.containers.Unsafe");
+            ombre.getField("OMBRE_FORGE");
+            return true;
+        } catch (Throwable pasLOmbre) {
+            return false;
         }
     }
 
