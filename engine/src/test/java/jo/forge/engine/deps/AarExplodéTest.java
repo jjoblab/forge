@@ -100,6 +100,55 @@ class AarExplodéTest {
     }
 
     @Test
+    void explosionsConcurrentesDuMêmeAarToutesValables() throws Exception {
+        // Régression v0.2.16 (rapport appareil v0.2.15) : le provisoire était
+        // nommé par java.lang.ProcessHandle.current().pid() — CONSTANT dans un
+        // processus donné, donc DEUX explosions concurrentes de la même
+        // coordonnée (tâches resolveDependencies de modules frères parallèles)
+        // partageaient LE MÊME répertoire provisoire, s'écrasaient dessus, et
+        // la perdante du renommage détruisait l'œuvre du gagnant. Le
+        // provisoire est désormais UNIQUE PAR APPEL (createTempDirectory) et
+        // la perdante réutilise le résultat complet du gagnant.
+        byte[] archive = aar(java.util.Map.of(
+                "classes.jar", jarVide(),
+                "AndroidManifest.xml", "<manifest package=\"demo.lib\"/>"
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8),
+                "res/values/ids.xml", "<resources/>"
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        Path aarFichier = temporaire.resolve("demo.aar");
+        Files.write(aarFichier, archive);
+        Path cible = temporaire.resolve("demo-exploded");
+
+        java.util.concurrent.ExecutorService fils =
+                java.util.concurrent.Executors.newFixedThreadPool(4);
+        try {
+            List<java.util.concurrent.Future<AarExplodé>> résultats = new java.util.ArrayList<>();
+            for (int i = 0; i < 16; i++) {
+                résultats.add(fils.submit(() -> AarExplodé.exploser(aarFichier, cible)));
+            }
+            for (java.util.concurrent.Future<AarExplodé> résultat : résultats) {
+                AarExplodé explosé = résultat.get(30, java.util.concurrent.TimeUnit.SECONDS);
+                assertEquals(cible.resolve("classes.jar"), explosé.classesJar(),
+                        "chaque explosion concurrente sert le même classes.jar final");
+                assertEquals(Optional.of("demo.lib"), explosé.packageDuManifeste());
+            }
+        } finally {
+            fils.shutdownNow();
+        }
+        // Le répertoire final est complet et AUCUN provisoire ne survit à la course.
+        assertTrue(Files.isRegularFile(cible.resolve(".forge-exploded")),
+                "le marqueur d'explosion complète est posé");
+        assertTrue(Files.isRegularFile(cible.resolve("AndroidManifest.xml")));
+        assertTrue(Files.isDirectory(cible.resolve("res/values")));
+        try (var parcours = Files.list(temporaire)) {
+            assertTrue(parcours.filter(p -> p.getFileName().toString()
+                                    .startsWith("demo-exploded.part-"))
+                            .findAny().isEmpty(),
+                    "aucun provisoire .part- ne doit survivre à la course");
+        }
+    }
+
+    @Test
     void gardeZipSlip() throws Exception {
         Path aar = temporaire.resolve("malveillant-1.0.aar");
         Files.write(aar, aar(java.util.Map.of(

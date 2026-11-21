@@ -8,7 +8,7 @@ plugins {
 }
 
 group = 'jo.forge'
-version = '0.2.15'
+version = '0.2.16'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -40,6 +40,12 @@ configurations {
 dependencies {
     api project(':api')
     api project(':json')
+
+    // Le module client fait partie du MÊME composant dexé engine-core (api,
+    // json, client, engine — assemblage « composants ») : l'audit de surface
+    // ART (SurfaceArtTest, v0.2.16) doit voir ses classes, le temps des tests
+    // seulement — aucune dépendance de compilation entre moteur et client.
+    testImplementation project(':client')
 
     // Compilateur Java embarqué (pur Java, EPL-2.0 — voir docs/distribution.md §7).
     implementation 'org.eclipse.jdt:ecj:3.36.0'
@@ -153,7 +159,7 @@ tasks.named('processResources') { dependsOn 'tranchesLambdaJar' }
 // Publication (étape 12) : assemblage des composants du moteur et du manifeste.
 // ---------------------------------------------------------------------------
 
-def versionComposants = '0.2.15'
+def versionComposants = '0.2.16'
 
 tasks.register('composants', JavaExec) {
     group = 'publication'

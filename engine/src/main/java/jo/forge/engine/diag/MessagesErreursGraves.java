@@ -35,11 +35,17 @@ public final class MessagesErreursGraves {
         }
         if (erreur instanceof LinkageError) {
             // NoClassDefFoundError, NoSuchMethodError, VerifyError… : une classe
-            // ou un membre manque sur le classpath du moteur — le composant est
-            // probablement incomplet, ce n'est PAS un problème de mémoire.
+            // ou un membre manque sur le classpath du moteur. Deux familles
+            // réelles : un COMPOSANT incomplet (téléchargement interrompu —
+            // l'assistant répare), ou une API de BUREAU référencée par le code du
+            // moteur qu'ART ne porte pas (v0.2.13 : javax.xml.stream/StAX ;
+            // v0.2.15 : java.lang.ProcessHandle dans l'explosion d'AAR) — ce
+            // n'est PAS un problème de mémoire, et le rapport de diagnostic dit
+            // laquelle des deux familles par le nom de la classe manquante.
             return préambule + " — classe ou membre manquant sur le classpath"
-                    + " du moteur : composant probablement incomplet,"
-                    + " signalez le problème avec le rapport de diagnostic";
+                    + " du moteur : composant probablement incomplet (réparation"
+                    + " par l'assistant d'installation) ou API de bureau absente"
+                    + " d'ART — signalez le problème avec le rapport de diagnostic";
         }
         if (erreur instanceof StackOverflowError) {
             return préambule + " — pile d'exécution épuisée (récursion),"

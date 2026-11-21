@@ -26,9 +26,9 @@ import java.util.zip.ZipOutputStream;
  * {@code aar-metadata.properties} (borne {@code minCompileSdk} d'AGP).
  *
  * <p><b>Explosion atomique</b> (motif du moteur de référence, constat REF-128) :
- * l'archive est déroulée dans un répertoire provisoire frère, puis le répertoire
+ * l'archive est déroulée dans un répertoire provisoire frère UNIQUE, puis le répertoire
  * est renommé d'un bloc ; le marqueur {@value #MARQUEUR} est posé EN DERNIER.
- * Un répertoire cible sans marqueur (explosion interrompue) est purgé et refait.
+ * Un répertoire cible sans marqueur (explosion interrompue) est purgé et refait.</p>
  * <b>Garde zip-slip</b> : toute entrée dont le chemin normalisé sortirait du
  * répertoire cible est rejetée nommément — jamais {@code ../} en aveugle.</p>
  *
@@ -62,6 +62,17 @@ public final class AarExplodé {
     private static final Pattern MIN_COMPILE_SDK = Pattern.compile(
             "minCompileSdk\\s*=\\s*(\\d+)");
 
+    /**
+     * Verrous par répertoire cible (correctif v0.2.16) : les tâches de modules
+     * frères s'exécutent en PARALLÈLE et peuvent résoudre la MÊME coordonnée —
+     * deux explosions simultanées du même AAR se sérialisent ici, la seconde
+     * relit l'œuvre complète de la première au lieu de la défaire. Un verrou
+     * in-process suffit : la coquille arrête les moteurs successifs avant
+     * chaque build (un seul processus touche le cache).
+     */
+    private static final java.util.concurrent.ConcurrentHashMap<Path, Object> VERROUS =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
     private final Path répertoire;
     private final Path classesJar;
     private final List<Path> jarsBibliothèques;
@@ -85,15 +96,34 @@ public final class AarExplodé {
      *                     ou que l'explosion échoue.
      */
     public static AarExplodé exploser(Path aar, Path répertoire) throws IOException {
+        Object verrou = VERROUS.computeIfAbsent(
+                répertoire.toAbsolutePath(), p -> new Object());
+        synchronized (verrou) {
+            return exploserSousVerrou(aar, répertoire);
+        }
+    }
+
+    private static AarExplodé exploserSousVerrou(Path aar, Path répertoire)
+            throws IOException {
         if (Files.isRegularFile(répertoire.resolve(MARQUEUR))) {
             return relire(répertoire);
         }
         // Explosion interrompue : un répertoire sans marqueur est un cadavre.
         supprimer(répertoire);
-        Path provisoire = répertoire.resolveSibling(
-                répertoire.getFileName() + ".part-" + ProcessHandle.current().pid());
-        supprimer(provisoire);
-        Files.createDirectories(provisoire);
+        // Provisoire frère UNIQUE PAR APPEL (createTempDirectory, API 26+
+        // d'Android — disponible sur ART comme sur JVM). JAMAIS
+        // java.lang.ProcessHandle : cette API de bureau (Java 9) est absente
+        // d'ART et le rapport appareil v0.2.15 est mort au premier AAR explosé
+        // de « Failed resolution of: Ljava/lang/ProcessHandle; » — de plus, un
+        // pid est CONSTANT dans un processus : il n'aurait de toute façon pas
+        // distingué deux appels concurrents.
+        Path parent = répertoire.getParent();
+        if (parent == null) {
+            throw new IOException("répertoire d'explosion sans parent : " + répertoire);
+        }
+        Files.createDirectories(parent);
+        Path provisoire = Files.createTempDirectory(
+                parent, répertoire.getFileName() + ".part-");
         List<Path> jarsLibs = new ArrayList<>();
         boolean aClasses = false;
         boolean aManifeste = false;
@@ -135,7 +165,8 @@ public final class AarExplodé {
         try {
             Files.move(provisoire, répertoire, StandardCopyOption.ATOMIC_MOVE);
         } catch (IOException pasAtomique) {
-            supprimer(répertoire);
+            // Système de fichiers sans renommage atomique de répertoire : la
+            // cible est déjà purgée, un renommage simple suffit.
             Files.move(provisoire, répertoire, StandardCopyOption.REPLACE_EXISTING);
         }
         // Les chemins des jars imbriqués ont été bâtis sous le provisoire : les
