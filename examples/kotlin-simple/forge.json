@@ -1,0 +1,16 @@
+{
+  "modelVersion": 1,
+  "repositories": [
+    "https://repo.maven.apache.org/maven2"
+  ],
+  "modules": [
+    {
+      "name": "kalc",
+      "type": "java-library",
+      "language": "kotlin",
+      "dependencies": [
+        { "maven": "org.jetbrains.kotlin:kotlin-stdlib:2.0.21" }
+      ]
+    }
+  ]
+}

@@ -142,9 +142,13 @@ public final class JavaPipeline {
                 continue;
             }
             ProjectLayout layout = new ProjectLayout(projectRoot);
+            // La tâche de compilation d'une dépendance porte SON langage : un
+            // module Kotlin dépend des classes du compileKotlin de son frère.
             List<String> dependances = new ArrayList<>();
             for (ModuleDependency.ProjectDependency dep : CompileJavaTask.compileDeps(module)) {
-                dependances.add(dep.module() + ":compileJava");
+                ForgeModule frère = parNom.get(dep.module());
+                dependances.add(frère != null && frère.estKotlin()
+                        ? frère.kotlinCompileTaskName() : dep.module() + ":compileJava");
             }
             LinkedHashSet<Path> classpath = new LinkedHashSet<>();
             fermetureCompilationPublique(module, parNom, classpath,
@@ -154,9 +158,26 @@ public final class JavaPipeline {
                     ResolveDependenciesTask.racinesDe(parNom, module),
                     model.repositories(), horsLigne);
             tasks.add(resolve);
-            tasks.add(new CompileJavaTask(module, layout, dependances,
-                    new ArrayList<>(classpath), List.of(), plateformeJava,
-                    resolve.cheminClasspath()));
+            if (module.estKotlin()) {
+                // Module Kotlin (v0.2.9) : le Kotlin compile d'abord, le Java du
+                // module compile ensuite CONTRE ses classes (même répertoire de
+                // sortie — le jar n'y voit qu'un module). Un module sans source
+                // .kt passe sa compileKotlin sans rien faire.
+                tasks.add(new KotlinCompilerTask(module, layout, dependances,
+                        new ArrayList<>(classpath), plateformeJava,
+                        resolve.cheminClasspath()));
+                List<String> dependancesJava = new ArrayList<>(dependances);
+                dependancesJava.add(module.kotlinCompileTaskName());
+                List<Path> classpathJava = new ArrayList<>(classpath);
+                classpathJava.add(layout.classesDir(module.name()));
+                tasks.add(new CompileJavaTask(module, layout, dependancesJava,
+                        classpathJava, List.of(), plateformeJava,
+                        resolve.cheminClasspath()));
+            } else {
+                tasks.add(new CompileJavaTask(module, layout, dependances,
+                        new ArrayList<>(classpath), List.of(), plateformeJava,
+                        resolve.cheminClasspath()));
+            }
             tasks.add(new JarTask(module, layout));
         }
         return tasks;

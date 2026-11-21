@@ -86,6 +86,61 @@ class ModelCodecTest {
     }
 
     @Test
+    void langageKotlinParDéfautJavaEtConventions() throws IOException {
+        // Absent : Java, convention Java.
+        Files.writeString(temporaire.resolve("forge.json"), """
+                { "modelVersion": 1, "modules": [ { "name": "a", "type": "java-library" } ] }
+                """);
+        ForgeModule moduleJava = ModelCodec.read(temporaire).module("a").orElseThrow();
+        assertEquals(ForgeModule.LANGUAGE_JAVA, moduleJava.language());
+        assertTrue(!moduleJava.estKotlin());
+        assertEquals(java.util.List.of("src/main/java"), moduleJava.sources());
+
+        // Kotlin : convention étendue au répertoire Kotlin PUIS Java, round-trip.
+        Files.writeString(temporaire.resolve("forge.json"), """
+                { "modelVersion": 1,
+                  "modules": [ { "name": "b", "type": "java-library",
+                                 "language": "kotlin" } ] }
+                """);
+        ForgeModule kotlin = ModelCodec.read(temporaire).module("b").orElseThrow();
+        assertEquals(ForgeModule.LANGUAGE_KOTLIN, kotlin.language());
+        assertTrue(kotlin.estKotlin());
+        assertEquals(java.util.List.of("src/main/kotlin", "src/main/java"),
+                kotlin.sources(), "le Kotlin cohabite avec le Java du module");
+        assertEquals(kotlin, ModelCodec.parse(ModelCodec.write(
+                ModelCodec.read(temporaire))).module("b").orElseThrow(),
+                "le langage survit au round-trip");
+    }
+
+    @Test
+    void langageInconnuOuKotlinAndroidRefusés() throws IOException {
+        Files.writeString(temporaire.resolve("forge.json"), """
+                { "modelVersion": 1,
+                  "modules": [ { "name": "a", "type": "java-library",
+                                 "language": "cobol" } ] }
+                """);
+        ModelException inconnu = assertThrows(ModelException.class,
+                () -> ModelCodec.read(temporaire));
+        assertTrue(inconnu.getMessage().contains("langage inconnu"),
+                "le message cite le langage refusé : " + inconnu.getMessage());
+
+        // Kotlin sur un module Android : refus EXPLICITE (v1, feuille de route) —
+        // jamais des sources .kt ignorées en silence par le pipeline Android.
+        Files.writeString(temporaire.resolve("forge.json"), """
+                { "modelVersion": 1,
+                  "modules": [ { "name": "app", "type": "application",
+                                 "language": "kotlin",
+                                 "android": { "manifest": "AndroidManifest.xml",
+                                              "minSdk": 28, "targetSdk": 34,
+                                              "namespace": "demo.app" } } ] }
+                """);
+        ModelException tropTôt = assertThrows(ModelException.class,
+                () -> ModelCodec.read(temporaire));
+        assertTrue(tropTôt.getMessage().contains("feuille de route"),
+                "le message renvoie à la feuille de route : " + tropTôt.getMessage());
+    }
+
+    @Test
     void facetteAndroidObligatoireEtInterdite() throws IOException {
         Files.writeString(temporaire.resolve("forge.json"), """
                 { "modelVersion": 1,

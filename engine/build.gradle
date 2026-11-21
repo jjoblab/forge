@@ -19,6 +19,18 @@ tasks.withType(JavaCompile).configureEach {
     options.release = 17
 }
 
+configurations {
+    // Compilateur Kotlin embarqué (feuille de route langages, v0.2.9) : le moteur
+    // n'y touche que PAR RÉFLEXION (aucune dépendance de compilation) ; cette
+    // configuration résout le compilateur ET ses dépendances runtime (stdlib,
+    // reflect, script-runtime, coroutines, trove4j, daemon — le POM de
+    // l'embarquable les déclare, et le compilateur MEURT sans elles :
+    // NoClassDefFoundError kotlinx/coroutines/CoroutineScope constaté) — c'est
+    // cet ENSEMBLE qui rejoint le composant kotlin-compiler (tâche « composants »,
+    // --kotlin) ; les tests le récupèrent en testImplementation.
+    kotlinCompiler
+}
+
 dependencies {
     api project(':api')
     api project(':json')
@@ -29,6 +41,17 @@ dependencies {
     // Dexeur (d8) et signature d'APK (Apache-2.0 — voir docs/distribution.md §7).
     implementation 'com.android.tools:r8:8.5.35'
     implementation 'com.android.tools.build:apksig:8.5.2'
+
+    // Compilateur Kotlin (Apache-2.0) : ~56 Mo + ~6 Mo de dépendances runtime du
+    // POM, en réflexion uniquement. La bibliothèque standard fait partie de
+    // l'ensemble résolu (le compilateur ne la porte PAS lui-même) : elle est dexée
+    // DANS le composant (exécution du moteur sur appareil) et rejoint le classpath
+    // des TESTS (exécution du résultat compilé). Pour la COMPILATION d'un module,
+    // elle vient du classpath du moteur (JVM de test) ou d'une dépendance Maven du
+    // module (appareil — voir examples/kotlin-simple/forge.json).
+    kotlinCompiler 'org.jetbrains.kotlin:kotlin-compiler-embeddable:2.0.21'
+    testImplementation 'org.jetbrains.kotlin:kotlin-compiler-embeddable:2.0.21'
+    testImplementation 'org.jetbrains.kotlin:kotlin-stdlib:2.0.21'
 
     // aapt2 : sur appareil, le binaire vient du composant installé (par ABI).
     // Depuis v0.2.8, FORGE_AAPT2 pointe le prébuilt Android de ReVanced/aapt2
@@ -132,6 +155,11 @@ tasks.register('composants', JavaExec) {
     def r8Jar = configurations.runtimeClasspath.find { it.name.startsWith('r8-') }
     def ecjJar = configurations.runtimeClasspath.find { it.name.startsWith('ecj-') }
     def apksigJar = configurations.runtimeClasspath.find { it.name.startsWith('apksig-') }
+    // L'ENSEMBLE résolu (compilateur + dépendances runtime de son POM), trié par
+    // nom pour un assemblage déterministe — l'embarquable seul meurt à l'exécution
+    // (coroutines) et la stdlib doit vivre dans le même composant dexé.
+    def jarsKotlin = configurations.kotlinCompiler.files
+            .findAll { it.isFile() }.sort { a, b -> a.name <=> b.name }
 
     classpath = project(':setup').sourceSets.main.runtimeClasspath
     mainClass = 'jo.forge.setup.packaging.PackagerComposants'
@@ -148,7 +176,8 @@ tasks.register('composants', JavaExec) {
                      '--compat-art',
                      project(':setup').file('src/compatArt/java').absolutePath,
                      '--dexeur', r8Jar?.absolutePath,
-                     '--signeur', apksigJar?.absolutePath]
+                     '--signeur', apksigJar?.absolutePath,
+                     '--kotlin'] + jarsKotlin*.absolutePath
     // Composant aapt2-<abi> : publié depuis v0.2.8 (prébuilt Android de
     // ReVanced/aapt2, voir ci-dessus). FORGE_SANS_AAPT2 omet explicitement le
     // composant (garde juridique docs/distribution.md §7) ; sans FORGE_AAPT2,
@@ -164,6 +193,5 @@ tasks.register('composants', JavaExec) {
     def cléPrivée = System.getenv('FORGE_CLE_PRIVEE')
     if (cléPrivée) {
         arguments.addAll(['--clé-privée', cléPrivée])
-    }
-    args = arguments.findAll { it != null }
+    }    args = arguments.findAll { it != null }
 }

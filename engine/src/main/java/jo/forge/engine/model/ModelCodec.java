@@ -119,6 +119,9 @@ public final class ModelCodec {
             Map<String, Object> m = new java.util.LinkedHashMap<>();
             m.put("name", module.name());
             m.put("type", module.type().wireName());
+            if (!ForgeModule.LANGUAGE_JAVA.equals(module.language())) {
+                m.put("language", module.language());
+            }
             if (module.javaRelease() != ForgeModule.DEFAULT_JAVA_RELEASE) {
                 m.put("javaRelease", module.javaRelease());
             }
@@ -171,17 +174,27 @@ public final class ModelCodec {
      * Lit un module depuis sa représentation JSON.
      *
      * <p>Conventions quand les champs {@code sources}/{@code resources} sont absents :
-     * {@code src/main/java} et {@code src/main/resources} (une liste explicite, même
-     * vide, désactive la convention).</p>
+     * {@code src/main/java} et {@code src/main/resources} pour un module Java ;
+     * {@code src/main/kotlin} PUIS {@code src/main/java} pour un module Kotlin
+     * (les deux langages cohabitent — le Kotlin compile d'abord, le Java contre ses
+     * classes). Une liste explicite, même vide, désactive la convention.</p>
      */
     private static ForgeModule readModule(Map<String, Object> brut, String chemin) {
         String nom = asString(brut.get("name"), chemin + ".name");
         ModuleType type = ModuleType.fromWire(
                 asString(brut.get("type"), chemin + ".type"));
+        String language = asString(brut.get("language"), chemin + ".language",
+                ForgeModule.LANGUAGE_JAVA);
         int javaRelease = asInt(brut.get("javaRelease"), chemin + ".javaRelease",
                 ForgeModule.DEFAULT_JAVA_RELEASE);
+        // Convention des sources : Java → src/main/java ; Kotlin → src/main/kotlin
+        // PUIS src/main/java (les deux langages cohabitent dans un module Kotlin —
+        // le Java compile après le Kotlin, contre ses classes). Une liste
+        // explicite, même vide, désactive la convention.
         List<String> sources = brut.containsKey("sources")
                 ? asStringList(brut.get("sources"), chemin + ".sources", List.of())
+                : ForgeModule.LANGUAGE_KOTLIN.equals(language)
+                ? List.of("src/main/kotlin", "src/main/java")
                 : List.of("src/main/java");
         List<String> resources = brut.containsKey("resources")
                 ? asStringList(brut.get("resources"), chemin + ".resources", List.of())
@@ -196,7 +209,7 @@ public final class ModelCodec {
         checkRelativePaths(nom, sources, "sources");
         checkRelativePaths(nom, resources, "resources");
         return new ForgeModule(nom, type, javaRelease, sources, resources, dependencies,
-                android);
+                android, language);
     }
 
     /**
@@ -328,6 +341,10 @@ public final class ModelCodec {
     }
 
     /** Convertit en chaîne non vide. */
+    private static String asString(Object valeur, String chemin, String defaut) {
+        return valeur == null ? defaut : asString(valeur, chemin);
+    }
+
     private static String asString(Object valeur, String chemin) {
         if (valeur instanceof String s && !s.isBlank()) {
             return s;
