@@ -17,8 +17,8 @@ android {
         // targetSdk 28 assumé : préserve l'exécution des binaires d'outils téléchargés
         // depuis le stockage privé (politique W^X d'Android 10+, voir docs/conception.md D-04).
         targetSdk 28
-        versionCode 16
-        versionName '0.2.14'
+        versionCode 17
+        versionName '0.2.15'
     }
 
     signingConfigs {
@@ -94,7 +94,7 @@ android {
     }
 }
 
-def tachesExemples = ['multi-modules-java', 'application-android', 'kotlin-simple', 'application-kotlin'].collect { exemple ->
+def tachesExemples = ['multi-modules-java', 'application-android', 'kotlin-simple', 'application-kotlin', 'application-compose'].collect { exemple ->
     tasks.register("zipExemple-${exemple}", Zip) {
         group = 'construction'
         description = "Embarque examples/${exemple} en asset de la coquille."

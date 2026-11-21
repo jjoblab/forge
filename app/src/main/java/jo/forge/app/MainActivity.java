@@ -573,7 +573,11 @@ public class MainActivity extends Activity {
                         // « processus encore vivant » d'un moteur jamais prié de partir.
                         () -> new Thread(() -> publierMortMoteur(génération),
                                 "forge-mort-moteur").start(),
-                        false, journal::ajouter);
+                        // v0.2.15 : mode basse mémoire (tas moteur 256 Mo au lieu de
+                        // 1024) sur les appareils modestes — le tas par défaut a monté
+                        // pour le dexage d'une fermeture Compose (~60 Mo de classes en
+                        // processus par d8), il ne faut pas l'imposer à 2 Go de RAM.
+                        mémoireTotaleMo() < 2500, journal::ajouter);
                 moteurCourant.set(moteur);
                 dernierClient.set(moteur);
                 String buildId = "app-" + System.currentTimeMillis();

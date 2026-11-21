@@ -35,8 +35,13 @@ public final class EngineSession {
      * (localisation des outils Android du moteur : aapt2, android.jar). */
     public static final String ENV_ENGINE_DIR = "FORGE_ENGINE_DIR";
 
-    /** Tas par défaut du moteur en Mo (décision D-02). */
-    public static final int HEAP_DEFAULT_MB = 512;
+    /**
+     * Tas par défaut du moteur en Mo (décision D-02, relevée à 1024 en
+     * v0.2.15 : le dexage d'une fermeture Compose — ~60 Mo de classes à dexer
+     * EN PROCESSUS par d8 — ne tient pas dans 512 Mo ; la coquille passe le
+     * mode basse mémoire aux appareils modestes, qui gardent 256 Mo).
+     */
+    public static final int HEAP_DEFAULT_MB = 1024;
 
     /** Tas en mode basse mémoire en Mo. */
     public static final int HEAP_LOW_MEMORY_MB = 256;

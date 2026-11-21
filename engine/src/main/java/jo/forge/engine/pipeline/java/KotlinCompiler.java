@@ -80,6 +80,19 @@ import java.util.List;
  * {@code R.java} d'une application Android compris) mais n'émets DES classes
  * que pour le Kotlin ; ECJ compile ensuite le Java CONTRE ces classes. Motif du
  * moteur de référence (KotlinJvmCompiler.compile).</p>
+ *
+ * <p><b>Plugins compilateur</b> (v0.2.15, Compose) : des jars passés à kotlinc
+ * par {@code -Xplugin}. Le compilateur lit leur descripteur de services
+ * ({@code META-INF/services}) DANS LE FICHIER, puis résout les classes du
+ * registrar par DÉLÉGATION PARENTE — sur ART, où les octets {@code .class}
+ * d'un jar ne peuvent pas être définis, le plugin doit donc AUSSI vivre dexé
+ * dans le classpath du moteur (composant installé {@code lib/compose-compiler.jar},
+ * servi par la session comme tout compagnon de {@code lib/}) ; sur la JVM de
+ * développement, le jar du classpath de test sert tel quel. L'activation est
+ * une SONDE DE CLASSPATH (motif du moteur de référence : la présence de
+ * {@code androidx/compose/runtime/Composable.class} au classpath de compilation
+ * du module signifie que le plugin est requis) — aucune configuration à exiger
+ * de l'utilisateur.</p>
  */
 public final class KotlinCompiler {
 
@@ -96,6 +109,17 @@ public final class KotlinCompiler {
 
     /** Conteneur de services (l'instance vide suffit à une compilation par lots). */
     private static final String CLASSE_SERVICES = "org.jetbrains.kotlin.config.Services";
+
+    /**
+     * Classe du registrar du plugin compilateur Compose (sonde de localisation
+     * du jar sur le classpath du moteur, JVM de développement).
+     */
+    private static final String CLASSE_REGISTRAR_COMPOSE =
+            "androidx.compose.compiler.plugins.kotlin.ComposePluginRegistrar";
+
+    /** Classe marquant une dépendance Compose au classpath (l'activation du plugin). */
+    private static final String ENTRÉE_COMPOSABLE =
+            "androidx/compose/runtime/Composable.class";
 
     /** Suffixe des sources Kotlin. */
     private static final String SUFFIXE_KOTLIN = ".kt";
@@ -160,6 +184,62 @@ public final class KotlinCompiler {
     }
 
     /**
+     * Localise le jar du plugin compilateur Compose : sur l'appareil, le jar
+     * DEXÉ du composant kotlin-compiler ({@code lib/compose-compiler.jar} — ses
+     * entrées {@code META-INF/services} sont conservées par le packaging, c'est
+     * le descripteur que kotlinc lit ; ses classes sont servies par le chargeur
+     * du moteur, la délégation parente du chargeur de plugins fait le reste) ;
+     * sur la JVM de développement, le jar du classpath de test (localisé par la
+     * classe de son registrar).
+     *
+     * @param engineHome racine du moteur installé (peut être null).
+     * @return le chemin du jar, ou null si le plugin est absent.
+     */
+    public static Path jarComposePlugin(Path engineHome) {
+        if (engineHome != null) {
+            Path jar = engineHome.resolve("lib").resolve("compose-compiler.jar");
+            if (Files.isRegularFile(jar)) {
+                return jar;
+            }
+        }
+        return jarDeLaClasse(CLASSE_REGISTRAR_COMPOSE);
+    }
+
+    /**
+     * Sonde Compose du classpath de compilation d'un module : la présence de
+     * {@code androidx/compose/runtime/Composable.class} dans un jar (ou un
+     * répertoire de classes) signifie que le module écrit des composables — le
+     * plugin compilateur Compose est requis (sans lui, le bytecode émis est
+     * inutilisable à l'exécution : le plugin tisse les groupes de redémarrage
+     * et le {@code Composer} synthétique). S'arrête à la première trouvaille.
+     *
+     * @param classpath entrées du classpath de compilation (jars, répertoires).
+     * @return {@code true} si le runtime Compose y est.
+     */
+    public static boolean moduleCompose(List<Path> classpath) {
+        for (Path entrée : classpath) {
+            if (entrée == null || !Files.exists(entrée)) {
+                continue;
+            }
+            if (Files.isDirectory(entrée)) {
+                if (Files.exists(entrée.resolve(ENTRÉE_COMPOSABLE))) {
+                    return true;
+                }
+            } else if (entrée.toString().endsWith(".jar")) {
+                try (java.util.zip.ZipFile zip =
+                        new java.util.zip.ZipFile(entrée.toFile())) {
+                    if (zip.getEntry(ENTRÉE_COMPOSABLE) != null) {
+                        return true;
+                    }
+                } catch (IOException illisible) {
+                    // Jar illisible : la compilation le dira nommément.
+                }
+            }
+        }
+        return false;
+    }
+
+    /**
      * Compile des sources Kotlin vers un répertoire de classes.
      *
      * @param sources        fichiers {@code .kt} à compiler (au moins un).
@@ -172,6 +252,9 @@ public final class KotlinCompiler {
      * @param jarCompilateur jar du composant kotlin-compiler (maison Kotlin et
      *                       racine de configuration IntelliJ sur l'appareil), ou
      *                       null sur la JVM de développement.
+     * @param plugins        jars de plugins compilateur ({@code -Xplugin} —
+     *                       Compose ; vide si aucun), les fichiers inexistants
+     *                       sont écartés.
      * @param outputDir      répertoire de sortie des {@code .class} (créé s'il manque).
      * @param jvmCible       cible JVM ({@code -jvm-target}, ex. 17).
      * @param sink           puits des diagnostics structurés.
@@ -181,7 +264,8 @@ public final class KotlinCompiler {
      */
     public static CompileResult compiler(List<Path> sources, List<Path> sourcesJava,
                                          List<Path> classpath, List<Path> plateforme,
-                                         Path jarCompilateur, Path outputDir,
+                                         Path jarCompilateur, List<Path> plugins,
+                                         Path outputDir,
                                          int jvmCible, DiagnosticSink sink)
             throws IOException {
         Files.createDirectories(outputDir);
@@ -282,6 +366,18 @@ public final class KotlinCompiler {
             argumentsCli.add(String.join(java.io.File.pathSeparator,
                     cheminComplet.stream().map(Path::toString).toList()));
         }
+        // Plugins compilateur (-Xplugin=jar) : le jar doit exister sur disque,
+        // c'est de lui que kotlinc lit le descripteur de services. La forme « = »
+        // est exigée (la forme à deux arguments crie « obsolete form »).
+        List<Path> pluginsPrésents = new ArrayList<>();
+        for (Path plugin : plugins) {
+            if (plugin != null && Files.isRegularFile(plugin)) {
+                pluginsPrésents.add(plugin);
+            }
+        }
+        for (Path plugin : pluginsPrésents) {
+            argumentsCli.add("-Xplugin=" + plugin);
+        }
         sources.forEach(source -> argumentsCli.add(source.toString()));
         sourcesJava.forEach(source -> argumentsCli.add(source.toString()));
 
@@ -316,6 +412,9 @@ public final class KotlinCompiler {
             if (maisonKotlin != null) {
                 console.add("maison Kotlin : " + maisonKotlin
                         + " ; configuration IntelliJ : " + jarCompilateur.getFileName());
+            }
+            for (Path plugin : pluginsPrésents) {
+                console.add("plugin compilateur : " + plugin.getFileName());
             }
             console.add("kotlinc " + argumentsCli.size() + " argument(s), sortie : "
                     + ((Enum<?>) code).name());

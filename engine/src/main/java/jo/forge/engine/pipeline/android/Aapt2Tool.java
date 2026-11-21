@@ -134,10 +134,16 @@ public final class Aapt2Tool {
      * Lie les archives compilées avec le manifeste et la plate-forme : produit l'APK
      * de base (ressources + manifeste) et les sources R.
      *
-     * @param archives     archives plates compilées.
-     * @param manifeste    manifeste Android du module.
+     * @param archives     archives plates compilées (celles des AAR d'abord, celles
+     *                     du module ensuite — priorité croissante).
+     * @param manifeste    manifeste Android du module (déjà fusionné avec les
+     *                     bibliothèques).
      * @param androidJar   jar de la plate-forme cible.
      * @param namespace    paquet des classes R à générer.
+     * @param paquetsSupplémentaires paquets des manifestes d'AAR : chacun reçoit
+     *                     son {@code R} avec les identifiants finaux de
+     *                     l'application ({@code --extra-packages}) — les classes
+     *                     d'une bibliothèque référencent leur {@code R} propre.
      * @param minSdk       niveau d'API minimal.
      * @param targetSdk    niveau d'API cible.
      * @param sortieApk    APK de base produit.
@@ -146,7 +152,8 @@ public final class Aapt2Tool {
      * @param diagnostics  puits des diagnostics.
      * @throws IOException en cas d'échec (détail dans diagnostics/journal).
      */
-    public void lier(List<Path> archives, Path manifeste, Path androidJar, String namespace,
+    public void lier(List<Path> archives, Path manifeste, Path androidJar,
+                     String namespace, List<String> paquetsSupplémentaires,
                      int minSdk, int targetSdk, Path sortieApk, Path sourcesR,
                      List<Path> assetsDirs, DiagnosticSink diagnostics)
             throws IOException, InterruptedException {
@@ -164,6 +171,10 @@ public final class Aapt2Tool {
                 "--auto-add-overlay",
                 "--version-code", "1",
                 "--version-name", "1.0"));
+        if (!paquetsSupplémentaires.isEmpty()) {
+            arguments.add("--extra-packages");
+            arguments.add(String.join(":", paquetsSupplémentaires));
+        }
         for (Path assets : assetsDirs) {
             arguments.add("-A");
             arguments.add(assets.toString());

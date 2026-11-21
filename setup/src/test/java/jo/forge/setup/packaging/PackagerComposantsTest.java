@@ -266,6 +266,80 @@ class PackagerComposantsTest {
                 PackagerComposants.cheminOutil("platform-34"));
     }
 
+    // --- Plugin compilateur Compose (v0.2.15) -------------------------------------------
+
+    /** Un jar de plugin façon compose-compiler : registrar + descripteurs de services. */
+    private Path jarPluginCompose() throws IOException {
+        return jarDe(Map.of(
+                "androidx/compose/compiler/plugins/kotlin/ComposePluginRegistrar.class",
+                "CAFE BABE",
+                "META-INF/services/org.jetbrains.kotlin.compiler.plugin.ComponentRegistrar",
+                "androidx.compose.compiler.plugins.kotlin.ComposePluginRegistrar",
+                "META-INF/services/org.jetbrains.kotlin.compiler.plugin.CommandLineProcessor",
+                "androidx.compose.compiler.plugins.kotlin.ComposeCommandLineProcessor",
+                "META-INF/compiler-hosted.kotlin_module",
+                "METADATA"));
+    }
+
+    @Test
+    void gardeFouDuPluginCompose() throws IOException {
+        // Bien formé : passe.
+        PackagerComposants.vérifierPluginCompose(jarPluginCompose());
+
+        // Sans registrar : la chaîne de publication casse ICI, pas sur l'appareil.
+        Path sansRegistrar = jarDe(Map.of(
+                "META-INF/services/org.jetbrains.kotlin.compiler.plugin.ComponentRegistrar",
+                "androidx.compose.compiler.plugins.kotlin.ComposePluginRegistrar"));
+        IOException refus1 = assertThrows(IOException.class,
+                () -> PackagerComposants.vérifierPluginCompose(sansRegistrar));
+        assertTrue(refus1.getMessage().contains("ComposePluginRegistrar"),
+                "le message nomme la classe manquante : " + refus1.getMessage());
+
+        // Sans descripteur de services : kotlinc ne pourrait pas découvrir le
+        // plugin par -Xplugin.
+        Path sansDescripteur = jarDe(Map.of(
+                "androidx/compose/compiler/plugins/kotlin/ComposePluginRegistrar.class",
+                "CAFE BABE"));
+        IOException refus2 = assertThrows(IOException.class,
+                () -> PackagerComposants.vérifierPluginCompose(sansDescripteur));
+        assertTrue(refus2.getMessage().contains("META-INF/services"),
+                "le message nomme le descripteur manquant : " + refus2.getMessage());
+    }
+
+    @Test
+    void jarDexéDuPluginComposeGardeSesDescripteursDeServices() throws IOException {
+        // Le jar dexé passé à -Xplugin doit porter les descripteurs : c'est EUX
+        // que le compilateur lit dans le fichier (sur ART, les classes viennent
+        // du classpath du moteur par délégation parente).
+        Path plugin = jarPluginCompose();
+        Path dex = temporaire.resolve("classes.dex");
+        Files.write(dex, "dex du plugin".getBytes(StandardCharsets.UTF_8));
+        Path archive = temporaire.resolve("kotlin-compiler-0.2.15.zip");
+
+        PackagerComposants.emballerJarDexe(List.of(dex), archive,
+                "lib/compose-compiler.jar", List.of(plugin), Map.of(
+                        "META-INF/notice-compose-compiler.txt", "Apache-2.0"));
+
+        try (ZipFile jar = new ZipFile(
+                jarInterne(archive, "lib/compose-compiler.jar").toFile())) {
+            assertEquals("dex du plugin", texte(jar, "classes.dex"),
+                    "le dex du plugin est dans le jar");
+            assertEquals("androidx.compose.compiler.plugins.kotlin"
+                            + ".ComposePluginRegistrar",
+                    texte(jar, "META-INF/services/org.jetbrains.kotlin.compiler.plugin"
+                            + ".ComponentRegistrar"),
+                    "le descripteur du registrar traverse le dexage");
+            assertNotNull(jar.getEntry("META-INF/services/org.jetbrains.kotlin.compiler"
+                    + ".plugin.CommandLineProcessor"),
+                    "le descripteur du processeur de ligne de commande traverse");
+            assertNotNull(jar.getEntry("META-INF/notice-compose-compiler.txt"),
+                    "la notice de licence est embarquée");
+            assertTrue(jar.getEntry("androidx/compose/compiler/plugins/kotlin/"
+                    + "ComposePluginRegistrar.class") == null,
+                    "les .class ne doublonnent pas le dex");
+        }
+    }
+
     @Test
     void multiDexToutesLesSuitesDansLeJar() throws IOException {
         // Un composant qui dépasse 64K méthodes : d8 écrit classes.dex,

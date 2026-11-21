@@ -76,6 +76,7 @@ public final class AndroidPipeline {
             classesDépendances.add(layout.classesDir(dep.module()));
         }
         Path jarKotlinCompilateur = KotlinCompiler.jarComposant(engineHome);
+        Path jarPluginCompose = KotlinCompiler.jarComposePlugin(engineHome);
 
         if (module.type() == ModuleType.ANDROID_LIBRARY) {
             // V1 : une bibliothèque Android compile comme une bibliothèque Java
@@ -88,7 +89,7 @@ public final class AndroidPipeline {
                 tâches.add(new KotlinCompilerTask(module, layout,
                         dépendancesCompilation, classesDépendances,
                         List.of(androidJar), resolve.cheminClasspath(),
-                        List.of(), jarKotlinCompilateur));
+                        List.of(), jarKotlinCompilateur, jarPluginCompose));
                 depsJava.add(module.kotlinCompileTaskName());
                 // Le Java du module compile CONTRE les classes Kotlin fraîches
                 // (même répertoire de sortie — le jar n'y voit qu'un module).
@@ -110,7 +111,7 @@ public final class AndroidPipeline {
         Path androidJar = AndroidToolsLocator.androidJar(facette.targetSdk(), engineHome);
 
         ProcessResourcesTask ressources = new ProcessResourcesTask(module, layout,
-                aapt2, androidJar);
+                aapt2, androidJar, resolve.cheminClasspath());
         tâches.add(ressources);
 
         List<String> depsCompilation = new ArrayList<>(dépendancesCompilation);
@@ -123,7 +124,8 @@ public final class AndroidPipeline {
             // classes, le dexeur n'y voit qu'un module.
             tâches.add(new KotlinCompilerTask(module, layout, depsCompilation,
                     classesDépendances, List.of(androidJar), resolve.cheminClasspath(),
-                    List.of(ressources.sourcesR()), jarKotlinCompilateur));
+                    List.of(ressources.sourcesR()), jarKotlinCompilateur,
+                    jarPluginCompose));
             depsCompilation.add(module.kotlinCompileTaskName());
             // Le Java du module compile CONTRE les classes Kotlin fraîches
             // (même répertoire de sortie). Cette entrée reste HORS

@@ -62,6 +62,38 @@ public final class DépôtLocal implements AutoCloseable {
     }
 
     /**
+     * Publie un AAR (avec sa somme) pour une coordonnée.
+     *
+     * @param coordonnée la coordonnée.
+     * @param aar        le contenu binaire.
+     */
+    public void publierAar(Coordinate coordonnée, byte[] aar) {
+        publier(chemin(coordonnée, ".aar"), aar);
+    }
+
+    /**
+     * Publie des métadonnées de module Gradle ({@code .module}) pour une
+     * coordonnée.
+     *
+     * @param coordonnée la coordonnée.
+     * @param json       le contenu JSON.
+     */
+    public void publierModule(Coordinate coordonnée, String json) {
+        publier(chemin(coordonnée, ".module"), json.getBytes(StandardCharsets.UTF_8));
+    }
+
+    /**
+     * Publie un fichier arbitraire à un chemin de dépôt (fichier de variante
+     * Gradle, ex. {@code demo/lib-android/1.0/lib-release.aar}).
+     *
+     * @param chemin   chemin absolu dans le dépôt (avec barre initiale).
+     * @param contenu  le contenu binaire.
+     */
+    public void publierFichier(String chemin, byte[] contenu) {
+        publier(chemin, contenu);
+    }
+
+    /**
      * Publie une somme FAUSSE pour l'artefact d'une coordonnée (test de rejet).
      *
      * @param coordonnée la coordonnée.

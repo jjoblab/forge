@@ -139,6 +139,7 @@ public final class JavaPipeline {
         // de configuration IntelliJ du compilateur — null sur la JVM de
         // développement (classpath de test, aucun besoin).
         Path jarKotlinCompilateur = KotlinCompiler.jarComposant(engineHome);
+        Path jarPluginCompose = KotlinCompiler.jarComposePlugin(engineHome);
         for (ForgeModule module : model.modules()) {
             if (module.type() != ModuleType.JAVA_LIBRARY) {
                 tasks.addAll(jo.forge.engine.pipeline.android.AndroidPipeline
@@ -171,7 +172,8 @@ public final class JavaPipeline {
                 // source .kt passe sa compileKotlin sans rien faire.
                 tasks.add(new KotlinCompilerTask(module, layout, dependances,
                         new ArrayList<>(classpath), plateformeJava,
-                        resolve.cheminClasspath(), List.of(), jarKotlinCompilateur));
+                        resolve.cheminClasspath(), List.of(), jarKotlinCompilateur,
+                        jarPluginCompose));
                 List<String> dependancesJava = new ArrayList<>(dependances);
                 dependancesJava.add(module.kotlinCompileTaskName());
                 List<Path> classpathJava = new ArrayList<>(classpath);

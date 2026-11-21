@@ -57,8 +57,98 @@ public final class ResolverCache {
      * @return le chemin dans le cache.
      */
     public Path cheminArtefact(Coordinate coordonnée) {
+        return cheminArtefact(coordonnée, ".jar");
+    }
+
+    /**
+     * Chemin de l'artefact d'une coordonnée pour une extension donnée
+     * ({@code .jar} ou {@code .aar}) — l'artefact est mis en cache sous son nom
+     * Maven conventionnel, quelle que soit l'URL réelle du téléchargement (les
+     * fichiers de variante Gradle portent d'autres noms, ex. {@code ui-release.aar}).
+     *
+     * @param coordonnée la coordonnée.
+     * @param extension  {@code ".jar"} ou {@code ".aar"}.
+     * @return le chemin dans le cache.
+     */
+    public Path cheminArtefact(Coordinate coordonnée, String extension) {
         return répertoire(coordonnée).resolve(
-                coordonnée.artifact() + "-" + coordonnée.version() + ".jar");
+                coordonnée.artifact() + "-" + coordonnée.version() + extension);
+    }
+
+    /**
+     * Indique si l'artefact (jar) est en cache.
+     *
+     * @param coordonnée la coordonnée.
+     * @return {@code true} si présent.
+     */
+    public boolean aArtefact(Coordinate coordonnée) {
+        return aArtefact(coordonnée, ".jar");
+    }
+
+    /**
+     * Indique si l'artefact d'une extension donnée est en cache.
+     *
+     * @param coordonnée la coordonnée.
+     * @param extension  {@code ".jar"} ou {@code ".aar"}.
+     * @return {@code true} si présent.
+     */
+    public boolean aArtefact(Coordinate coordonnée, String extension) {
+        return Files.isRegularFile(cheminArtefact(coordonnée, extension));
+    }
+
+    /**
+     * Répertoire de version d'une coordonnée (public pour l'explosion AAR à
+     * côté de l'archive, dans la réplique Maven du cache).
+     *
+     * @param coordonnée la coordonnée.
+     * @return le répertoire (créé s'il manque).
+     */
+    public Path répertoireDe(Coordinate coordonnée) {
+        return répertoire(coordonnée);
+    }
+
+    /**
+     * Chemin des métadonnées de module Gradle ({@code .module}) d'une coordonnée.
+     *
+     * @param coordonnée la coordonnée.
+     * @return le chemin dans le cache.
+     */
+    public Path cheminModule(Coordinate coordonnée) {
+        return répertoire(coordonnée).resolve(
+                coordonnée.artifact() + "-" + coordonnée.version() + ".module");
+    }
+
+    /**
+     * Indique si les métadonnées de module Gradle sont en cache.
+     *
+     * @param coordonnée la coordonnée.
+     * @return {@code true} si présentes.
+     */
+    public boolean aModule(Coordinate coordonnée) {
+        return Files.isRegularFile(cheminModule(coordonnée));
+    }
+
+    /**
+     * Écrit des métadonnées de module Gradle dans le cache de façon atomique.
+     *
+     * @param coordonnée la coordonnée.
+     * @param contenu    le flux JSON (fermé par l'appelant).
+     * @return le chemin écrit.
+     * @throws IOException si l'écriture échoue.
+     */
+    public Path écrireModule(Coordinate coordonnée, InputStream contenu) throws IOException {
+        return écritureAtomique(cheminModule(coordonnée), contenu);
+    }
+
+    /**
+     * Répertoire d'explosion d'un AAR dans le cache (frère de l'archive).
+     *
+     * @param coordonnée la coordonnée.
+     * @return le chemin du répertoire {@code <artefact>-<version>-exploded}.
+     */
+    public Path répertoireExplosion(Coordinate coordonnée) {
+        return répertoire(coordonnée).resolve(
+                coordonnée.artifact() + "-" + coordonnée.version() + "-exploded");
     }
 
     /**
@@ -69,16 +159,6 @@ public final class ResolverCache {
      */
     public boolean aPom(Coordinate coordonnée) {
         return Files.isRegularFile(cheminPom(coordonnée));
-    }
-
-    /**
-     * Indique si l'artefact est en cache.
-     *
-     * @param coordonnée la coordonnée.
-     * @return {@code true} si présent.
-     */
-    public boolean aArtefact(Coordinate coordonnée) {
-        return Files.isRegularFile(cheminArtefact(coordonnée));
     }
 
     /**
@@ -110,7 +190,8 @@ public final class ResolverCache {
      * Mémorise un échec définitif (introuvable) pour cette coordonnée.
      *
      * @param coordonnée la coordonnée.
-     * @param sorte      {@code "pom"} ou {@code "jar"} (marqueurs distincts).
+     * @param sorte      {@code "pom"}, {@code "module"} ou {@code "jar"}
+     *                   (marqueurs distincts).
      */
     public void marquerIntrouvable(Coordinate coordonnée, String sorte) {
         try {
@@ -126,7 +207,7 @@ public final class ResolverCache {
      * Indique si la coordonnée a été marquée introuvable récemment.
      *
      * @param coordonnée la coordonnée.
-     * @param sorte      {@code "pom"} ou {@code "jar"}.
+     * @param sorte      {@code "pom"}, {@code "module"} ou {@code "jar"}.
      * @return {@code true} si un marqueur récent existe.
      */
     public boolean marquéIntrouvableRécemment(Coordinate coordonnée, String sorte) {

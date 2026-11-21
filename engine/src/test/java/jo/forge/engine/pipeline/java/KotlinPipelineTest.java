@@ -275,6 +275,130 @@ class KotlinPipelineTest {
                 "le message cite la dépendance à déclarer : " + message);
     }
 
+    @Test
+    void sondeComposeDansJarsEtRépertoires() throws Exception {
+        // Un jar fixture portant l'annotation Composable : la sonde doit la voir
+        // SANS ouvrir une vraie compilation.
+        Path jarRuntime = temporaire.resolve("runtime-stub.jar");
+        try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(
+                Files.newOutputStream(jarRuntime))) {
+            zip.putNextEntry(new java.util.zip.ZipEntry(
+                    "androidx/compose/runtime/Composable.class"));
+            zip.write(new byte[] {1, 2, 3});
+            zip.closeEntry();
+        }
+        Path classesRépertoire = temporaire.resolve("classes");
+        Files.createDirectories(
+                classesRépertoire.resolve("androidx/compose/runtime"));
+        Files.write(classesRépertoire
+                .resolve("androidx/compose/runtime/Composable.class"), new byte[] {1});
+
+        assertTrue(KotlinCompiler.moduleCompose(List.of(jarRuntime)),
+                "un jar qui porte le runtime Compose active le plugin");
+        assertTrue(KotlinCompiler.moduleCompose(List.of(classesRépertoire)),
+                "…comme un répertoire de classes");
+        assertTrue(!KotlinCompiler.moduleCompose(List.of()),
+                "sans runtime Compose, pas de plugin");
+
+        Path jarInnocent = temporaire.resolve("innocent.jar");
+        try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(
+                Files.newOutputStream(jarInnocent))) {
+            zip.putNextEntry(new java.util.zip.ZipEntry("demo/Autre.class"));
+            zip.write(new byte[] {1});
+            zip.closeEntry();
+        }
+        assertTrue(!KotlinCompiler.moduleCompose(List.of(jarInnocent)),
+                "un jar sans runtime Compose n'active rien");
+    }
+
+    @Test
+    void pluginComposeAppliquéSignaleLesAppelsInterdits() throws Exception {
+        // Le plugin vient du classpath de TEST (kotlin-compose-compiler-plugin-
+        // embeddable, version du compilateur embarqué) — comme le compilateur.
+        assumeTrue(KotlinCompiler.disponible(),
+                "kotlin-compiler-embeddable requis sur le classpath de test");
+        assumeTrue(KotlinCompiler.jarComposePlugin(null) != null,
+                "kotlin-compose-compiler-plugin-embeddable requis sur le classpath "
+                        + "de test");
+
+        // 1. Runtime Compose STUB : la seule annotation @Composable suffit au
+        //    frontal du plugin pour refuser un appel hors contexte composable —
+        //    le motif du test d'erreur de plugin du moteur de référence.
+        Path stubClasses = temporaire.resolve("stub-classes");
+        Path stubSource = temporaire.resolve("Composable.kt");
+        Files.writeString(stubSource, """
+                package androidx.compose.runtime
+
+                annotation class Composable
+                """);
+        jo.forge.engine.diag.DiagnosticSink puitsStub =
+                diagnostic -> { };
+        assertTrue(KotlinCompiler.compiler(List.of(stubSource), List.of(), List.of(),
+                        List.of(), null, List.of(), stubClasses, 17, puitsStub).success(),
+                "le stub d'annotation compile sans le plugin");
+        Path jarStub = temporaire.resolve("runtime-stub.jar");
+        try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(
+                Files.newOutputStream(jarStub));
+             var parcours = Files.walk(stubClasses)) {
+            for (Path classe : parcours.filter(Files::isRegularFile).toList()) {
+                zip.putNextEntry(new java.util.zip.ZipEntry(
+                        stubClasses.relativize(classe).toString()));
+                zip.write(Files.readAllBytes(classe));
+                zip.closeEntry();
+            }
+        }
+
+        // 2. Publication du stub sur un dépôt local : la résolution Maven le met
+        //    au classpath de compilation, la sonde voit le runtime.
+        try (jo.forge.engine.testutil.DépôtLocal dépôt =
+                     jo.forge.engine.testutil.DépôtLocal.démarrer()) {
+            jo.forge.engine.deps.Coordinate stub =
+                    new jo.forge.engine.deps.Coordinate(
+                            "androidx.compose.runtime", "runtime-stub", "1.0");
+            dépôt.publierPom(stub, """
+                    <project><groupId>androidx.compose.runtime</groupId>
+                    <artifactId>runtime-stub</artifactId><version>1.0</version>
+                    </project>
+                    """);
+            dépôt.publierJar(stub, Files.readAllBytes(jarStub));
+
+            Projets.fichier(temporaire, "forge.json", """
+                    { "modelVersion": 1,
+                      "repositories": [ "%s" ],
+                      "modules": [
+                        { "name": "kalc", "type": "java-library", "language": "kotlin",
+                          "dependencies": [
+                            { "maven": "androidx.compose.runtime:runtime-stub:1.0" } ] }
+                      ] }
+                    """.formatted(dépôt.url()));
+            Projets.fichier(temporaire, "kalc/src/main/kotlin/demo/Appel.kt", """
+                    package demo
+
+                    import androidx.compose.runtime.Composable
+
+                    @Composable
+                    fun Titre() { }
+
+                    fun appelInterdit() {
+                        Titre()
+                    }
+                    """);
+
+            Enregistreur événements = new Enregistreur();
+            TaskExecutor.BuildResult résultat = exécuter(événements);
+            assertTrue(!résultat.success(),
+                    "un appel de composable hors contexte composable est un échec "
+                            + "de build : " + résultat);
+            assertTrue(événements.diagnostics.stream().anyMatch(diagnostic ->
+                            diagnostic.tool().equals(KotlinCompiler.TOOL)
+                                    && diagnostic.message() != null
+                                    && diagnostic.message().contains("omposable")),
+                    "le diagnostic vient du PLUGIN Compose (il nomme Composable), "
+                            + "reçus : " + événements.diagnostics.stream()
+                            .map(jo.forge.engine.diag.Diagnostic::toLogLine).toList());
+        }
+    }
+
     // ---- Harnais -----------------------------------------------------------
 
     /** Projet d'un module Kotlin, sources Kotlin ET Java (le Java appelle le Kotlin). */

@@ -200,6 +200,16 @@ moteur figé entre deux mises à jour de l'application, perte de l'installation 
     **écrits par Forge (Apache-2.0)** — sources dans le dépôt,
     `setup/src/compatArtKotlin/java/` — compilés par ECJ contre `android.jar` et
     dexés avec le compilateur ;
+  - **plugin compilateur Compose (v0.2.15, second jar du composant
+    kotlin-compiler — `lib/compose-compiler.jar`)** :
+    `org.jetbrains.kotlin:kotlin-compose-compiler-plugin-embeddable` 2.0.21,
+    **Apache-2.0**, partie de la distribution Kotlin (même licence que le
+    compilateur embarqué, version VERROUILLÉE sur la sienne — ils sont livrés
+    ensemble et le plugin s'échange contre rien). Notice embarquée
+    `META-INF/notice-compose-compiler.txt`. Les bibliothèques Compose résolues
+    par un projet (androidx.compose.*) sont des DÉPENDANCES de l'utilisateur,
+    téléchargées à la construction depuis ses dépôts (Central + Google Maven) —
+    elles ne sont ni embarquées ni redistribuées par Forge ;
   - **trove4j (LGPL-2.1)** : le compilateur Kotlin en a BESOIN à l'exécution
     (`gnu/trove/TObjectHashingStrategy` — `NoClassDefFoundError` constaté v0.2.9
     sans lui) ; le jar Maven d'origine n'embarque AUCUNE notice, et la

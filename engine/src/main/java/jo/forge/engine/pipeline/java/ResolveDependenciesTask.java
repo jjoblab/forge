@@ -95,22 +95,30 @@ public final class ResolveDependenciesTask implements Task {
         DependencyResolver résolveur = new DependencyResolver(dépôts,
                 new ResolverCache(layout.root().resolve(".forge").resolve("deps")),
                 horsLigne,
-                avertissement -> context.logger().warn(avertissement));
+                avertissement -> context.logger().warn(avertissement),
+                module.type() == jo.forge.engine.model.ModuleType.APPLICATION
+                        || module.type() == jo.forge.engine.model.ModuleType.ANDROID_LIBRARY,
+                module.android().map(jo.forge.engine.model.AndroidFacet::targetSdk)
+                        .orElse(-1));
         context.checkCancelled();
         DependencyResolver.Result résultat = résolveur.resolve(racines,
                 ConflictPolicy.NEWEST);
 
         List<ClasspathFile.Entrée> compilation = new ArrayList<>();
-        résultat.compileClasspath().forEach(jar -> compilation.add(
-                new ClasspathFile.Entrée(jar.coordinate().toString(), jar.jar(),
-                        jar.sha256())));
+        résultat.compileClasspath().forEach(artefact -> compilation.add(
+                new ClasspathFile.Entrée(artefact.coordinate().toString(),
+                        artefact.jar(), artefact.sha256(),
+                        artefact.packaging(), artefact.exploded())));
         List<ClasspathFile.Entrée> exécution = new ArrayList<>();
-        résultat.runtimeClasspath().forEach(jar -> exécution.add(
-                new ClasspathFile.Entrée(jar.coordinate().toString(), jar.jar(),
-                        jar.sha256())));
+        résultat.runtimeClasspath().forEach(artefact -> exécution.add(
+                new ClasspathFile.Entrée(artefact.coordinate().toString(),
+                        artefact.jar(), artefact.sha256(),
+                        artefact.packaging(), artefact.exploded())));
         ClasspathFile.écrire(cheminClasspath(), compilation, exécution);
+        long aars = compilation.stream().filter(ClasspathFile.Entrée::estAar).count();
         context.logger().info(compilation.size() + " dépendance(s) au classpath"
-                + " de compilation, " + exécution.size() + " à l'exécution");
+                + " de compilation, " + exécution.size() + " à l'exécution"
+                + (aars > 0 ? " (dont " + aars + " AAR)" : ""));
     }
 
     /**

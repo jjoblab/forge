@@ -106,6 +106,7 @@ import java.util.zip.ZipOutputStream;
  *       [--compat-art-kotlin &lt;répertoire de sources&gt;]
  *       [--dexeur r8.jar] [--signeur apksig.jar] [--aapt2 binaire --abi arm64-v8a]
  *       [--version-aapt2 &lt;base&gt;] [--kotlin jar1 jar2 …]
+ *       [--compose-plugin &lt;jar du plugin compilateur Compose&gt;]
  *       [--url-outils &lt;URL de base des composants d'outils&gt;]
  *       [--clé-privée &lt;pkcs8-b64&gt;] [--sans-outils-android]
  * </pre>
@@ -201,6 +202,21 @@ public final class PackagerComposants {
             + "(étiquette 1.0.20200330) et artefact de sources sur Maven Central.\n"
             + "Les classes sont dexées (convertis en bytecode ART) — le jar d'origine et sa\n"
             + "source restent disponibles aux adresses ci-dessus.\n";
+
+    /**
+     * Notice du plugin compilateur Compose embarqué (distribution.md §7) :
+     * kotlin-compose-compiler-plugin-embeddable fait partie de la distribution
+     * Kotlin (Apache-2.0), version VERROUILLÉE sur celle du compilateur embarqué
+     * (2.0.21) — le plugin ne s'échange pas indépendamment d'elle.
+     */
+    private static final String NOTICE_COMPOSE_COMPILER = ""
+            + "Ce fichier contient le plugin compilateur Jetpack Compose\n"
+            + "(org.jetbrains.kotlin:kotlin-compose-compiler-plugin-embeddable,\n"
+            + "Apache-2.0), dexé (converti en bytecode ART) par Forge : il transforme\n"
+            + "les fonctions @Composable à la compilation. Sa version est celle du\n"
+            + "compilateur Kotlin embarqué dans ce composant — elles sont livrées\n"
+            + "ensemble par la distribution Kotlin. Le jar d'origine et ses sources\n"
+            + "restent disponibles sur Maven Central.\n";
 
     /**
      * Notice StAX embarquée dans le jar du composant kotlin-compiler
@@ -329,6 +345,35 @@ public final class PackagerComposants {
                     d8, androidJar, jarsKotlin,
                     Map.of("META-INF/notice-trove4j.txt", NOTICE_TROVE4J,
                             "META-INF/notice-stax.txt", NOTICE_STAX)));
+            // Plugin compilateur Compose (v0.2.15) : un SECOND jar dexé du même
+            // composant, lib/compose-compiler.jar. Pourquoi séparé du gros jar : le
+            // compilateur lit le descripteur de services DANS le fichier passé à
+            // -Xplugin — un jar fusionné mélangerait ses descripteurs à ceux du
+            // compilateur ; et ses classes doivent AUSSI être servies par le
+            // classpath du moteur (délégation parente du chargeur de plugins sur
+            // ART, où les octets .class d'un jar ne se définissent pas) — la
+            // session pose tout lib/*.jar au CLASSPATH.
+            if (options.containsKey("compose-plugin")) {
+                if (androidJar == null || !Files.isRegularFile(androidJar)) {
+                    throw new IOException("--compose-plugin exige --android-jar "
+                            + "(dexage du plugin)");
+                }
+                Path jarPlugin = Path.of(obligatoire(options, "compose-plugin"));
+                vérifierPluginCompose(jarPlugin);
+                Path travail = Files.createTempDirectory("forge-dex-compose");
+                List<Path> dexes = dexer(d8, androidJar, List.of(jarPlugin), travail,
+                        "compose-compiler");
+                Path jarDexé = Files.createTempFile("forge-compose-dexe", ".jar");
+                écrireJarDexé(dexes, List.of(jarPlugin), Map.of(
+                        "META-INF/notice-compose-compiler.txt",
+                        NOTICE_COMPOSE_COMPILER), jarDexé);
+                Path archiveKotlin = sortie.resolve(
+                        "kotlin-compiler-" + version + ".zip");
+                ajouterÀArchive(archiveKotlin, jarDexé, "lib/compose-compiler.jar");
+                System.out.println("[composant kotlin-compiler] plugin Compose dexé "
+                        + "-> lib/compose-compiler.jar (" + Files.size(jarDexé)
+                        + " octets, " + dexes.size() + " dex)");
+            }
         }
         if (options.containsKey("aapt2") && !sansOutilsAndroid) {
             String abi = options.getOrDefault("abi", List.of("arm64-v8a")).get(0);
@@ -405,6 +450,30 @@ public final class PackagerComposants {
                     + "pour le dexage");
         }
         Path travail = Files.createTempDirectory("forge-dex-" + id);
+        List<Path> dexes = dexer(d8, androidJar, jars, travail, id);
+        Path archive = sortie.resolve(id + "-" + version + ".zip");
+        emballerJarDexe(dexes, archive, cheminDexe(id), jars, notices);
+        System.out.println("[composant " + id + "] " + archive.getFileName() + " ("
+                + Files.size(archive) + " octets, " + dexes.size() + " dex) — "
+                + description);
+        return manifesteDe(archive, version, List.of("all"), dépendances, null);
+    }
+
+    /**
+     * Dexe des jars par d8 en sous-processus borné (tas 2 Go — mesuré pour le plus
+     * gros ensemble distribué, kotlin-compiler ; 3 Go tuait le processus par le
+     * tueur OOM sur les machines de 4 Go, code 137 muet), multi-dex à l'appui.
+     *
+     * @param travail répertoire de sortie des dex (créé s'il manque).
+     * @param id      identifiant pour les messages.
+     * @return les fichiers {@code classes*.dex} produits (au moins un).
+     */
+    private static List<Path> dexer(Path d8, Path androidJar, List<Path> jars,
+                                    Path travail, String id)
+            throws IOException, InterruptedException {
+        if (!Files.isDirectory(travail)) {
+            Files.createDirectories(travail);
+        }
         // Tas de d8 borné à 2 Go : mesuré suffisant pour le plus gros ensemble
         // distribué (kotlin-compiler, 8 jars / ~62 Mo → 6 dex, 135 s) ; 3 Go tuait
         // le processus par le tueur OOM sur les machines de 4 Go quand Gradle en
@@ -450,12 +519,7 @@ public final class PackagerComposants {
             }
             dexes.add(suite);
         }
-        Path archive = sortie.resolve(id + "-" + version + ".zip");
-        emballerJarDexe(dexes, archive, cheminDexe(id), jars, notices);
-        System.out.println("[composant " + id + "] " + archive.getFileName() + " ("
-                + Files.size(archive) + " octets, " + dexes.size() + " dex) — "
-                + description);
-        return manifesteDe(archive, version, List.of("all"), dépendances, null);
+        return dexes;
     }
 
     /**
@@ -663,6 +727,82 @@ public final class PackagerComposants {
             jar.closeEntry();
         }
         Files.move(temporaire, jarSortie, StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    /**
+     * Garde-fou du plugin compilateur Compose (v0.2.15) : le jar passé à
+     * {@code --compose-plugin} doit porter le registrar
+     * ({@code androidx/compose/compiler/plugins/kotlin/ComposePluginRegistrar.class})
+     * ET son descripteur de services
+     * ({@code META-INF/services/org.jetbrains.kotlin.compiler.plugin.ComponentRegistrar})
+     * — c'est ce descripteur que kotlinc lit dans le fichier passé à
+     * {@code -Xplugin}, et ce sont ces classes que la délégation parente sert
+     * depuis le classpath du moteur sur ART. Un futur plugin qui déplacerait son
+     * registrar doit casser la chaîne de PUBLICATION ici, pas le build sur
+     * l'appareil de l'utilisateur.
+     *
+     * @param jarPlugin le jar du plugin (kotlin-compose-compiler-plugin-embeddable,
+     *                  version du compilateur embarqué).
+     * @throws IOException nommant ce qui manque.
+     */
+    static void vérifierPluginCompose(Path jarPlugin) throws IOException {
+        String classe = "androidx/compose/compiler/plugins/kotlin/ComposePluginRegistrar.class";
+        String descripteur = "META-INF/services/org.jetbrains.kotlin.compiler.plugin.ComponentRegistrar";
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(
+                jarPlugin.toFile())) {
+            if (zip.getEntry(classe) == null) {
+                throw new IOException("plugin Compose : " + classe
+                        + " absent du jar — version inattendue de "
+                        + "kotlin-compose-compiler-plugin-embeddable (la version doit "
+                        + "être celle du compilateur embarqué)");
+            }
+            java.util.zip.ZipEntry entrée = zip.getEntry(descripteur);
+            if (entrée == null) {
+                throw new IOException("plugin Compose : descripteur " + descripteur
+                        + " absent du jar — kotlinc ne pourrait pas découvrir le "
+                        + "plugin par -Xplugin");
+            }
+            String contenu = new String(zip.getInputStream(entrée).readAllBytes(),
+                    java.nio.charset.StandardCharsets.UTF_8);
+            if (!contenu.contains("androidx.compose.compiler.plugins.kotlin"
+                    + ".ComposePluginRegistrar")) {
+                throw new IOException("plugin Compose : le descripteur " + descripteur
+                        + " ne cite pas le registrar attendu — version inattendue");
+            }
+        }
+    }
+
+    /**
+     * Ajoute un fichier à une archive de composant EXISTANTE (réécriture
+     * atomique : toutes les entrées présentes sont recopiées, la nouvelle
+     * suit).
+     */
+    private static void ajouterÀArchive(Path archive, Path fichier, String cheminInterne)
+            throws IOException {
+        Path temporaire = archive.resolveSibling(archive.getFileName() + ".part");
+        try (java.util.zip.ZipFile existante = new java.util.zip.ZipFile(
+                archive.toFile());
+             ZipOutputStream zip = new ZipOutputStream(
+                     Files.newOutputStream(temporaire))) {
+            for (ZipEntry entrée : existante.stream()
+                    .sorted(Comparator.comparing(ZipEntry::getName)).toList()) {
+                ZipEntry copie = new ZipEntry(entrée.getName());
+                copie.setTime(HORODATAGE_FIXE);
+                zip.putNextEntry(copie);
+                existante.getInputStream(entrée).transferTo(zip);
+                zip.closeEntry();
+            }
+            ZipEntry nouvelle = new ZipEntry(cheminInterne);
+            nouvelle.setTime(HORODATAGE_FIXE);
+            zip.putNextEntry(nouvelle);
+            Files.copy(fichier, zip);
+            zip.closeEntry();
+        }
+        try {
+            Files.move(temporaire, archive, StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException pasAtomique) {
+            Files.move(temporaire, archive, StandardCopyOption.REPLACE_EXISTING);
+        }
     }
 
     /**
@@ -929,36 +1069,48 @@ public final class PackagerComposants {
             throws IOException {
         Path travail = Files.createTempFile("forge-jar-dexe", ".jar");
         try {
-            try (ZipOutputStream jar = new ZipOutputStream(
-                    Files.newOutputStream(travail))) {
-                for (Path dex : dexes) {
-                    ZipEntry entree = new ZipEntry(dex.getFileName().toString());
-                    entree.setTime(HORODATAGE_FIXE);
-                    jar.putNextEntry(entree);
-                    Files.copy(dex, jar);
-                    jar.closeEntry();
-                }
-                for (Map.Entry<String, byte[]> ressource
-                        : ressourcesConservées(jarsSources).entrySet()) {
-                    ZipEntry entréeRessource = new ZipEntry(ressource.getKey());
-                    entréeRessource.setTime(HORODATAGE_FIXE);
-                    jar.putNextEntry(entréeRessource);
-                    jar.write(ressource.getValue());
-                    jar.closeEntry();
-                }
-                for (Map.Entry<String, String> notice : new TreeMap<>(notices).entrySet()) {
-                    ZipEntry entréeNotice = new ZipEntry(notice.getKey());
-                    entréeNotice.setTime(HORODATAGE_FIXE);
-                    jar.putNextEntry(entréeNotice);
-                    jar.write(notice.getValue()
-                            .getBytes(java.nio.charset.StandardCharsets.UTF_8));
-                    jar.closeEntry();
-                }
-            }
+            écrireJarDexé(dexes, jarsSources, notices, travail);
             zipperFichier(archive, travail, cheminDestination);
         } finally {
             Files.deleteIfExists(travail);
         }
+    }
+
+    /**
+     * Écrit le JAR DEXÉ LUI-MÊME (sans l'enrobe d'archive mono-entrée) — pour un
+     * second jar d'un composant existant, ajouté ensuite par
+     * {@link #ajouterÀArchive}.
+     */
+    static void écrireJarDexé(List<Path> dexes, List<Path> jarsSources,
+                              Map<String, String> notices, Path sortie) throws IOException {
+        Path temporaire = sortie.resolveSibling(sortie.getFileName() + ".part");
+        try (ZipOutputStream jar = new ZipOutputStream(
+                Files.newOutputStream(temporaire))) {
+            for (Path dex : dexes) {
+                ZipEntry entree = new ZipEntry(dex.getFileName().toString());
+                entree.setTime(HORODATAGE_FIXE);
+                jar.putNextEntry(entree);
+                Files.copy(dex, jar);
+                jar.closeEntry();
+            }
+            for (Map.Entry<String, byte[]> ressource
+                    : ressourcesConservées(jarsSources).entrySet()) {
+                ZipEntry entréeRessource = new ZipEntry(ressource.getKey());
+                entréeRessource.setTime(HORODATAGE_FIXE);
+                jar.putNextEntry(entréeRessource);
+                jar.write(ressource.getValue());
+                jar.closeEntry();
+            }
+            for (Map.Entry<String, String> notice : new TreeMap<>(notices).entrySet()) {
+                ZipEntry entréeNotice = new ZipEntry(notice.getKey());
+                entréeNotice.setTime(HORODATAGE_FIXE);
+                jar.putNextEntry(entréeNotice);
+                jar.write(notice.getValue()
+                        .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                jar.closeEntry();
+            }
+        }
+        Files.move(temporaire, sortie, StandardCopyOption.REPLACE_EXISTING);
     }
 
     /**

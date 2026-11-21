@@ -33,14 +33,22 @@ import java.util.stream.Stream;
  * répertoires de classes des dépendances, bibliothèque de plate-forme,
  * classpath Maven résolu, jar du composant kotlin-compiler (le jar dexé n'a
  * plus de manifeste — c'est le fichier qui invalide quand le composant
- * change), cible JVM, version du compilateur. Sortie : le répertoire de classes
+ * change), jar du plugin compilateur Compose (même raison), cible JVM, version
+ * du compilateur, activation Compose (la sonde). Sortie : le répertoire de classes
  * (partagé avec {@code compileJava} — les deux tâches écrivent des fichiers
  * disjoints, {@code .class} de sources distinctes).</p>
+ *
+ * <p><b>Sonde Compose</b> (v0.2.15) : si le classpath de compilation porte le
+ * runtime Compose ({@code androidx/compose/runtime/Composable.class}), le jar
+ * du plugin compilateur rejoint l'appel (motif du moteur de référence —
+ * activation par classpath, sans configuration) ; son absence à ce moment est
+ * un diagnostic d'erreur actionnable (le bytecode non transformé d'un
+ * composable ne s'exécute pas — mieux vaut échouer au build).</p>
  */
 public final class KotlinCompilerTask implements Task {
 
     /** Version du code de cette tâche. */
-    static final String TASK_VERSION = "1";
+    static final String TASK_VERSION = "2";
 
     private final ForgeModule module;
     private final ProjectLayout layout;
@@ -50,6 +58,7 @@ public final class KotlinCompilerTask implements Task {
     private final Path classpathFile;
     private final List<Path> racinesJavaAdditionnelles;
     private final Path jarCompilateur;
+    private final Path jarComposePlugin;
 
     /**
      * Crée la tâche.
@@ -72,12 +81,15 @@ public final class KotlinCompilerTask implements Task {
      * @param jarCompilateur    jar du composant kotlin-compiler (maison Kotlin et
      *                            racine de configuration IntelliJ sur l'appareil),
      *                            ou null sur la JVM de développement.
+     * @param jarComposePlugin  jar du plugin compilateur Compose (composant
+     *                            installé sur l'appareil, classpath de test en
+     *                            développement), ou null si non localisé.
      */
     public KotlinCompilerTask(ForgeModule module, ProjectLayout layout,
                               List<String> compileDependencies, List<Path> classpathDirs,
                               List<Path> plateforme, Path classpathFile,
                               List<Path> racinesJavaAdditionnelles,
-                              Path jarCompilateur) {
+                              Path jarCompilateur, Path jarComposePlugin) {
         this.module = module;
         this.layout = layout;
         this.compileDependencies = List.copyOf(compileDependencies);
@@ -86,6 +98,7 @@ public final class KotlinCompilerTask implements Task {
         this.classpathFile = classpathFile;
         this.racinesJavaAdditionnelles = List.copyOf(racinesJavaAdditionnelles);
         this.jarCompilateur = jarCompilateur;
+        this.jarComposePlugin = jarComposePlugin;
     }
 
     @Override
@@ -107,16 +120,39 @@ public final class KotlinCompilerTask implements Task {
         entrees.addAll(racinesJavaAdditionnelles);
         List<Path> fichiers = new ArrayList<>(List.of(classpathFile));
         fichiers.addAll(plateforme);
+        Map<String, String> propriétés = new java.util.TreeMap<>(
+                Map.of("jvmTarget", Integer.toString(module.javaRelease()),
+                        "compilateur", "kotlinc:" + KotlinCompiler.compilerVersion()));
         if (jarCompilateur != null) {
             // Le jar dexé n'a plus de manifeste : compilerVersion() vaut
             // « inconnue » sur l'appareil — c'est le fichier qui invalide
             // l'up-to-date quand le composant change.
             fichiers.add(jarCompilateur);
         }
-        return new TaskIO(fichiers, entrees,
-                Map.of("jvmTarget", Integer.toString(module.javaRelease()),
-                        "compilateur", "kotlinc:" + KotlinCompiler.compilerVersion()),
+        if (jarComposePlugin != null && Files.isRegularFile(jarComposePlugin)) {
+            // Le plugin rejoint l'oracle : un composant mis à jour doit
+            // recompiler les composables qui en dépendent.
+            fichiers.add(jarComposePlugin);
+        }
+        try {
+            propriétés.put("compose", Boolean.toString(moduleCompose()));
+        } catch (IOException illisible) {
+            propriétés.put("compose", "illisible");
+        }
+        return new TaskIO(fichiers, entrees, propriétés,
                 List.of(layout.classesDir(module.name())), TASK_VERSION);
+    }
+
+    /**
+     * La sonde Compose du module : classpath de compilation (dossiers frères +
+ *     jars Maven résolus) parcouru à la recherche du runtime.
+     */
+    private boolean moduleCompose() throws IOException {
+        List<Path> classpath = new ArrayList<>(classpathDirs);
+        if (Files.isRegularFile(classpathFile)) {
+            classpath.addAll(ClasspathFile.lireJarsCompilation(classpathFile));
+        }
+        return KotlinCompiler.moduleCompose(classpath);
     }
 
     @Override
@@ -136,8 +172,29 @@ public final class KotlinCompilerTask implements Task {
         if (Files.isRegularFile(classpathFile)) {
             classpath.addAll(ClasspathFile.lireJarsCompilation(classpathFile));
         }
+        List<Path> plugins = List.of();
+        if (KotlinCompiler.moduleCompose(classpath)) {
+            // Sonde positive : le plugin compilateur Compose est requis.
+            if (jarComposePlugin == null || !Files.isRegularFile(jarComposePlugin)) {
+                String message = "module Compose (runtime androidx.compose.runtime "
+                        + "détecté au classpath) mais plugin compilateur Compose "
+                        + "introuvable — sur l'appareil, réparez l'installation du "
+                        + "moteur (bouton Réparer : composant kotlin-compiler, "
+                        + "lib/compose-compiler.jar attendu) ; sur la JVM de "
+                        + "développement, la configuration kotlinCompiler doit "
+                        + "porter kotlin-compose-compiler-plugin-embeddable";
+                context.diagnostics().report(
+                        jo.forge.engine.diag.Diagnostic.error(KotlinCompiler.TOOL,
+                                message));
+                throw new IllegalStateException("échec de compilation Kotlin de "
+                        + module.name() + " : " + message);
+            }
+            plugins = List.of(jarComposePlugin);
+            context.logger().info("module Compose détecté — plugin compilateur "
+                    + "appliqué (" + jarComposePlugin.getFileName() + ")");
+        }
         KotlinCompiler.CompileResult resultat = KotlinCompiler.compiler(sources,
-                sourcesJava, classpath, plateforme, jarCompilateur,
+                sourcesJava, classpath, plateforme, jarCompilateur, plugins,
                 layout.classesDir(module.name()),
                 module.javaRelease(), context.diagnostics());
         for (String ligne : resultat.consoleLines()) {

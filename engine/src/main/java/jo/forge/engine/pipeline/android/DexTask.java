@@ -101,7 +101,14 @@ public final class DexTask implements Task {
         if (Files.isRegularFile(classpathFile)) {
             // Le classpath d'exécution résolu : les bibliothèques Maven sont dexées
             // avec le module (APK monobloc v1 — pas de dex séparé par bibliothèque).
-            programmes.addAll(ClasspathFile.lireJarsExécution(classpathFile));
+            // Les descripteurs de modules Java (module-info.class, racine comme
+            // répertoires META-INF/versions/* des jars multi-versions) sont
+            // ÉCARTÉS : ils ne sont pas dexables et, présents dans plusieurs jars
+            // (stdlib, coroutines, annotations…), tuent d8 par « defined multiple
+            // times » — la fermeture Compose en porte six.
+            for (Path jar : ClasspathFile.lireJarsExécution(classpathFile)) {
+                programmes.add(assainir(jar, context));
+            }
         }
         D8Command.Builder commande = D8Command.builder(
                         new DiagnosticsVersPuits(context))
@@ -117,6 +124,60 @@ public final class DexTask implements Task {
                     + " — voir les diagnostics", echec);
         }
         context.logger().info("dex produit : " + dex.resolve("classes.dex"));
+    }
+
+    /**
+     * Assainit un jar pour d8 : sans {@code module-info.class} (racine ou
+     * {@code META-INF/versions/*}). Le jar d'origine est renvoyé TEL QUEL
+     * quand il est déjà propre (le cas de tous les jars du module) ; la copie
+     * assainie vit dans {@code build/<module>/dex-input/} (atomique).
+     */
+    private Path assainir(Path jar, TaskContext context) throws IOException {
+        boolean àNettoyer;
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(jar.toFile())) {
+            àNettoyer = zip.stream().anyMatch(entrée ->
+                    entrée.getName().endsWith("module-info.class"));
+        } catch (IOException illisible) {
+            return jar; // jar absent/illisible : d8 le dira nommément.
+        }
+        if (!àNettoyer) {
+            return jar;
+        }
+        String nom = jar.getFileName().toString();
+        Path cible = layout.buildDir(module.name()).resolve("dex-input")
+                .resolve(nom.substring(0, nom.length() - 4) + "-nettoye.jar");
+        if (Files.isRegularFile(cible)) {
+            return cible;
+        }
+        Files.createDirectories(cible.getParent());
+        Path temporaire = cible.resolveSibling(cible.getFileName() + ".part");
+        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(jar.toFile());
+             java.util.zip.ZipOutputStream sortie = new java.util.zip.ZipOutputStream(
+                     Files.newOutputStream(temporaire))) {
+            for (java.util.zip.ZipEntry entrée : zip.stream()
+                    .filter(e -> !e.isDirectory())
+                    .filter(e -> !e.getName().endsWith("module-info.class"))
+                    .sorted(java.util.Comparator.comparing(
+                            java.util.zip.ZipEntry::getName))
+                    .toList()) {
+                java.util.zip.ZipEntry copie = new java.util.zip.ZipEntry(
+                        entrée.getName());
+                copie.setTime(315532800000L);
+                sortie.putNextEntry(copie);
+                zip.getInputStream(entrée).transferTo(sortie);
+                sortie.closeEntry();
+            }
+        }
+        try {
+            Files.move(temporaire, cible,
+                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
+        } catch (IOException pasAtomique) {
+            Files.move(temporaire, cible,
+                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+        }
+        context.logger().debug("jar assaini pour d8 (module-info écarté) : "
+                + cible.getFileName());
+        return cible;
     }
 
     /**

@@ -8,7 +8,7 @@ plugins {
 }
 
 group = 'jo.forge'
-version = '0.2.14'
+version = '0.2.15'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -29,6 +29,12 @@ configurations {
     // cet ENSEMBLE qui rejoint le composant kotlin-compiler (tâche « composants »,
     // --kotlin) ; les tests le récupèrent en testImplementation.
     kotlinCompiler
+    // Plugin compilateur Compose (v0.2.15) : jar SÉPARÉ de l'ensemble du
+    // compilateur — il devient le second jar dexé du composant kotlin-compiler
+    // (lib/compose-compiler.jar, passé à kotlinc par -Xplugin quand le classpath
+    // du module porte le runtime Compose). Version VERROUILLÉE sur celle du
+    // compilateur : la distribution Kotlin les livre ensemble.
+    composeCompiler
 }
 
 dependencies {
@@ -66,8 +72,15 @@ dependencies {
     kotlinCompiler 'javax.xml.stream:stax-api:1.0-2'
     kotlinCompiler 'com.fasterxml:aalto-xml:1.3.0'
     kotlinCompiler 'org.codehaus.woodstox:stax2-api:4.2.1'
+    // Plugin compilateur Compose (Apache-2.0, distribution Kotlin) — version du
+    // compilateur ci-dessus, jamais une autre : le plugin compile les
+    // @Composable et le compilateur le charge en processus.
+    composeCompiler 'org.jetbrains.kotlin:kotlin-compose-compiler-plugin-embeddable:2.0.21'
     testImplementation 'org.jetbrains.kotlin:kotlin-compiler-embeddable:2.0.21'
     testImplementation 'org.jetbrains.kotlin:kotlin-stdlib:2.0.21'
+    // Le plugin Compose au classpath des TESTS : la sonde de compileKotlin le
+    // localise là (jarDeLaClasse), et le test dédié l'applique pour de vrai.
+    testImplementation 'org.jetbrains.kotlin:kotlin-compose-compiler-plugin-embeddable:2.0.21'
 
     // aapt2 : sur appareil, le binaire vient du composant installé (par ABI).
     // Depuis v0.2.8, FORGE_AAPT2 pointe le prébuilt Android de ReVanced/aapt2
@@ -140,7 +153,7 @@ tasks.named('processResources') { dependsOn 'tranchesLambdaJar' }
 // Publication (étape 12) : assemblage des composants du moteur et du manifeste.
 // ---------------------------------------------------------------------------
 
-def versionComposants = '0.2.14'
+def versionComposants = '0.2.15'
 
 tasks.register('composants', JavaExec) {
     group = 'publication'
@@ -239,5 +252,17 @@ tasks.register('composants', JavaExec) {
         }
         args('--kotlin')
         jarsKotlin.each { jar -> args(jar.absolutePath) }
+        // Plugin compilateur Compose (v0.2.15) : résolu ICI, à l'exécution —
+        // même économie que l'ensemble Kotlin ci-dessus. Un seul artefact,
+        // version verrouillée sur le compilateur.
+        def jarsCompose = configurations.composeCompiler.files
+                .findAll { it.isFile() }.sort { a, b -> a.name <=> b.name }
+        if (!jarsCompose.isEmpty()) {
+            args('--compose-plugin', jarsCompose[0].absolutePath)
+        } else {
+            throw new GradleException("configuration composeCompiler vide — "
+                    + "org.jetbrains.kotlin:kotlin-compose-compiler-plugin-embeddable "
+                    + "inrésolvable")
+        }
     }
 }
