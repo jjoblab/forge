@@ -137,6 +137,21 @@ public final class PackagerComposants {
             + "javax.lang.model.SourceVersion est une réécriture ART-sûre de Forge\n"
             + "(Apache-2.0) : l'original appelle Runtime.version(), absent d'ART.\n";
 
+    /**
+     * Notice trove4j embarquée dans le jar du composant kotlin-compiler
+     * (distribution.md §7) : le jar Maven ne porte AUCUNE licence, et LGPL-2.1
+     * exige notice et offre de source à la redistribution. Le compilateur Kotlin
+     * meurt sans ces classes (gnu/trove/TObjectHashingStrategy, constat v0.2.9).
+     */
+    private static final String NOTICE_TROVE4J = ""
+            + "Ce fichier contient des classes de trove4j (org.jetbrains.intellij.deps:trove4j:1.0.20200330,\n"
+            + "fourche JetBrains de GNU Trove), sous licence GNU LESSER GENERAL PUBLIC LICENSE 2.1.\n"
+            + "Le jar Maven d'origine n'embarque aucune notice : celle-ci est ajoutée par Forge.\n"
+            + "Source complète correspondante : https://github.com/JetBrains/intellij-deps-trove4j\n"
+            + "(étiquette 1.0.20200330) et artefact de sources sur Maven Central.\n"
+            + "Les classes sont dexées (convertis en bytecode ART) — le jar d'origine et sa\n"
+            + "source restent disponibles aux adresses ci-dessus.\n";
+
     private PackagerComposants() {
     }
 
@@ -203,7 +218,8 @@ public final class PackagerComposants {
                     "compilateur Kotlin embarqué (kotlin-compiler-embeddable) — "
                             + "expérimental, validation ART en cours",
                     List.of("engine-core"),
-                    d8, androidJar, jars(options, "kotlin")));
+                    d8, androidJar, jars(options, "kotlin"),
+                    Map.of("META-INF/notice-trove4j.txt", NOTICE_TROVE4J)));
         }
         if (options.containsKey("aapt2") && !sansOutilsAndroid) {
             String abi = options.getOrDefault("abi", List.of("arm64-v8a")).get(0);
@@ -260,13 +276,32 @@ public final class PackagerComposants {
     private static ComponentManifest composantDexé(Path sortie, String version,
             String id, String description, List<String> dépendances, Path d8,
             Path androidJar, List<Path> jars) throws IOException, InterruptedException {
+        return composantDexé(sortie, version, id, description, dépendances, d8,
+                androidJar, jars, Map.of());
+    }
+
+    /**
+     * Assemble un composant dexé, avec des entrées de notice supplémentaires posées
+     * dans le jar interne (ex. notice LGPL de trove4j pour kotlin-compiler — le jar
+     * Maven n'en embarque aucune, et la redistribution l'exige, distribution.md §7).
+     *
+     * @param notices entrées supplémentaires du jar (chemin d'entrée vers contenu).
+     */
+    private static ComponentManifest composantDexé(Path sortie, String version,
+            String id, String description, List<String> dépendances, Path d8,
+            Path androidJar, List<Path> jars, Map<String, String> notices)
+            throws IOException, InterruptedException {
         if (androidJar == null || !Files.isRegularFile(androidJar)) {
             throw new IOException("composant " + id + " : --android-jar requis "
                     + "pour le dexage");
         }
         Path travail = Files.createTempDirectory("forge-dex-" + id);
+        // Tas de d8 borné à 2 Go : mesuré suffisant pour le plus gros ensemble
+        // distribué (kotlin-compiler, 8 jars / ~62 Mo → 6 dex, 135 s) ; 3 Go tuait
+        // le processus par le tueur OOM sur les machines de 4 Go quand Gradle en
+        // tenait déjà 2 (sortie vide, code 137 — le code d'un SIGKILL).
         List<String> commande = new ArrayList<>(List.of(
-                java(), "-Xmx3g", "-cp", d8.toString(),
+                java(), "-Xmx2g", "-cp", d8.toString(),
                 "com.android.tools.r8.D8", "--release", "--min-api", "28",
                 "--lib", androidJar.toString(),
                 "--output", travail.toString()));
@@ -284,7 +319,11 @@ public final class PackagerComposants {
                     + TimeUnit.MILLISECONDS.toMinutes(DÉLAI_D8_MS) + " minutes");
         }
         if (processus.exitValue() != 0) {
-            throw new IOException("composant " + id + " : d8 a échoué — "
+            throw new IOException("composant " + id + " : d8 a échoué (code "
+                    + processus.exitValue() + (processus.exitValue() == 137
+                    ? " — processus TUÉ, probablement le tueur OOM : baissez le tas"
+                    + " ou libérez de la mémoire" : "")
+                    + ") — "
                     + new String(bavardage, java.nio.charset.StandardCharsets.UTF_8));
         }
         Path dex = travail.resolve("classes.dex");
@@ -303,7 +342,7 @@ public final class PackagerComposants {
             dexes.add(suite);
         }
         Path archive = sortie.resolve(id + "-" + version + ".zip");
-        emballerJarDexe(dexes, archive, cheminDexe(id), jars);
+        emballerJarDexe(dexes, archive, cheminDexe(id), jars, notices);
         System.out.println("[composant " + id + "] " + archive.getFileName() + " ("
                 + Files.size(archive) + " octets, " + dexes.size() + " dex) — "
                 + description);
@@ -584,6 +623,18 @@ public final class PackagerComposants {
      */
     static void emballerJarDexe(List<Path> dexes, Path archive, String cheminDestination,
                                 List<Path> jarsSources) throws IOException {
+        emballerJarDexe(dexes, archive, cheminDestination, jarsSources, Map.of());
+    }
+
+    /**
+     * Variante avec entrées de notice supplémentaires (chemin vers contenu) posées
+     * après les ressources des jars sources.
+     *
+     * @param notices entrées supplémentaires du jar (ex. notice de licence).
+     */
+    static void emballerJarDexe(List<Path> dexes, Path archive, String cheminDestination,
+                                List<Path> jarsSources, Map<String, String> notices)
+            throws IOException {
         Path travail = Files.createTempFile("forge-jar-dexe", ".jar");
         try {
             try (ZipOutputStream jar = new ZipOutputStream(
@@ -603,6 +654,14 @@ public final class PackagerComposants {
                     jar.write(ressource.getValue());
                     jar.closeEntry();
                 }
+                for (Map.Entry<String, String> notice : new TreeMap<>(notices).entrySet()) {
+                    ZipEntry entréeNotice = new ZipEntry(notice.getKey());
+                    entréeNotice.setTime(HORODATAGE_FIXE);
+                    jar.putNextEntry(entréeNotice);
+                    jar.write(notice.getValue()
+                            .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                    jar.closeEntry();
+                }
             }
             zipperFichier(archive, travail, cheminDestination);
         } finally {
@@ -618,9 +677,17 @@ public final class PackagerComposants {
      * <p>Doublons : deux jars qui portent le même chemin avec le même contenu ne
      * l'écrivent qu'une fois ; le même chemin avec des contenus différents échoue — un
      * composant dexé fusionné ne doit pas résoudre ses conflits de ressources au hasard
-     * de l'ordre des jars.</p>
+     * de l'ordre des jars. EXCEPTION documentée : les métadonnées
+     * {@code META-INF/*.kotlin_module} du composant kotlin-compiler — la distribution
+     * Kotlin elle-même livre les mêmes modules dans plusieurs jars (kotlin-reflect
+     * rebundle la désérialisation du compilateur : 11 chemins en conflit mesurés sur
+     * l'ensemble 2.0.21/1.6.10), et le gagnant est le PREMIER jar de l'ordre passé
+     * (l'embarquable avant ses dépendances transitives — même gagnant qu'un classpath
+     * de bureau) ; ces cartes ne servent qu'à lire les métadonnées de classes, pas à
+     * l'exécution, et le risque d'une fusion silencieuse est nul ailleurs.</p>
      *
-     * @param jarsSources jars dexés dans le même composant.
+     * @param jarsSources jars dexés dans le même composant (l'ordre décide des
+     *                    {@code .kotlin_module} en conflit).
      * @return entrées triées par chemin (déterminisme du jar produit).
      */
     private static SortedMap<String, byte[]> ressourcesConservées(List<Path> jarsSources)
@@ -640,6 +707,13 @@ public final class PackagerComposants {
                     byte[] contenu = zip.getInputStream(entrée).readAllBytes();
                     byte[] précédent = conservées.putIfAbsent(chemin, contenu);
                     if (précédent != null && !java.util.Arrays.equals(précédent, contenu)) {
+                        if (chemin.startsWith("META-INF/")
+                                && chemin.endsWith(".kotlin_module")) {
+                            System.out.println("[avertissement] " + chemin
+                                    + " en conflit — copie du premier jar conservée ("
+                                    + jarSource.getFileName() + " ignoré)");
+                            continue;
+                        }
                         throw new IOException("ressource en conflit entre jars du composant : "
                                 + chemin + " (contenus différents) — fusion ambiguë, refusée");
                     }

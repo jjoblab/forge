@@ -166,6 +166,63 @@ class PackagerComposantsTest {
     }
 
     @Test
+    void métadonnéesKotlinModuleEnConflitPremierJarGagnant() throws IOException {
+        // Constat v0.2.9 (composant kotlin-compiler) : la distribution Kotlin livre
+        // les mêmes META-INF/*.kotlin_module dans plusieurs jars — kotlin-reflect
+        // rebundle la désérialisation du compilateur (11 chemins en conflit mesurés
+        // sur l'ensemble 2.0.21/1.6.10). La fusion garde la copie du PREMIER jar de
+        // l'ordre passé (l'embarquable avant ses dépendances — même gagnant qu'un
+        // classpath de bureau) au lieu de refuser ; tout autre conflit reste refusé.
+        Path compilateur = jarDe(Map.of(
+                "META-INF/compiler.common.jvm.kotlin_module", "CARTE DU COMPILATEUR",
+                "messages/compilateur.properties", "messages"));
+        Path reflect = jarDe(Map.of(
+                "META-INF/compiler.common.jvm.kotlin_module", "CARTE DU REFLECT",
+                "messages/reflect.properties", "messages"));
+        Path dex = temporaire.resolve("classes.dex");
+        Files.write(dex, "dex factice".getBytes(StandardCharsets.UTF_8));
+        Path archive = temporaire.resolve("kotlin-compiler-0.2.9.zip");
+
+        PackagerComposants.emballerJarDexe(List.of(dex), archive,
+                "lib/kotlin-compiler.jar", List.of(compilateur, reflect));
+
+        try (ZipFile jar = new ZipFile(
+                jarInterne(archive, "lib/kotlin-compiler.jar").toFile())) {
+            byte[] carte = jar.getInputStream(
+                    jar.getEntry("META-INF/compiler.common.jvm.kotlin_module"))
+                    .readAllBytes();
+            assertEquals("CARTE DU COMPILATEUR",
+                    new String(carte, StandardCharsets.UTF_8),
+                    "la copie du PREMIER jar gagne (ordre passé = classpath de bureau)");
+            assertNotNull(jar.getEntry("messages/compilateur.properties"));
+            assertNotNull(jar.getEntry("messages/reflect.properties"),
+                    "les ressources propres à chaque jar sont conservées");
+        }
+    }
+
+    @Test
+    void noticeSupplémentairePoséeDansLeJarDexé() throws IOException {
+        // LGPL-2.1 (trove4j du composant kotlin-compiler) : le jar Maven n'embarque
+        // AUCUNE notice — la redistribution exige la licence et l'offre de source,
+        // l'assembleur les pose dans le jar du composant (distribution.md §7).
+        Path jar = jarDe(Map.of("messages/compilateur.properties", "messages"));
+        Path dex = temporaire.resolve("classes.dex");
+        Files.write(dex, "dex factice".getBytes(StandardCharsets.UTF_8));
+        Path archive = temporaire.resolve("kotlin-compiler-0.2.9.zip");
+
+        PackagerComposants.emballerJarDexe(List.of(dex), archive,
+                "lib/kotlin-compiler.jar", List.of(jar),
+                Map.of("META-INF/notice-trove4j.txt", "LGPL-2.1 — voir source amont"));
+
+        try (ZipFile interne = new ZipFile(
+                jarInterne(archive, "lib/kotlin-compiler.jar").toFile())) {
+            assertEquals("LGPL-2.1 — voir source amont",
+                    texte(interne, "META-INF/notice-trove4j.txt"),
+                    "la notice supplémentaire est posée dans le jar du composant");
+        }
+    }
+
+    @Test
     void cheminsDeDestinationDesComposants() {
         assertEquals("engine.jar", PackagerComposants.cheminDexe("engine-core"));
         assertEquals("lib/java-compiler.jar",
@@ -404,8 +461,16 @@ class PackagerComposantsTest {
      * par {@link ZipFile} (noms, contenus et horodatages).
      */
     private Path jarInterne(Path archive) throws IOException {
-        byte[] octets = entréeUnique(archive, archive.getFileName().toString()
+        return jarInterne(archive, archive.getFileName().toString()
                 .startsWith("engine-core") ? "engine.jar" : "lib/java-compiler.jar");
+    }
+
+    /**
+     * Extrait le jar dexé interne de l'archive (chemin interne explicite — un
+     * composant compagnon vit en {@code lib/<id>.jar}).
+     */
+    private Path jarInterne(Path archive, String cheminInterne) throws IOException {
+        byte[] octets = entréeUnique(archive, cheminInterne);
         Path fichier = temporaire.resolve("interne-" + compteur++ + ".jar");
         Files.write(fichier, octets);
         return fichier;
