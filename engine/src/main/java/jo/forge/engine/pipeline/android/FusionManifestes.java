@@ -106,8 +106,16 @@ public final class FusionManifestes {
     /** La directive tools:node (seule sémantique honorée : remove). */
     private static final String DIRECTIVE_NŒUD = "node";
 
-    /** Un marqueur ${clef} dans une valeur d'attribut. */
-    private static final Pattern MARQUEUR = Pattern.compile("\\$\\{([^}]+)}");
+    /**
+     * Un marqueur ${clef} dans une valeur d'attribut. L'accolade fermante est
+     * ÉCHAPPÉE : les tests JVM passeraient sans (OpenJDK tient l'accolade
+     * orpheline pour un littéral), mais ART compile ses regex par ICU natif,
+     * qui la REFUSE (U_REGEX_RULE_SYNTAX — l'accolade hors classe n'y est
+     * jamais un littéral, cf. SurfaceRegexIcuTest ; régression v0.2.18 sur
+     * appareil : ExceptionInInitializerError au premier chargement de cette
+     * classe, la fusion mourait avant tout message).
+     */
+    private static final Pattern MARQUEUR = Pattern.compile("\\$\\{([^}]+)\\}");
 
     /** Enfants de <application> fusionnés par (élément, android:name). */
     private static final Set<String> COMPOSANTS = Set.of(
