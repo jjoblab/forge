@@ -208,7 +208,19 @@ jobs:
           open('/tmp/cle-publique.b64', 'w').write(''.join(morceaux))
           PY
           ./gradlew --no-daemon :setup:jar :json:jar :api:jar -q
-          java -cp "setup/build/libs/setup-0.2.10.jar:json/build/libs/json-0.2.10.jar:api/build/libs/api-0.2.10.jar" \
+          # La version des jars est dérivée d'EngineVersion.java (la même constante
+          # que les tests de la coquille) : un oubli de bump dans la CI est
+          # impossible — c'est l'oubli de cette constante en v0.2.11 qui a rougi
+          # la CI (le test cherchait engine-0.2.10.jar sur un classpath 0.2.11).
+          VERSION_JARS=$(sed -n 's/.*CURRENT = "\([^"]*\)".*/\1/p' \
+            engine/src/main/java/jo/forge/engine/EngineVersion.java)
+          test -n "$VERSION_JARS" || { echo "EngineVersion.CURRENT illisible"; exit 1; }
+          for j in "setup/build/libs/setup-$VERSION_JARS.jar" \
+                   "json/build/libs/json-$VERSION_JARS.jar" \
+                   "api/build/libs/api-$VERSION_JARS.jar"; do
+            test -f "$j" || { echo "Jar absent : $j"; exit 1; }
+          done
+          java -cp "setup/build/libs/setup-$VERSION_JARS.jar:json/build/libs/json-$VERSION_JARS.jar:api/build/libs/api-$VERSION_JARS.jar" \
             jo.forge.setup.manifest.OutilManifeste verifier \
             engine/build/composants/manifest.json /tmp/cle-publique.b64 \
             engine/build/composants/manifest.sig

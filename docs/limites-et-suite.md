@@ -200,6 +200,21 @@ tout écart est consigné ici.
   les enregistreurs des tests, appelés depuis les threads du pool, utilisent des
   collections concurrentes. Validation : 85 exécutions de la suite complète sans
   échec (contre ~1 échec sur 20 avant correctifs).
+- **CI rouge v0.2.11 — alignement de version oublié, corrigé le 2026-11-21** : la bump
+  `v0.2.11` (`4f618c5`) a mis à jour les `build.gradle` des six modules mais a oublié
+  `EngineVersion.CURRENT` (resté `"0.2.10"`) — le test de chargement `EngineSessionTest`
+  cherche le jar du moteur PAR NOM (`engine-<CURRENT>.jar`) sur le classpath de test
+  et ne trouvait que `engine-0.2.11.jar` : 2 tests sur 18 rouges sur GitHub Actions
+  (étape « Tests de la coquille », run `44859033060`), alors que la suite locale
+  paraissait verte (`UP-TO-DATE` d'un cache antérieur — repris avec
+  `--rerun-tasks` pour reproduire). Le même oubli dans l'étape release de la CI
+  (classpath en dur `setup-0.2.10.jar` → cassait la prochaine étiquette) est
+  éliminé à la racine : la version des jars y est DÉRIVÉE d'`EngineVersion.java`
+  (même constante que les tests, `sed` + garde d'existence, échec nommé sinon) —
+  plus rien à mettre à jour dans la CI lors d'une bump. Leçon consignée : la bump
+  de version touche SIX `build.gradle` + `EngineVersion.java` + `versionCode`/
+  `versionName` de la coquille ; les tests locaux cache-chaud ne prouvent rien
+  après un changement de version, `--rerun-tasks` s'impose.
 
 ## Hypothèses retenues (Phases 0-3)
 
