@@ -9,6 +9,7 @@ import java.nio.file.Path;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -248,6 +249,93 @@ class ModelCodecTest {
         ModelException absent = assertThrows(ModelException.class,
                 () -> ModelCodec.read(temporaire));
         assertTrue(absent.getMessage().contains("forge.json"));
+    }
+
+    /**
+     * v0.2.18 : la facette Android porte les versions, les fonctionnalités de
+     * génération, les champs BuildConfig et les marqueurs de manifeste — en
+     * lecture, en round-trip d'écriture, et l'ABSENCE des champs reste valide
+     * (défauts AGP 8 : rien de demandé).
+     */
+    @Test
+    void facetteAndroidGénérationEtVersionsRoundTrip() throws IOException {
+        Files.writeString(temporaire.resolve("forge.json"), """
+                {
+                  "modelVersion": 1,
+                  "repositories": [],
+                  "modules": [
+                    { "name": "app", "type": "application",
+                      "android": {
+                        "manifest": "src/main/AndroidManifest.xml",
+                        "minSdk": 28, "targetSdk": 34,
+                        "namespace": "demo.app",
+                        "applicationId": "com.exemple.appli",
+                        "versionCode": 7, "versionName": "1.7",
+                        "buildFeatures": { "buildConfig": true, "viewBinding": true },
+                        "buildConfigFields": [
+                          { "type": "String", "name": "API_HOST",
+                            "value": "\\\"https://api.exemple.com\\\"" } ],
+                        "manifestPlaceholders": { "hôteDeFrais": "frais.exemple.com" }
+                      } }
+                  ]
+                }
+                """);
+        AndroidFacet facette = ModelCodec.read(temporaire).module("app")
+                .orElseThrow().android().orElseThrow();
+        assertEquals(7, facette.versionCode());
+        assertEquals("1.7", facette.versionName());
+        assertTrue(facette.buildFeatures().buildConfig());
+        assertTrue(facette.buildFeatures().viewBinding());
+        assertEquals(1, facette.buildConfigFields().size());
+        assertEquals("API_HOST", facette.buildConfigFields().get(0).name());
+        assertEquals("frais.exemple.com",
+                facette.manifestPlaceholders().get("hôteDeFrais"));
+        // Identifiant effectif et marqueurs dérivés.
+        assertEquals("com.exemple.appli", facette.applicationIdEffectif());
+        assertEquals("com.exemple.appli",
+                facette.marqueursDeManifeste().get("applicationId"));
+
+        // Round-trip : l'écriture relit avec les mêmes valeurs.
+        String réécrit = ModelCodec.write(ModelCodec.read(temporaire));
+        AndroidFacet relue = ModelCodec.parse(réécrit).module("app")
+                .orElseThrow().android().orElseThrow();
+        assertEquals(facette, relue, "le round-trip est stable");
+
+        // Sans les nouveaux champs : défauts AGP 8 (rien de demandé) et
+        // identifiant effectif = namespace.
+        Files.writeString(temporaire.resolve("forge.json"), """
+                { "modelVersion": 1, "repositories": [],
+                  "modules": [ { "name": "app", "type": "application",
+                    "android": { "manifest": "src/main/AndroidManifest.xml",
+                                 "minSdk": 28, "targetSdk": 34,
+                                 "namespace": "demo.app" } } ] }
+                """);
+        AndroidFacet sobre = ModelCodec.read(temporaire).module("app")
+                .orElseThrow().android().orElseThrow();
+        assertFalse(sobre.buildFeatures().buildConfig());
+        assertFalse(sobre.buildFeatures().viewBinding());
+        assertEquals(AndroidFacet.VERSION_CODE_DÉFAUT, sobre.versionCode());
+        assertEquals(AndroidFacet.VERSION_NOM_DÉFAUT, sobre.versionName());
+        assertTrue(sobre.buildConfigFields().isEmpty());
+        assertEquals("demo.app", sobre.applicationIdEffectif(),
+                "sans applicationId déclaré, le namespace l'emporte");
+
+        // Rejets ciblés des nouveaux champs.
+        assertRejet("""
+                { "modelVersion": 1, "modules": [ { "name": "app",
+                  "type": "application", "android": {
+                    "manifest": "m", "minSdk": 28, "targetSdk": 34,
+                    "namespace": "n",
+                    "buildFeatures": { "buildConfig": "oui" } } } ] }
+                """, "booléen attendu");
+        assertRejet("""
+                { "modelVersion": 1, "modules": [ { "name": "app",
+                  "type": "application", "android": {
+                    "manifest": "m", "minSdk": 28, "targetSdk": 34,
+                    "namespace": "n",
+                    "buildConfigFields": [ { "type": "String",
+                      "name": "9INVALIDE", "value": "x" } ] } } ] }
+                """, "identifiant Java");
     }
 
     /**

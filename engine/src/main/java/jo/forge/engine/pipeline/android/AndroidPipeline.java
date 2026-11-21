@@ -1,5 +1,7 @@
 package jo.forge.engine.pipeline.android;
 
+import jo.forge.engine.deps.Coordinate;
+import jo.forge.engine.deps.DependencyResolver;
 import jo.forge.engine.model.ForgeModel;
 import jo.forge.engine.model.ForgeModule;
 import jo.forge.engine.model.ModuleDependency;
@@ -29,13 +31,19 @@ import java.util.stream.Collectors;
  *
  * <p>Chaîne {@code application} : {@code resolveDependencies} →
  * {@code processResources} (aapt2 : APK de base + sources R) →
+ * {@code generateBuildConfig}/{@code generateViewBinding} quand le module les
+ * demande ({@code buildFeatures}, v0.2.18 — sémantique AGP 8 : opt-in) →
  * {@code compileKotlin} pour un module Kotlin (v0.2.11 : compilation jointe,
- * R.java compris) → {@code compileJava} (ECJ, R générées sur le chemin des
- * sources, {@code android.jar} au classpath) →
+ * R.java et sources générées comprises) → {@code compileJava} (ECJ, R et
+ * générées sur le chemin des sources, {@code android.jar} au classpath) →
  * {@code dex} (d8 en processus) → {@code packageApk} (assemblage déterministe) →
  * {@code signApk} (v1+v2, clé de débogage du projet).</p>
  */
 public final class AndroidPipeline {
+
+    /** Le runtime ViewBinding ajouté à la résolution quand la fonctionnalité
+     * est demandée (AGP fait de même — dernière stable 8.x épinglée). */
+    static final String RUNTIME_VIEWBINDING = "8.13.2";
 
     private AndroidPipeline() {
     }
@@ -61,7 +69,7 @@ public final class AndroidPipeline {
         List<Task> tâches = new ArrayList<>();
 
         ResolveDependenciesTask resolve = new ResolveDependenciesTask(module, layout,
-                ResolveDependenciesTask.racinesDe(parNom, module),
+                racinesAvecGénération(parNom, module),
                 model.repositories(), horsLigne);
         tâches.add(resolve);
 
@@ -81,15 +89,32 @@ public final class AndroidPipeline {
         if (module.type() == ModuleType.ANDROID_LIBRARY) {
             // V1 : une bibliothèque Android compile comme une bibliothèque Java
             // contre android.jar (pas de ressources, pas d'AAR — écart consigné).
+            // La génération BuildConfig y est ADMISE (LIBRARY_PACKAGE_NAME) ;
+            // ViewBinding y est refusé nettement — sans chaîne de ressources, la
+            // classe générée ne compilerait pas (R.id introuvable).
             Path androidJar = AndroidToolsLocator.androidJar(
                     module.android().orElseThrow().targetSdk(), engineHome);
             List<String> depsJava = new ArrayList<>(dépendancesCompilation);
             List<Path> classpathJava = new ArrayList<>(classesDépendances);
+            List<Path> générées = List.of();
+            if (module.android().orElseThrow().buildFeatures().buildConfig()) {
+                GenerateBuildConfigTask buildConfig =
+                        new GenerateBuildConfigTask(module, layout);
+                tâches.add(buildConfig);
+                depsJava.add(buildConfig.name());
+                générées = List.of(buildConfig.sortie());
+            }
+            if (module.android().orElseThrow().buildFeatures().viewBinding()) {
+                throw new IllegalStateException("Module " + module.name()
+                        + " : buildFeatures.viewBinding n'est pas livré pour une "
+                        + "android-library (chaîne de ressources non livrée — "
+                        + "voir limites-et-suite.md)");
+            }
             if (module.estKotlin()) {
                 tâches.add(new KotlinCompilerTask(module, layout,
                         dépendancesCompilation, classesDépendances,
                         List.of(androidJar), resolve.cheminClasspath(),
-                        List.of(), jarKotlinCompilateur, jarPluginCompose));
+                        générées, jarKotlinCompilateur, jarPluginCompose));
                 depsJava.add(module.kotlinCompileTaskName());
                 // Le Java du module compile CONTRE les classes Kotlin fraîches
                 // (même répertoire de sortie — le jar n'y voit qu'un module).
@@ -99,7 +124,7 @@ public final class AndroidPipeline {
                 classpathJava.add(layout.classesDir(module.name()));
             }
             tâches.add(new CompileJavaTask(module, layout, depsJava,
-                    classpathJava, List.of(), List.of(androidJar),
+                    classpathJava, générées, List.of(androidJar),
                     resolve.cheminClasspath()));
             tâches.add(new JarTask(module, layout));
             return tâches;
@@ -114,8 +139,27 @@ public final class AndroidPipeline {
                 aapt2, androidJar, resolve.cheminClasspath());
         tâches.add(ressources);
 
+        // Génération de code (v0.2.18, opt-in buildFeatures — position AGP 8) :
+        // les sources générées rejoignent le chemin des sources des DEUX
+        // compilateurs, comme les sources R.
         List<String> depsCompilation = new ArrayList<>(dépendancesCompilation);
         depsCompilation.add(ressources.name());
+        List<Path> sourcesGénérées = new ArrayList<>();
+        sourcesGénérées.add(ressources.sourcesR());
+        if (facette.buildFeatures().buildConfig()) {
+            GenerateBuildConfigTask buildConfig =
+                    new GenerateBuildConfigTask(module, layout);
+            tâches.add(buildConfig);
+            depsCompilation.add(buildConfig.name());
+            sourcesGénérées.add(buildConfig.sortie());
+        }
+        if (facette.buildFeatures().viewBinding()) {
+            GenerateViewBindingTask viewBinding =
+                    new GenerateViewBindingTask(module, layout);
+            tâches.add(viewBinding);
+            depsCompilation.add(viewBinding.name());
+            sourcesGénérées.add(viewBinding.sortie());
+        }
         List<Path> classpathJava = new ArrayList<>(classesDépendances);
         if (module.estKotlin()) {
             // Kotlin d'application (v0.2.11) : compileKotlin suit processResources
@@ -124,7 +168,7 @@ public final class AndroidPipeline {
             // classes, le dexeur n'y voit qu'un module.
             tâches.add(new KotlinCompilerTask(module, layout, depsCompilation,
                     classesDépendances, List.of(androidJar), resolve.cheminClasspath(),
-                    List.of(ressources.sourcesR()), jarKotlinCompilateur,
+                    sourcesGénérées, jarKotlinCompilateur,
                     jarPluginCompose));
             depsCompilation.add(module.kotlinCompileTaskName());
             // Le Java du module compile CONTRE les classes Kotlin fraîches
@@ -135,7 +179,7 @@ public final class AndroidPipeline {
             classpathJava.add(layout.classesDir(module.name()));
         }
         tâches.add(new CompileJavaTask(module, layout, depsCompilation,
-                classpathJava, List.of(ressources.sourcesR()),
+                classpathJava, sourcesGénérées,
                 List.of(androidJar), resolve.cheminClasspath()));
 
         DexTask dex = new DexTask(module, layout, classesDépendances,
@@ -146,6 +190,36 @@ public final class AndroidPipeline {
         tâches.add(empaquetage);
         tâches.add(new SignApkTask(module, layout, empaquetage));
         return tâches;
+    }
+
+    /**
+     * Les racines de résolution du module, PLUS le runtime ViewBinding quand
+     * la fonctionnalité est demandée (même comportement qu'AGP : la dépendance
+     * arrive avec l'opt-in, le script du projet ne la porte pas) — sauf si le
+     * projet la déclare déjà (sa version gagne).
+     */
+    private static List<DependencyResolver.RootDependency> racinesAvecGénération(
+            Map<String, ForgeModule> parNom, ForgeModule module) {
+        List<DependencyResolver.RootDependency> racines =
+                ResolveDependenciesTask.racinesDe(parNom, module);
+        if (module.android().isEmpty()
+                || !module.android().orElseThrow().buildFeatures().viewBinding()) {
+            return racines;
+        }
+        boolean déjàDéclarée = module.dependencies().stream()
+                .filter(d -> d instanceof ModuleDependency.MavenDependency maven
+                        && "androidx.databinding".equals(maven.group())
+                        && "viewbinding".equals(maven.artifact()))
+                .findFirst().isPresent();
+        if (déjàDéclarée) {
+            return racines;
+        }
+        List<DependencyResolver.RootDependency> avec = new ArrayList<>(racines);
+        avec.add(new DependencyResolver.RootDependency(
+                new Coordinate("androidx.databinding", "viewbinding",
+                        RUNTIME_VIEWBINDING),
+                jo.forge.engine.model.DependencyScope.IMPLEMENTATION));
+        return avec;
     }
 
     /**

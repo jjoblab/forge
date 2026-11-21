@@ -164,6 +164,72 @@ class ImportGradleTest {
         assertTrue(refus.getMessage().contains("settings.gradle"));
     }
 
+    /**
+     * v0.2.18 : les constructions de génération de code et de configuration
+     * du script sont importées — buildFeatures, buildConfigField,
+     * versionCode/versionName, manifestPlaceholders, compileOptions (niveau
+     * Java), plugin Kotlin (langage du module).
+     */
+    @Test
+    void importeGénérationEtConfiguration() throws IOException {
+        écrire("settings.gradle", "include ':app'\n");
+        écrire("app/build.gradle", """
+                plugins {
+                    id 'com.android.application'
+                    id 'org.jetbrains.kotlin.android'
+                }
+                android {
+                    namespace 'demo.app'
+                    compileSdk 34
+                    compileOptions {
+                        sourceCompatibility JavaVersion.VERSION_17
+                    }
+                    defaultConfig {
+                        applicationId 'fr.demo.app'
+                        minSdk 28
+                        targetSdk 34
+                        versionCode 7
+                        versionName "1.7"
+                        manifestPlaceholders = [hôteDeFrais: "frais.exemple.com"]
+                        buildConfigField "String", "API_HOST", "\\"https://api.exemple.com\\""
+                    }
+                    buildFeatures {
+                        viewBinding true
+                        buildConfig true
+                    }
+                }
+                """);
+
+        ImportGradle.RésultatImport résultat = ImportGradle.importerAverti(temporaire);
+        ForgeModule app = résultat.modèle().module("app").orElseThrow();
+        var facette = app.android().orElseThrow();
+
+        assertTrue(app.estKotlin(),
+                "le plugin org.jetbrains.kotlin.android importe le module comme Kotlin");
+        assertEquals(17, app.javaRelease(),
+                "compileOptions.sourceCompatibility devient le niveau Java du module");
+        assertEquals(7, facette.versionCode());
+        assertEquals("1.7", facette.versionName());
+        assertTrue(facette.buildFeatures().viewBinding());
+        assertTrue(facette.buildFeatures().buildConfig());
+        assertEquals(1, facette.buildConfigFields().size());
+        assertEquals("API_HOST", facette.buildConfigFields().get(0).name());
+        assertEquals("\"https://api.exemple.com\"",
+                facette.buildConfigFields().get(0).value(),
+                "l'expression Java passe verbatim (guillemets inclus)");
+        assertEquals("frais.exemple.com",
+                facette.manifestPlaceholders().get("hôteDeFrais"));
+        assertTrue(résultat.avertissements().isEmpty(),
+                "une écriture Gradle moderne s'importe sans bruit : "
+                        + résultat.avertissements());
+
+        // Le modèle réimporté est relisible par le codec (boucle import →
+        // forge.json → moteur).
+        ForgeModel relu = jo.forge.engine.model.ModelCodec.parse(
+                jo.forge.engine.model.ModelCodec.write(résultat.modèle()));
+        assertEquals(résultat.modèle(), relu);
+    }
+
     private void écrire(String chemin, String contenu) throws IOException {
         Path fichier = temporaire.resolve(chemin);
         fichier.getParent().toFile().mkdirs();

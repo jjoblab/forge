@@ -33,7 +33,7 @@ import java.util.stream.Stream;
 public final class CompileJavaTask implements Task {
 
     /** Version du code de cette tâche (invalide les passages précédents si elle change). */
-    static final String TASK_VERSION = "2";
+    static final String TASK_VERSION = "3";
 
     private final ForgeModule module;
     private final ProjectLayout layout;
@@ -89,6 +89,13 @@ public final class CompileJavaTask implements Task {
     public TaskIO io() {
         List<Path> entrees = new ArrayList<>(layout.existingSourceDirs(module));
         entrees.addAll(classpathDirs);
+        // Les sources GÉNÉRÉES (R, BuildConfig, liaisons) participent à
+        // l'empreinte PAR LEUR CONTENU : un BuildConfig modifié, un layout
+        // renommé ou une ressource ajoutée recompile le module, même sans
+        // toucher une seule source écrite à la main (v0.2.18 — l'oracle ne
+        // voit que les entrées déclarées, re-exécuter la tâche génératrice
+        // ne suffit pas).
+        entrees.addAll(sourcesSupplémentaires);
         // La plate-forme participe à l'empreinte PAR SON CONTENU : un composant
         // platform mis à jour recompile les modules qui l'utilisent.
         List<Path> fichiers = new ArrayList<>(List.of(classpathFile));

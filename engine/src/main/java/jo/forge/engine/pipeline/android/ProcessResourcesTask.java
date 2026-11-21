@@ -47,7 +47,7 @@ import java.util.Set;
 public final class ProcessResourcesTask implements Task {
 
     /** Version du code de cette tâche. */
-    static final String TASK_VERSION = "2";
+    static final String TASK_VERSION = "3";
 
     private final ForgeModule module;
     private final ProjectLayout layout;
@@ -94,6 +94,9 @@ public final class ProcessResourcesTask implements Task {
                 Map.of("namespace", facette.namespace(),
                         "minSdk", Integer.toString(facette.minSdk()),
                         "targetSdk", Integer.toString(facette.targetSdk()),
+                        "versionCode", Integer.toString(facette.versionCode()),
+                        "versionName", facette.versionName(),
+                        "applicationId", facette.applicationIdEffectif(),
                         "aapt2", aapt2.binaire().toString()),
                 List.of(apkBase(), sourcesR()), TASK_VERSION);
     }
@@ -142,7 +145,7 @@ public final class ProcessResourcesTask implements Task {
         Path manifesteFusionné = layout.buildDir(module.name())
                 .resolve("merged").resolve("AndroidManifest.xml");
         int ajouts = FusionManifestes.fusionner(manifeste(), manifestesBibliothèques,
-                manifesteFusionné);
+                facette.marqueursDeManifeste(), manifesteFusionné);
         if (ajouts > 0) {
             context.logger().info(ajouts + " entrée(s) de manifeste ajoutée(s) par "
                     + manifestesBibliothèques.size() + " bibliothèque(s) AAR");
@@ -158,7 +161,8 @@ public final class ProcessResourcesTask implements Task {
         assets.addAll(répertoiresExistants(facette.assetDirs()));
         aapt2.lier(archives, manifesteFusionné, androidJar, facette.namespace(),
                 List.copyOf(paquetsSupplémentaires), facette.minSdk(),
-                facette.targetSdk(), apkBase(), sourcesR(), assets,
+                facette.targetSdk(), facette.versionCode(), facette.versionName(),
+                apkBase(), sourcesR(), assets,
                 context.diagnostics());
         context.logger().info(archives.size() + " répertoire(s) de ressources liés -> "
                 + apkBase().getFileName() + (paquetsSupplémentaires.isEmpty() ? ""

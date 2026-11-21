@@ -1,7 +1,8 @@
 {
   "modelVersion": 1,
   "repositories": [
-    "https://repo.maven.apache.org/maven2"
+    "https://repo.maven.apache.org/maven2",
+    "https://dl.google.com/dl/android/maven2"
   ],
   "modules": [
     {
@@ -19,7 +20,17 @@
         "res": ["src/main/res"],
         "minSdk": 28,
         "targetSdk": 34,
-        "namespace": "demo.app"
+        "namespace": "demo.app",
+        "versionCode": 4,
+        "versionName": "1.3-forge",
+        "buildFeatures": {
+          "buildConfig": true,
+          "viewBinding": true
+        },
+        "buildConfigFields": [
+          { "type": "String", "name": "EXEMPLE_URL",
+            "value": "\"https://exemple.forge.dev\"" }
+        ]
       }
     }
   ]

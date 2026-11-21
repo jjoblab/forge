@@ -2,18 +2,25 @@ package demo.app;
 
 import android.app.Activity;
 import android.os.Bundle;
+import demo.app.databinding.MainBinding;
 import demo.core.Salutations;
 
 /**
- * Activité principale de l'exemple Android : affiche le layout lié par aapt2 et un
- * message venu du module Java « core ».
+ * Activité principale de l'exemple Android : la classe de liaison
+ * {@code MainBinding} (ViewBinding, générée par {@code generateViewBinding})
+ * remplace le {@code findViewById}, et les constantes de
+ * {@code BuildConfig} ({@code generateBuildConfig}) affichent la version et
+ * le champ personnalisé du modèle.
  */
 public final class MainActivity extends Activity {
 
     @Override
     protected void onCreate(Bundle état) {
         super.onCreate(état);
-        setContentView(R.layout.main);
-        android.util.Log.i("Forge", Salutations.app());
+        MainBinding liaison = MainBinding.inflate(getLayoutInflater());
+        liaison.message.setText(Salutations.app() + "\n"
+                + BuildConfig.VERSION_NAME + " (" + BuildConfig.VERSION_CODE + ")\n"
+                + BuildConfig.EXEMPLE_URL);
+        setContentView(liaison.getRoot());
     }
 }

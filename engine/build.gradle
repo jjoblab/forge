@@ -8,7 +8,7 @@ plugins {
 }
 
 group = 'jo.forge'
-version = '0.2.17'
+version = '0.2.18'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -103,6 +103,9 @@ tasks.named('test') {
     useJUnitPlatform()
     // Le dexeur (d8) tourne EN PROCESSUS dans certains tests : lui laisser la place.
     maxHeapSize = '2g'
+    // Les tests réseau opt-in (ex. ExempleApplicationAndroidRéseauTest) se
+    // déclenchent depuis la ligne de commande : -Dforge.exempleRéseau=1.
+    systemProperty 'forge.exempleRéseau', System.getProperty('forge.exempleRéseau', '')
     testLogging {
         events 'failed', 'skipped'
         exceptionFormat 'full'
@@ -159,7 +162,7 @@ tasks.named('processResources') { dependsOn 'tranchesLambdaJar' }
 // Publication (étape 12) : assemblage des composants du moteur et du manifeste.
 // ---------------------------------------------------------------------------
 
-def versionComposants = '0.2.17'
+def versionComposants = '0.2.18'
 
 tasks.register('composants', JavaExec) {
     group = 'publication'

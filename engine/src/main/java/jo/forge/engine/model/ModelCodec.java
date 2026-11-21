@@ -162,6 +162,38 @@ public final class ModelCodec {
                 if (facet.applicationId() != null) {
                     a.put("applicationId", facet.applicationId());
                 }
+                if (facet.versionCode() != AndroidFacet.VERSION_CODE_DÉFAUT) {
+                    a.put("versionCode", facet.versionCode());
+                }
+                if (!AndroidFacet.VERSION_NOM_DÉFAUT.equals(facet.versionName())) {
+                    a.put("versionName", facet.versionName());
+                }
+                if (facet.buildFeatures().buildConfig()
+                        || facet.buildFeatures().viewBinding()) {
+                    Map<String, Object> f = new java.util.LinkedHashMap<>();
+                    if (facet.buildFeatures().buildConfig()) {
+                        f.put("buildConfig", true);
+                    }
+                    if (facet.buildFeatures().viewBinding()) {
+                        f.put("viewBinding", true);
+                    }
+                    a.put("buildFeatures", f);
+                }
+                if (!facet.buildConfigFields().isEmpty()) {
+                    List<Object> champs = new ArrayList<>();
+                    for (AndroidFacet.BuildConfigField champ
+                            : facet.buildConfigFields()) {
+                        Map<String, Object> ch = new java.util.LinkedHashMap<>();
+                        ch.put("type", champ.type());
+                        ch.put("name", champ.name());
+                        ch.put("value", champ.value());
+                        champs.add(ch);
+                    }
+                    a.put("buildConfigFields", champs);
+                }
+                if (!facet.manifestPlaceholders().isEmpty()) {
+                    a.put("manifestPlaceholders", facet.manifestPlaceholders());
+                }
                 m.put("android", a);
             });
             modules.add(m);
@@ -254,11 +286,41 @@ public final class ModelCodec {
     }
 
     /**
-     * Lit la facette Android d'un module.
+     * Lit la facette Android d'un module : les champs de génération (v0.2.18 —
+     * {@code buildFeatures}, {@code buildConfigFields}, versions,
+     * {@code manifestPlaceholders}) sont OPTIONNELS et désactivés par défaut
+     * (position d'AGP 8 — un projet qui n'a rien demandé n'obtient pas de
+     * classes surprises).
      */
     private static AndroidFacet readAndroidFacet(Map<String, Object> brut, String chemin) {
         List<String> res = asStringList(brut.get("res"), chemin + ".res", List.of());
         List<String> assets = asStringList(brut.get("assets"), chemin + ".assets", List.of());
+        Map<String, Object> fonctionnalités = asObject(
+                brut.getOrDefault("buildFeatures", java.util.Map.of()),
+                chemin + ".buildFeatures");
+        List<AndroidFacet.BuildConfigField> champs = new ArrayList<>();
+        List<Map<String, Object>> champsBruts = asObjectList(
+                brut.get("buildConfigFields"), chemin + ".buildConfigFields",
+                List.of());
+        for (int i = 0; i < champsBruts.size(); i++) {
+            String c = chemin + ".buildConfigFields[" + i + "]";
+            Map<String, Object> champ = champsBruts.get(i);
+            champs.add(new AndroidFacet.BuildConfigField(
+                    asString(champ.get("type"), c + ".type"),
+                    asString(champ.get("name"), c + ".name"),
+                    asString(champ.get("value"), c + ".value")));
+        }
+        Map<String, String> marqueurs = new java.util.LinkedHashMap<>();
+        Map<String, Object> marqueursBruts = asObject(
+                brut.getOrDefault("manifestPlaceholders", java.util.Map.of()),
+                chemin + ".manifestPlaceholders");
+        for (Map.Entry<String, Object> entrée : marqueursBruts.entrySet()) {
+            if (!(entrée.getValue() instanceof String valeur) || valeur.isBlank()) {
+                throw new ModelException(chemin + ".manifestPlaceholders."
+                        + entrée.getKey() + " : chaîne non vide attendue");
+            }
+            marqueurs.put(entrée.getKey(), valeur);
+        }
         AndroidFacet facet = new AndroidFacet(
                 asString(brut.get("manifest"), chemin + ".manifest"),
                 res,
@@ -268,7 +330,18 @@ public final class ModelCodec {
                 brut.containsKey("applicationId")
                         ? asString(brut.get("applicationId"), chemin + ".applicationId")
                         : null,
-                asString(brut.get("namespace"), chemin + ".namespace"));
+                asString(brut.get("namespace"), chemin + ".namespace"),
+                asInt(brut.get("versionCode"), chemin + ".versionCode",
+                        AndroidFacet.VERSION_CODE_DÉFAUT),
+                asString(brut.get("versionName"), chemin + ".versionName",
+                        AndroidFacet.VERSION_NOM_DÉFAUT),
+                new AndroidFacet.BuildFeatures(
+                        asBoolean(fonctionnalités.get("buildConfig"),
+                                chemin + ".buildFeatures.buildConfig", false),
+                        asBoolean(fonctionnalités.get("viewBinding"),
+                                chemin + ".buildFeatures.viewBinding", false)),
+                champs,
+                marqueurs);
         checkRelativePaths(chemin, res, "res");
         checkRelativePaths(chemin, assets, "assets");
         return facet;
@@ -395,6 +468,18 @@ public final class ModelCodec {
             resultat.add(s);
         }
         return resultat;
+    }
+
+    /** Convertit en booléen (valeur par défaut si absent). */
+    private static boolean asBoolean(Object valeur, String chemin, boolean defaut) {
+        if (valeur == null) {
+            return defaut;
+        }
+        if (valeur instanceof Boolean b) {
+            return b;
+        }
+        throw new ModelException(chemin + " : booléen attendu, trouvé "
+                + descriptionType(valeur));
     }
 
     /** Description du type JSON trouvé, pour les messages d'erreur. */

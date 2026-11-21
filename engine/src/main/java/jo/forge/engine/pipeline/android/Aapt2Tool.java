@@ -146,6 +146,8 @@ public final class Aapt2Tool {
      *                     d'une bibliothèque référencent leur {@code R} propre.
      * @param minSdk       niveau d'API minimal.
      * @param targetSdk    niveau d'API cible.
+     * @param versionCode  code de version de l'application.
+     * @param versionName  nom de version de l'application.
      * @param sortieApk    APK de base produit.
      * @param sourcesR     répertoire des sources R générées.
      * @param assetsDirs   répertoires d'assets à inclure (éventuellement vide).
@@ -154,7 +156,8 @@ public final class Aapt2Tool {
      */
     public void lier(List<Path> archives, Path manifeste, Path androidJar,
                      String namespace, List<String> paquetsSupplémentaires,
-                     int minSdk, int targetSdk, Path sortieApk, Path sourcesR,
+                     int minSdk, int targetSdk, int versionCode, String versionName,
+                     Path sortieApk, Path sourcesR,
                      List<Path> assetsDirs, DiagnosticSink diagnostics)
             throws IOException, InterruptedException {
         Files.createDirectories(sourcesR);
@@ -169,8 +172,8 @@ public final class Aapt2Tool {
                 "--min-sdk-version", Integer.toString(minSdk),
                 "--target-sdk-version", Integer.toString(targetSdk),
                 "--auto-add-overlay",
-                "--version-code", "1",
-                "--version-name", "1.0"));
+                "--version-code", Integer.toString(versionCode),
+                "--version-name", versionName));
         if (!paquetsSupplémentaires.isEmpty()) {
             arguments.add("--extra-packages");
             arguments.add(String.join(":", paquetsSupplémentaires));
