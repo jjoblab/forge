@@ -142,11 +142,21 @@ vers le SDK comme d'habitude.
   classes, le Java voit le Kotlin), diagnostics structurés, exemple `kotlin-simple`
   (mixte Kotlin+Java) ; composant dexé multi-dex (~19 Mo, 6 dex : l'embarquable +
   dépendances runtime de son POM), validé sur JVM, audit ART à mener.
-- [ ] Vérification sur appareil réel (ART) — procédure dans `docs/limites-et-suite.md`.
+- [x] APK signé sur appareil (`v0.2.9`, rapport du 2026-11-21) — `application-android`
+  construit de bout en bout sur ART : 9 tâches en 3155 ms, `signApk` compris (APK v1+v2,
+  clé de débogage en pur Java — le crash keytool est mort).
+- [x] POM sûrs sur ART (`v0.2.10`) — le parseur POM durcissait son DOM par des
+  fonctionnalités Xerces absentes d'ART, et la première dépendance Maven d'un build
+  appareil (`kotlin-stdlib`, exemple `kotlin-simple`) tuait `resolveDependencies` :
+  DOCTYPE rejeté par scan du prologue (portable, même position que Maven),
+  durcissement au mieux (motif `runCatching` de la référence), diagnostic honnête
+  (invalide ≠ introuvable).
+- [ ] Vérification sur appareil réel (ART) — reste : installation PackageInstaller de
+  l'APK produit, premier `compileKotlin` sur ART ; procédure dans `docs/limites-et-suite.md`.
 
 ## Tester sur un appareil
 
-Depuis la publication [`v0.2.9`](https://github.com/jjoblab/forge/releases/latest) :
+Depuis la publication [`v0.2.10`](https://github.com/jjoblab/forge/releases/latest) :
 
 1. **Coquille** : installez l'APK joint à la version (chargement latéral ; clé d'essai
    stable — les versions de test successives s'installent l'une sur l'autre).
@@ -155,15 +165,16 @@ Depuis la publication [`v0.2.9`](https://github.com/jjoblab/forge/releases/lates
    la clé épinglée dans la coquille), affiche les composants avec tailles, puis
    télécharge (reprise en cas de coupure) et installe le moteur en lecture seule.
    Depuis la `v0.2.9`, un contenu déjà téléchargé ne passe PLUS par le réseau (cache
-   par empreinte de contenu : la mise à jour `v0.2.8` → `v0.2.9` de platform-34 et
-   aapt2 coûte zéro octet) ; le composant `kotlin-compiler` (~19 Mo) est proposé,
-   expérimental sur ART.
+   par empreinte de contenu : la mise à jour `v0.2.9` → `v0.2.10` ne re-télécharge que
+   le cœur, ~0,1 Mo — compilateurs, plateforme et aapt2 sont liés localement) ; le
+   composant `kotlin-compiler` (~19 Mo) est proposé, expérimental sur ART.
 3. **Premier build** : bouton *Importer les projets d'exemple* puis *Construire* —
    l'exemple Java se compile sur l'appareil par ECJ dans le processus moteur
    (`app_process`) ; un second build est presque entièrement *à jour*. L'exemple
-   `application-android` mène à l'APK signé (chaîne complète, clé de débogage en pur
-   Java depuis `v0.2.9`) ; l'exemple `kotlin-simple` (Kotlin+Java mélangés,
-   `compileKotlin` puis `compileJava`) est EXPÉRIMENTAL sur ART.
+   `application-android` est VALIDÉ de bout en bout (APK signé v1+v2, rapport
+   `v0.2.9`) ; l'exemple `kotlin-simple` (Kotlin+Java mélangés, `compileKotlin`
+   puis `compileJava`) est EXPÉRIMENTAL sur ART — sa résolution Maven est corrigée
+   en `v0.2.10`, le compilateur lui-même reste à auditer.
 4. **En cas de problème** : bouton *Copier les journaux* (presse-papiers) ou
    *Partager* — le rapport contient le journal du build, le journal du moteur
    (stderr capturé, la trace qui survit à une mort du processus), les écroulements
@@ -171,12 +182,11 @@ Depuis la publication [`v0.2.9`](https://github.com/jjoblab/forge/releases/lates
    et la dernière trace de build ; le code de sortie du moteur y est décrit (arrêt
    propre, signal du tueur de mémoire, échec interne).
 
-Le pipeline Android sur appareil est validé jusqu'à `packageApk` (`v0.2.8`, rapports
-de diagnostic) et `signApk` est corrigé en `v0.2.9` (clé de débogage générée en pur
-Java — `keytool` n'existe pas sur ART) : reste à constater l'installation
-PackageInstaller de l'APK produit. Le composant `kotlin-compiler` est publié depuis
-la `v0.2.9`, expérimental sur ART (validé sur JVM). Voir `docs/distribution.md` §7 et
-`docs/limites-et-suite.md`.
+Le pipeline Android complet est VALIDÉ sur appareil jusqu'à l'APK signé v1+v2
+(`v0.2.9`, rapport du 2026-11-21) ; reste à constater l'installation PackageInstaller
+de l'APK produit. Le composant `kotlin-compiler` est publié depuis la `v0.2.9`,
+expérimental sur ART (validé sur JVM ; sa résolution Maven est corrigée en `v0.2.10`).
+Voir `docs/distribution.md` §7 et `docs/limites-et-suite.md`.
 
 ## Licence
 
