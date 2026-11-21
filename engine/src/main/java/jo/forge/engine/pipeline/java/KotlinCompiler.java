@@ -52,6 +52,16 @@ import java.util.List;
  *       qui porte la configuration des points d'extension.</li>
  * </ol>
  *
+ * <p><b>Et le mur d'après</b> (rapport v0.2.13, corrigé en v0.2.14 par le
+ * PACKAGING, pas ici) : la lecture du descripteur désigné ci-dessus meurt sur ART
+ * par {@code NoClassDefFoundError javax/xml/stream/XMLStreamException} — le cœur
+ * IntelliJ embarqué le lit avec l'API StAX, absente d'Android. Le composant
+ * kotlin-compiler porte désormais l'API JSR-173 standalone, son implémentation
+ * aalto et la surface javax de chargement (Icon, Notification*) avec ses shims
+ * headless : rien à faire dans ce pont, l'environnement est servi par le
+ * classpath du moteur comme tout le reste (garde-fou et test dédiés côté
+ * assemblage — {@code PackagerComposants}, {@code StaxSurArtSimuléTest}).</p>
+ *
  * <p><b>Politique d'options</b> : avertissements coupés ({@code -nowarn}), cible
  * JVM alignée sur {@code javaRelease} du module, {@code -no-reflect} (le module
  * qui veut kotlin-reflect le déclare en dépendance Maven), {@code -no-stdlib}

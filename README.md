@@ -169,14 +169,17 @@ vers le SDK comme d'habitude.
   cœur IntelliJ embarqué (corrigé `v0.2.13` par OMBRE tolérante dans `engine.jar` —
   même paquet, dix méthodes épinglées par balayage du jar, replis CAS et tableau ;
   le composant kotlin-compiler reste octet pour octet identique, cache appareil
-  préservé).
+  préservé) ; enfin `javax.xml.stream.XMLStreamException`, StAX étant absent
+  d'Android (rapport `v0.2.13`) — corrigé `v0.2.14` : le composant porte l'API
+  JSR-173 standalone, son implémentation aalto, la surface javax de chargement
+  (Icon, Notification*) et les shims `SwingUtilities`/`jdk.jfr` headless.
 - [ ] Vérification sur appareil réel (ART) — reste : installation PackageInstaller de
   l'APK produit, validation appareil du `compileKotlin` corrigé (`kotlin-simple`,
   puis `application-kotlin`) ; procédure dans `docs/limites-et-suite.md`.
 
 ## Tester sur un appareil
 
-Depuis la publication [`v0.2.13`](https://github.com/jjoblab/forge/releases/latest) :
+Depuis la publication [`v0.2.14`](https://github.com/jjoblab/forge/releases/latest) :
 
 1. **Coquille** : installez l'APK joint à la version (chargement latéral ; clé d'essai
    stable — les versions de test successives s'installent l'une sur l'autre).
@@ -185,18 +188,20 @@ Depuis la publication [`v0.2.13`](https://github.com/jjoblab/forge/releases/late
    la clé épinglée dans la coquille), affiche les composants avec tailles, puis
    télécharge (reprise en cas de coupure) et installe le moteur en lecture seule.
    Depuis la `v0.2.9`, un contenu déjà téléchargé ne passe PLUS par le réseau (cache
-   par empreinte de contenu : la mise à jour `v0.2.12` → `v0.2.13` ne re-télécharge que
-   le cœur, ~0,1 Mo — compilateurs, plateforme et aapt2 sont liés localement) ; le
-   composant `kotlin-compiler` (~19 Mo) est proposé, expérimental sur ART.
+   par empreinte de contenu : la mise à jour `v0.2.13` → `v0.2.14` ne re-télécharge que
+   le cœur ~0,1 Mo et le composant Kotlin ~19,3 Mo — StAX et surface javax y vivent
+   désormais ; compilateurs Java, plateforme et aapt2 sont liés localement) ; le
+   composant `kotlin-compiler` (~19,3 Mo) est proposé, expérimental sur ART.
 3. **Premier build** : bouton *Importer les projets d'exemple* puis *Construire* —
    l'exemple Java se compile sur l'appareil par ECJ dans le processus moteur
    (`app_process`) ; un second build est presque entièrement *à jour*. L'exemple
    `application-android` est VALIDÉ de bout en bout (APK signé v1+v2, rapport
    `v0.2.9`) ; l'exemple `kotlin-simple` (Kotlin+Java mélangés, `compileKotlin`
-   puis `compileJava`) est corrigé sur ART en `v0.2.13` — voir l'étape suivante.
+   puis `compileJava`) est corrigé sur ART en `v0.2.14` — voir l'étape suivante.
 4. **Premier build Kotlin** : `kotlin-simple` (les crashs `compileKotlin` des rapports
-   `v0.2.10` (auto-localisation) et `v0.2.12` (API cachée `copyMemory`) sont corrigés
-   en `v0.2.13` : rapport attendu), puis `application-kotlin`
+   `v0.2.10` (auto-localisation), `v0.2.12` (API cachée `copyMemory`) et `v0.2.13`
+   (StAX absent d'Android) sont corrigés
+   en `v0.2.14` : rapport attendu), puis `application-kotlin`
    (Android+Kotlin, admis depuis la `v0.2.11`, validé sur JVM jusqu'à l'APK signé
    avec résolution Maven réelle de la stdlib).
 5. **En cas de problème** : bouton *Copier les journaux* (presse-papiers) ou
@@ -211,7 +216,8 @@ Le pipeline Android complet est VALIDÉ sur appareil jusqu'à l'APK signé v1+v2
 de l'APK produit. Le composant `kotlin-compiler` est publié depuis la `v0.2.9` ;
 le `compileKotlin` sur ART franchit ses murs un à un (auto-localisation `v0.2.11`,
 maison jamais posée `v0.2.12`, API cachée `copyMemory` corrigée en `v0.2.13` par ombre
-tolérante — les 19 Mo du composant restent en cache), validation appareil attendue.
+tolérante, StAX et surface javax servis par le composant en `v0.2.14`), validation
+appareil attendue.
 Voir `docs/distribution.md` §7 et `docs/limites-et-suite.md`.
 
 ## Licence

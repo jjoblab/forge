@@ -171,11 +171,35 @@ moteur figé entre deux mises à jour de l'application, perte de l'installation 
     runtime du POM (`kotlin-stdlib`, `kotlin-reflect`, `kotlin-script-runtime`,
     `kotlin-daemon-embeddable`, `kotlinx-coroutines-core-jvm`,
     `org.jetbrains:annotations` — tous **Apache-2.0**) **plus trove4j
-    (`org.jetbrains.intellij.deps:trove4j`, LGPL-2.1 — voir ci-dessous)** ; ~19 Mo
+    (`org.jetbrains.intellij.deps:trove4j`, LGPL-2.1 — voir ci-dessous)** ; ~19,3 Mo
     dexés (6 `classes*.dex`). L'embarquable seul meurt à l'exécution
     (`NoClassDefFoundError` coroutines, constat v0.2.9) : l'ensemble du POM est
     distribué. Les métadonnées `META-INF/*.kotlin_module` en conflit entre jars
     sont gagnées par le premier jar (même gagnant qu'un classpath de bureau) ;
+  - **StAX du composant kotlin-compiler (v0.2.14)** : le cœur IntelliJ embarqué lit
+    ses descripteurs de plugins avec l'API StAX, absente d'Android (rapport appareil
+    v0.2.13 : `NoClassDefFoundError javax/xml/stream/XMLStreamException`). Le
+    composant porte l'API **standalone JSR-173**
+    (`javax.xml.stream:stax-api:1.0-2`, **double CDDL-1.0/GPLv2** déclarée par son
+    POM — redistribution retenue sous CDDL-1.0) et son implémentation
+    (`com.fasterxml:aalto-xml:1.3.0`, **Apache-2.0** ;
+    `org.codehaus.woodstox:stax2-api:4.2.1`, **BSD 2-clauses**) : le FactoryFinder
+    du jar autonome trouve l'usine aalto par `META-INF/services`, contrairement à
+    celui du JDK (classes com.sun/jdk.xml inexistantes sur ART). Notices
+    embarquées : `META-INF/notice-stax.txt` ; les `META-INF/LICENSE` divergents des
+    jars sources sont TOUS conservés — premier jar au chemin canonique, copies
+    divergentes sous `META-INF/licenses/<jar>/…` (aucune notice perdue) ;
+  - **surface javax et shims du composant kotlin-compiler (v0.2.14)** :
+    `javax.swing.Icon` (module `java.desktop`) et
+    `javax.management.NotificationListener/NotificationFilter/Notification`
+    (module `java.management`) extraits de l'OpenJDK à l'assemblage — **GPLv2 avec
+    exception de classpath** (notice `about-openjdk-javax-kotlin.txt`, mêmes termes
+    que l'API java.compiler v0.2.6) : le compilateur les exige au CHARGEMENT
+    (interfaces mères de ses classes d'icônes, écouteur du veilleur de mémoire).
+    `javax.swing.SwingUtilities` et les classes `jdk.jfr.*` sont des shims headless
+    **écrits par Forge (Apache-2.0)** — sources dans le dépôt,
+    `setup/src/compatArtKotlin/java/` — compilés par ECJ contre `android.jar` et
+    dexés avec le compilateur ;
   - **trove4j (LGPL-2.1)** : le compilateur Kotlin en a BESOIN à l'exécution
     (`gnu/trove/TObjectHashingStrategy` — `NoClassDefFoundError` constaté v0.2.9
     sans lui) ; le jar Maven d'origine n'embarque AUCUNE notice, et la
@@ -224,7 +248,7 @@ moteur figé entre deux mises à jour de l'application, perte de l'installation 
   diagnostic distingue « tué par le système » d'un échec de build.
 - **Espace disque** : l'assistant affiche tailles exactes et espace libre avant tout
   téléchargement ; le moteur complet (cœur ~7 Mo + plateforme ~23 Mo + `aapt2` ~4,7 Mo +
-  Kotlin optionnel ~19 Mo) pèse ~55 Mo téléchargés (v0.2.9, composants zippés mesurés) —
+  Kotlin optionnel ~19,3 Mo) pèse ~56 Mo téléchargés (v0.2.14, composants zippés mesurés) —
   et une mise à jour au contenu inchangé ne re-télécharge RIEN (cache par empreinte de
   contenu, v0.2.9).
 - **Données mobiles** : avertissement systématique avant téléchargement sur réseau payant,

@@ -20,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -71,6 +72,30 @@ import java.util.zip.ZipOutputStream;
  * par ECJ est servie par le jar produit (voir
  * {@link #vérifierRéférencesApi}).</p>
  *
+ * <p><b>StAX et surface javax du compilateur Kotlin</b> (correctif v0.2.14,
+ * rapport appareil v0.2.13 : {@code NoClassDefFoundError
+ * javax/xml/stream/XMLStreamException} dans {@code PluginDescriptorLoader} —
+ * le cœur IntelliJ embarqué lit ses descripteurs de plugins avec l'API StAX,
+ * présente dans le JDK desktop mais absente d'Android, qui ne fournit que
+ * SAX/DOM/XmlPullParser) : l'ensemble {@code --kotlin} est complété par un jar
+ * assemblé ici (voir {@link #assemblerSurfaceJavaxKotlin}) portant (1) l'API
+ * StAX standalone JSR-173 et son implémentation aalto — fournies par la
+ * configuration Gradle {@code kotlinCompiler}, le FactoryFinder du jar
+ * autonome trouvant l'usine aalto par {@code META-INF/services} contrairement
+ * à celui du JDK ; (2) la surface javax du JDK que le compilateur exige AU
+ * CHARGEMENT de classes ({@code javax.swing.Icon},
+ * {@code javax.management.NotificationListener/NotificationFilter/Notification},
+ * extraits des modules {@code java.desktop}/{@code java.management} de l'image
+ * {@code jrt} — les interfaces mères DummyIcon, ScalableIcon, ReplaceableIcon,
+ * CompositeIcon étendent {@code Icon}, et {@code LowMemoryWatcherManager$3}
+ * implémente {@code NotificationListener} : constats d'audit du jar 2.0.21) ;
+ * (3) les shims headless de {@code --compat-art-kotlin} compilés par ECJ contre
+ * {@code android.jar} ({@code javax.swing.SwingUtilities}, touché dès
+ * l'enregistrement des points d'extension ; {@code jdk.jfr.*} no-op, préventif).
+ * Un garde-fou vérifie que TOUTE classe {@code javax/xml/stream/} référencée
+ * par l'ensemble est servie (voir {@link #vérifierRéférencesStax}) — le crash
+ * v0.2.13 doit devenir impossible à PUBLIER, pas seulement corrigé une fois.</p>
+ *
  * <p>Usage :</p>
  * <pre>
  *   java jo.forge.setup.packaging.PackagerComposants
@@ -78,6 +103,7 @@ import java.util.zip.ZipOutputStream;
  *       --d8 &lt;r8.jar&gt; --android-jar &lt;android.jar&gt; [--min-api 28]
  *       [--moteur jar1 jar2 …] [--compilateur ecj.jar]
  *       [--compat-art &lt;répertoire de sources&gt;]
+ *       [--compat-art-kotlin &lt;répertoire de sources&gt;]
  *       [--dexeur r8.jar] [--signeur apksig.jar] [--aapt2 binaire --abi arm64-v8a]
  *       [--version-aapt2 &lt;base&gt;] [--kotlin jar1 jar2 …]
  *       [--url-outils &lt;URL de base des composants d'outils&gt;]
@@ -129,6 +155,30 @@ public final class PackagerComposants {
     /** Classe de l'API réécrite pour ART (l'original lit {@code Runtime.version()}). */
     static final String SOURCE_VERSION_RÉÉCRIT = "javax/lang/model/SourceVersion";
 
+    /**
+     * Paquet StAX servi par le composant kotlin-compiler (absent d'ART — le cœur
+     * IntelliJ embarqué lit ses descripteurs de plugins avec, crash appareil
+     * v0.2.13).
+     */
+    private static final String PRÉFIXE_STAX = "javax/xml/stream/";
+
+    /**
+     * Surface javax du JDK exigée AU CHARGEMENT par le compilateur Kotlin
+     * embarqué : chemin de classe vers module {@code jrt} (Icon : interfaces
+     * mères de DummyIcon/ScalableIcon/ReplaceableIcon/CompositeIcon — le
+     * vérifieur d'ART refuse un supertype absent ; Notification* :
+     * {@code LowMemoryWatcherManager$3} implémente NotificationListener).
+     * NotificationEmitter est délibérément ÉCARTÉ : référencé dans un seul
+     * corps de méthode jamais exécuté headless (audit du jar 2.0.21), et
+     * l'embarquer tirerait la chaîne NotificationBroadcaster →
+     * MBeanNotificationInfo.
+     */
+    private static final Map<String, String> SURFACE_JAVAX_KOTLIN = Map.of(
+            "javax/swing/Icon.class", "java.desktop",
+            "javax/management/NotificationListener.class", "java.management",
+            "javax/management/NotificationFilter.class", "java.management",
+            "javax/management/Notification.class", "java.management");
+
     /** Notice OpenJDK embarquée dans le jar API (distribution.md §7). */
     private static final String NOTICE_OPENJDK = ""
             + "L'API javax.lang.model / javax.annotation.processing / javax.tools de ce\n"
@@ -151,6 +201,44 @@ public final class PackagerComposants {
             + "(étiquette 1.0.20200330) et artefact de sources sur Maven Central.\n"
             + "Les classes sont dexées (convertis en bytecode ART) — le jar d'origine et sa\n"
             + "source restent disponibles aux adresses ci-dessus.\n";
+
+    /**
+     * Notice StAX embarquée dans le jar du composant kotlin-compiler
+     * (distribution.md §7) : l'API (JSR-173 standalone) est doublement
+     * licenciée et l'implémentation aalto/stax2 est Apache-2.0.
+     */
+    private static final String NOTICE_STAX = ""
+            + "Ce fichier contient l'API StAX et son implémentation, servies au compilateur\n"
+            + "Kotlin embarqué sur ART (le cœur IntelliJ lit ses descripteurs de plugins avec\n"
+            + "StAX, absent d'Android) :\n"
+            + "- javax.xml.stream:stax-api:1.0-2 (API seule, JSR-173) — double licence\n"
+            + "  GPLv2 / CDDL-1.0 déclarée par son POM Maven ; redistribution retenue ici\n"
+            + "  sous CDDL-1.0. Source correspondante : projet GlassFish stax (API JSR-173) ;\n"
+            + "- com.fasterxml:aalto-xml:1.3.0 (Apache-2.0), source\n"
+            + "  https://github.com/FasterXML/woodstox (module aalto) ;\n"
+            + "- org.codehaus.woodstox:stax2-api:4.2.1 (BSD 2-clauses, notice du jar).\n"
+            + "L'API STANDALONE est requise (pas celle du JDK) : son FactoryFinder autonome\n"
+            + "trouve l'usine aalto par META-INF/services, contrairement à celui du JDK qui\n"
+            + "appelle des classes com.sun/jdk.xml inexistantes sur ART. Les classes sont\n"
+            + "dexées (converties en bytecode ART) ; les jars d'origine et leurs sources\n"
+            + "restent disponibles sur Maven Central.\n";
+
+    /**
+     * Notice OpenJDK de la surface javax embarquée dans le jar du composant
+     * kotlin-compiler (distribution.md §7) : mêmes termes que l'API
+     * java.compiler du composant java-compiler (v0.2.6).
+     */
+    private static final String NOTICE_OPENJDK_JAVAX_KOTLIN = ""
+            + "Les classes javax.swing.Icon, javax.management.NotificationListener,\n"
+            + "javax.management.NotificationFilter et javax.management.Notification de ce\n"
+            + "fichier proviennent des modules java.desktop et java.management de l'OpenJDK\n"
+            + "(GPLv2 avec exception de classpath), extraites à l'assemblage par Forge :\n"
+            + "le compilateur Kotlin embarqué les exige au CHARGEMENT de classes (DummyIcon,\n"
+            + "ScalableIcon, ReplaceableIcon, CompositeIcon étendent javax.swing.Icon ;\n"
+            + "LowMemoryWatcherManager$3 implémente NotificationListener — audit du jar\n"
+            + "2.0.21). javax.swing.SwingUtilities et les classes jdk.jfr.* sont des shims\n"
+            + "headless de Forge (Apache-2.0) — sources dans le dépôt du projet,\n"
+            + "setup/src/compatArtKotlin/java/.\n";
 
     private PackagerComposants() {
     }
@@ -214,12 +302,33 @@ public final class PackagerComposants {
                     d8, androidJar, jars(options, "signeur")));
         }
         if (options.containsKey("kotlin")) {
+            List<Path> jarsKotlin = new ArrayList<>(jars(options, "kotlin"));
+            Path dirCompatKotlin = options.containsKey("compat-art-kotlin")
+                    ? Path.of(obligatoire(options, "compat-art-kotlin")) : null;
+            if (dirCompatKotlin != null) {
+                // Mêmes exigences que --compat-art pour java-compiler : ECJ compile
+                // les shims, android.jar est leur chemin d'amorçage.
+                if (androidJar == null || !Files.isRegularFile(androidJar)) {
+                    throw new IOException("--compat-art-kotlin exige --android-jar "
+                            + "(chemin d'amorçage de la compilation des shims)");
+                }
+                if (!options.containsKey("compilateur")) {
+                    throw new IOException("--compat-art-kotlin exige --compilateur "
+                            + "(ECJ compile les shims headless)");
+                }
+                jarsKotlin.add(assemblerSurfaceJavaxKotlin(
+                        jars(options, "compilateur").get(0), androidJar,
+                        dirCompatKotlin));
+            }
+            vérifierRéférencesStax(jarsKotlin);
             composants.add(composantDexé(sortie, version, "kotlin-compiler",
-                    "compilateur Kotlin embarqué (kotlin-compiler-embeddable) — "
-                            + "expérimental, validation ART en cours",
+                    "compilateur Kotlin embarqué (kotlin-compiler-embeddable, StAX "
+                            + "et surface javax pour ART) — expérimental, validation "
+                            + "ART en cours",
                     List.of("engine-core"),
-                    d8, androidJar, jars(options, "kotlin"),
-                    Map.of("META-INF/notice-trove4j.txt", NOTICE_TROVE4J)));
+                    d8, androidJar, jarsKotlin,
+                    Map.of("META-INF/notice-trove4j.txt", NOTICE_TROVE4J,
+                            "META-INF/notice-stax.txt", NOTICE_STAX)));
         }
         if (options.containsKey("aapt2") && !sansOutilsAndroid) {
             String abi = options.getOrDefault("abi", List.of("arm64-v8a")).get(0);
@@ -424,6 +533,189 @@ public final class PackagerComposants {
                 + classes.size() + " classes (" + SOURCE_VERSION_RÉÉCRIT
                 + " réécrit pour ART)");
         return jarSortie;
+    }
+
+    /**
+     * Assemble le jar de la surface javax et des shims headless du composant
+     * kotlin-compiler (correctif v0.2.14) : classes javax du JDK extraites de
+     * l'image {@code jrt} de la JVM d'assemblage ({@link #SURFACE_JAVAX_KOTLIN}
+     * — exigées au CHARGEMENT par les interfaces mères du compilateur) PLUS les
+     * shims de {@code dirSources} compilés par ECJ avec {@code android.jar} en
+     * chemin d'amorçage ({@code javax.swing.SwingUtilities} headless,
+     * {@code jdk.jfr.*} no-op). L'API StAX, elle, vient de l'ensemble
+     * {@code --kotlin} (jars stax-api/aalto/stax2 de la configuration Gradle
+     * kotlinCompiler) : ce jar n'a pas à la porter.
+     *
+     * <p>Garde d'intégrité : les classes extraites du jrt et les shims doivent
+     * être DISJOINTS (aucune classe de ce jar n'a le droit d'en masquer une
+     * autre — contrairement au jar API java.compiler, qui remplace
+     * précisément SourceVersion).</p>
+     *
+     * @param jarEcj     jar ECJ (compilateur des shims).
+     * @param androidJar plate-forme Android (chemin d'amorçage).
+     * @param dirSources sources de compatibilité ({@code --compat-art-kotlin}).
+     * @return le jar assemblé (fichier temporaire, à dexer avec le compilateur).
+     * @throws IOException          en cas d'échec de lecture, compilation ou conflit.
+     * @throws InterruptedException si la compilation ECJ est interrompue.
+     */
+    static Path assemblerSurfaceJavaxKotlin(Path jarEcj, Path androidJar,
+                                             Path dirSources)
+            throws IOException, InterruptedException {
+        Path classesShims = Files.createTempDirectory("forge-compat-art-kotlin");
+        Path jarSortie = Files.createTempFile("forge-surface-javax-kotlin", ".jar");
+        compilerParEcj(jarEcj, androidJar, dirSources, classesShims);
+        SortedMap<String, byte[]> classes = classesJavaxDepuisJrt();
+        ajouterClassesShims(classes, classesShims);
+        écrireJarSurface(jarSortie, classes);
+        System.out.println("[composant kotlin-compiler] surface javax pour ART : "
+                + classes.size() + " classes (" + SURFACE_JAVAX_KOTLIN.size()
+                + " extraites du jrt + shims headless)");
+        return jarSortie;
+    }
+
+    /**
+     * Extrait de l'image {@code jrt} de la JVM d'assemblage la surface javax
+     * exigée au chargement par le compilateur Kotlin embarqué
+     * ({@link #SURFACE_JAVAX_KOTLIN}).
+     *
+     * @return classes vers octets, triées par chemin.
+     * @throws IOException si l'image {@code jrt} ou l'une des classes est
+     *                     indisponible (échec nommé — la CI épingle le JDK).
+     */
+    static SortedMap<String, byte[]> classesJavaxDepuisJrt() throws IOException {
+        java.nio.file.FileSystem jrt;
+        try {
+            jrt = java.nio.file.FileSystems.getFileSystem(URI.create("jrt:/"));
+        } catch (Exception pasDeJrt) {
+            throw new IOException("la JVM d'assemblage n'expose pas d'image jrt "
+                    + "(JDK 9+ requis pour extraire la surface javax)", pasDeJrt);
+        }
+        SortedMap<String, byte[]> classes = new TreeMap<>();
+        for (Map.Entry<String, String> entrée : SURFACE_JAVAX_KOTLIN.entrySet()) {
+            Path fichier = jrt.getPath("/modules/" + entrée.getValue()
+                    + "/" + entrée.getKey());
+            if (!Files.isRegularFile(fichier)) {
+                throw new IOException("surface javax : " + entrée.getKey()
+                        + " absent du module " + entrée.getValue()
+                        + " de la JVM d'assemblage — assemblez les composants "
+                        + "sur un JDK complet");
+            }
+            classes.put(entrée.getKey(), Files.readAllBytes(fichier));
+        }
+        return classes;
+    }
+
+    /**
+     * Ajoute au jar de surface les shims compilés (chemin relatif au répertoire
+     * de sortie d'ECJ). Ici, AUCUN masquage n'est permis : les classes du jrt et
+     * les shims doivent être disjoints — un chevauchement est une erreur
+     * (contrairement au jar API java.compiler, qui remplace précisément
+     * SourceVersion).
+     */
+    private static void ajouterClassesShims(SortedMap<String, byte[]> classes,
+                                             Path classesShims) throws IOException {
+        List<Path> fichiers;
+        try (java.util.stream.Stream<Path> parcours = Files.walk(classesShims)) {
+            fichiers = parcours.filter(Files::isRegularFile)
+                    .filter(p -> p.toString().endsWith(".class"))
+                    .sorted()
+                    .toList();
+        }
+        if (fichiers.isEmpty()) {
+            throw new IOException("aucun shim compilé dans " + classesShims
+                    + " — sources de --compat-art-kotlin inattendues");
+        }
+        for (Path fichier : fichiers) {
+            String nom = classesShims.relativize(fichier).toString();
+            if (classes.containsKey(nom)) {
+                throw new IOException("le shim " + nom + " masque une classe "
+                        + "extraite du jrt — la surface javax et les shims doivent "
+                        + "être disjoints");
+            }
+            classes.put(nom, Files.readAllBytes(fichier));
+        }
+    }
+
+    /**
+     * Écrit le jar de surface : entrées triées, horodatage fixe (déterminisme),
+     * notice OpenJDK des classes extraites et notice des shims à la racine
+     * (elles traverseront le dexage comme les autres ressources et resteront
+     * lisibles sur l'appareil).
+     */
+    private static void écrireJarSurface(Path jarSortie,
+                                          SortedMap<String, byte[]> classes)
+            throws IOException {
+        Path temporaire = jarSortie.resolveSibling(jarSortie.getFileName() + ".part");
+        try (ZipOutputStream jar = new ZipOutputStream(
+                Files.newOutputStream(temporaire))) {
+            for (Map.Entry<String, byte[]> classe : classes.entrySet()) {
+                ZipEntry entrée = new ZipEntry(classe.getKey());
+                entrée.setTime(HORODATAGE_FIXE);
+                jar.putNextEntry(entrée);
+                jar.write(classe.getValue());
+                jar.closeEntry();
+            }
+            ZipEntry noticeJdk = new ZipEntry("about-openjdk-javax-kotlin.txt");
+            noticeJdk.setTime(HORODATAGE_FIXE);
+            jar.putNextEntry(noticeJdk);
+            jar.write(NOTICE_OPENJDK_JAVAX_KOTLIN
+                    .getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            jar.closeEntry();
+        }
+        Files.move(temporaire, jarSortie, StandardCopyOption.REPLACE_EXISTING);
+    }
+
+    /**
+     * Garde-fou StAX du composant kotlin-compiler (correctif v0.2.14) : toute
+     * classe {@code javax/xml/stream/} référencée par l'un des jars de
+     * l'ensemble doit être servie par l'un d'eux — sinon échec nommé de
+     * l'assemblage. Le crash appareil v0.2.13
+     * ({@code NoClassDefFoundError XMLStreamException} dans
+     * {@code PluginDescriptorLoader}) doit devenir impossible à PUBLIER, pas
+     * seulement corrigé une fois : un ensemble Kotlin futur qui référencerait
+     * une classe StAX de plus cassera la chaîne de publication proprement, pas
+     * le build sur l'appareil de l'utilisateur.
+     *
+     * @param jarsKotlin ensemble des jars du composant (compilateur, dépendances
+     *                   runtime, StAX comprise).
+     * @throws IOException nommant les classes manquantes.
+     */
+    static void vérifierRéférencesStax(List<Path> jarsKotlin) throws IOException {
+        Set<String> servies = classesServies(jarsKotlin);
+        Set<String> manquantes = new java.util.TreeSet<>();
+        for (Path jar : jarsKotlin) {
+            for (String référence : AnalyseurReferences.classesRéférencées(jar)) {
+                if (référence.startsWith(PRÉFIXE_STAX) && !servies.contains(référence)) {
+                    manquantes.add(référence);
+                }
+            }
+        }
+        if (!manquantes.isEmpty()) {
+            throw new IOException("classes StAX (" + PRÉFIXE_STAX + "*) "
+                    + "référencées par l'ensemble du compilateur mais absentes du "
+                    + "composant : " + manquantes + " — la configuration "
+                    + "kotlinCompiler doit porter javax.xml.stream:stax-api "
+                    + "(correctif v0.2.14)");
+        }
+    }
+
+    /**
+     * Noms internes (sans {@code .class}) de toutes les classes portées par un
+     * ensemble de jars — la base de « ce que le composant sert ».
+     */
+    static Set<String> classesServies(List<Path> jars) throws IOException {
+        Set<String> noms = new java.util.TreeSet<>();
+        for (Path jar : jars) {
+            try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(
+                    jar.toFile())) {
+                zip.stream()
+                        .filter(e -> !e.isDirectory())
+                        .filter(e -> e.getName().endsWith(".class"))
+                        .forEach(e -> noms.add(e.getName().substring(0,
+                                e.getName().length() - ".class".length())));
+            }
+        }
+        return noms;
     }
 
     /**
@@ -677,14 +969,21 @@ public final class PackagerComposants {
      * <p>Doublons : deux jars qui portent le même chemin avec le même contenu ne
      * l'écrivent qu'une fois ; le même chemin avec des contenus différents échoue — un
      * composant dexé fusionné ne doit pas résoudre ses conflits de ressources au hasard
-     * de l'ordre des jars. EXCEPTION documentée : les métadonnées
+     * de l'ordre des jars. DEUX exceptions documentées : les métadonnées
      * {@code META-INF/*.kotlin_module} du composant kotlin-compiler — la distribution
      * Kotlin elle-même livre les mêmes modules dans plusieurs jars (kotlin-reflect
      * rebundle la désérialisation du compilateur : 11 chemins en conflit mesurés sur
      * l'ensemble 2.0.21/1.6.10), et le gagnant est le PREMIER jar de l'ordre passé
      * (l'embarquable avant ses dépendances transitives — même gagnant qu'un classpath
      * de bureau) ; ces cartes ne servent qu'à lire les métadonnées de classes, pas à
-     * l'exécution, et le risque d'une fusion silencieuse est nul ailleurs.</p>
+     * l'exécution, et le risque d'une fusion silencieuse est nul ailleurs. Et les
+     * NOTICES DE LICENCE ({@code META-INF/LICENSE*}, {@code META-INF/NOTICE*})
+     * divergentes entre jars StAX (constat v0.2.14 : aalto porte un Apache-2.0,
+     * stax2 un BSD 2-clauses) : la copie du premier jar reste au chemin canonique
+     * (même gagnant qu'un classpath de bureau) et chaque copie divergente est
+     * conservée sous {@code META-INF/licenses/<jar>/…} — une notice de licence ne
+     * doit JAMAIS être perdue à la fusion (distribution.md §7), et la refuser
+     * casserait la chaîne sans rien améliorer.</p>
      *
      * @param jarsSources jars dexés dans le même composant (l'ordre décide des
      *                    {@code .kotlin_module} en conflit).
@@ -712,6 +1011,31 @@ public final class PackagerComposants {
                             System.out.println("[avertissement] " + chemin
                                     + " en conflit — copie du premier jar conservée ("
                                     + jarSource.getFileName() + " ignoré)");
+                            continue;
+                        }
+                        if (estNoticeLicence(chemin)) {
+                            // Constat v0.2.14 (jars StAX du composant kotlin-compiler) :
+                            // aalto porte un META-INF/LICENSE Apache-2.0, stax2 un BSD
+                            // 2-clauses — contenus LÉGITIMEMENT divergents. La copie du
+                            // premier jar reste au chemin canonique (même gagnant qu'un
+                            // classpath de bureau) et chaque copie divergente vit sous
+                            // META-INF/licenses/<jar>/… : aucune notice n'est perdue,
+                            // aucune n'en écrase une autre en silence.
+                            String nomJar = jarSource.getFileName().toString();
+                            if (nomJar.endsWith(".jar")) {
+                                nomJar = nomJar.substring(0, nomJar.length() - 4);
+                            }
+                            String relocalisé = "META-INF/licenses/" + nomJar
+                                    + chemin.substring("META-INF".length());
+                            byte[] déjàVue = conservées.putIfAbsent(relocalisé, contenu);
+                            if (déjàVue != null
+                                    && !java.util.Arrays.equals(déjàVue, contenu)) {
+                                throw new IOException("notice de licence relocalisée "
+                                        + "en conflit : " + relocalisé);
+                            }
+                            System.out.println("[avertissement] " + chemin
+                                    + " en conflit — copie de " + nomJar
+                                    + " conservée sous " + relocalisé);
                             continue;
                         }
                         throw new IOException("ressource en conflit entre jars du composant : "
@@ -749,6 +1073,27 @@ public final class PackagerComposants {
             }
         }
         return true;
+    }
+
+    /**
+     * Indique si un chemin d'entrée est une NOTICE DE LICENCE à la racine de
+     * {@code META-INF} (LICENSE/NOTICE, .txt ou .md, casse indifférente) : ces
+     * fichiers divergent légitimement entre jars (chacun porte la licence de
+     * SON origine), leur conflit ne se refuse pas — chaque copie est conservée
+     * (voir {@link #ressourcesConservées}).
+     */
+    private static boolean estNoticeLicence(String chemin) {
+        if (!chemin.startsWith("META-INF/")) {
+            return false;
+        }
+        String nom = chemin.substring("META-INF/".length());
+        if (nom.contains("/")) {
+            return false; // sous-répertoire (maven/…) : jamais en conflit entre jars
+        }
+        return nom.equalsIgnoreCase("LICENSE") || nom.equalsIgnoreCase("LICENSE.TXT")
+                || nom.equalsIgnoreCase("LICENSE.MD") || nom.equalsIgnoreCase("NOTICE")
+                || nom.equalsIgnoreCase("NOTICE.TXT")
+                || nom.equalsIgnoreCase("NOTICE.MD");
     }
 
     /**

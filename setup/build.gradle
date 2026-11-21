@@ -7,7 +7,7 @@ plugins {
 }
 
 group = 'jo.forge'
-version = '0.2.13'
+version = '0.2.14'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -24,6 +24,16 @@ dependencies {
     // ECJ pour le test d'assemblage du jar API java.compiler (compat ART) :
     // la compilation de secours d'ECJ elle-même est testée avec le vrai jar.
     testImplementation 'org.eclipse.jdt:ecj:3.36.0'
+
+    // StAX pour le test « StAX sur ART simulé » (correctif v0.2.14) : le test
+    // charge ces jars dans un classloader qui CACHE javax.xml.stream du JDK —
+    // c'est le maillon que la simulation ART du moteur (qui ne feinte que
+    // java.vm.name, compilateur servi par le classpath complet) ne pouvait
+    // pas attraper. Mêmes coordonnées que la configuration kotlinCompiler du
+    // moteur : ce qui est testé est ce qui est distribué.
+    testImplementation 'javax.xml.stream:stax-api:1.0-2'
+    testImplementation 'com.fasterxml:aalto-xml:1.3.0'
+    testImplementation 'org.codehaus.woodstox:stax2-api:4.2.1'
 
     testImplementation platform('org.junit:junit-bom:5.11.4')
     testImplementation 'org.junit.jupiter:junit-jupiter'

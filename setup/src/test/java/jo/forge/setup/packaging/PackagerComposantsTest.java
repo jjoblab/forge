@@ -223,6 +223,35 @@ class PackagerComposantsTest {
     }
 
     @Test
+    void licencesDivergentesConservéesSousLeurCheminDeJar() throws IOException {
+        // Constat v0.2.14 (jars StAX du composant kotlin-compiler) : aalto porte
+        // un META-INF/LICENSE Apache-2.0 et stax2 un BSD 2-clauses — contenus
+        // LÉGITIMEMENT divergents. Refuser la fusion ne protège rien et casse
+        // la chaîne ; la copie du premier jar reste au chemin canonique et
+        // chaque copie divergente vit sous META-INF/licenses/<jar>/… : aucune
+        // notice de licence n'est perdue, aucune n'en écrase une autre.
+        Path aalto = jarNommé("aalto-xml-1.3.0.jar",
+                Map.of("META-INF/LICENSE", "Apache-2.0 (aalto)"));
+        Path stax2 = jarNommé("stax2-api-4.2.1.jar",
+                Map.of("META-INF/LICENSE", "BSD 2-clauses (stax2)"));
+        Path dex = temporaire.resolve("classes.dex");
+        Files.write(dex, "dex factice".getBytes(StandardCharsets.UTF_8));
+        Path archive = temporaire.resolve("kotlin-compiler-0.2.14.zip");
+
+        PackagerComposants.emballerJarDexe(List.of(dex), archive,
+                "lib/kotlin-compiler.jar", List.of(aalto, stax2));
+
+        try (ZipFile jar = new ZipFile(
+                jarInterne(archive, "lib/kotlin-compiler.jar").toFile())) {
+            assertEquals("Apache-2.0 (aalto)", texte(jar, "META-INF/LICENSE"),
+                    "la copie du PREMIER jar gagne le chemin canonique");
+            assertEquals("BSD 2-clauses (stax2)",
+                    texte(jar, "META-INF/licenses/stax2-api-4.2.1/LICENSE"),
+                    "la copie divergente est conservée sous son chemin de jar");
+        }
+    }
+
+    @Test
     void cheminsDeDestinationDesComposants() {
         assertEquals("engine.jar", PackagerComposants.cheminDexe("engine-core"));
         assertEquals("lib/java-compiler.jar",
@@ -443,7 +472,15 @@ class PackagerComposantsTest {
      * finit par une barre oblique — contenu ignoré).
      */
     private Path jarDe(Map<String, String> entrées) throws IOException {
-        Path jar = temporaire.resolve("source-" + compteur++ + ".jar");
+        return jarNommé("source-" + compteur++ + ".jar", entrées);
+    }
+
+    /**
+     * Écrit un jar de test NOMMÉ (le nom compte : les notices de licence
+     * divergentes sont relocalisées sous {@code META-INF/licenses/<jar>/…}).
+     */
+    private Path jarNommé(String nom, Map<String, String> entrées) throws IOException {
+        Path jar = temporaire.resolve(nom);
         try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(jar))) {
             for (Map.Entry<String, String> entrée : entrées.entrySet()) {
                 zip.putNextEntry(new ZipEntry(entrée.getKey()));
