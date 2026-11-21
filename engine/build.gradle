@@ -155,11 +155,11 @@ tasks.register('composants', JavaExec) {
     def r8Jar = configurations.runtimeClasspath.find { it.name.startsWith('r8-') }
     def ecjJar = configurations.runtimeClasspath.find { it.name.startsWith('ecj-') }
     def apksigJar = configurations.runtimeClasspath.find { it.name.startsWith('apksig-') }
-    // L'ENSEMBLE résolu (compilateur + dépendances runtime de son POM), trié par
-    // nom pour un assemblage déterministe — l'embarquable seul meurt à l'exécution
-    // (coroutines) et la stdlib doit vivre dans le même composant dexé.
-    def jarsKotlin = configurations.kotlinCompiler.files
-            .findAll { it.isFile() }.sort { a, b -> a.name <=> b.name }
+    // NOTE : la configuration kotlinCompiler (compilateur + dépendances runtime de
+    // son POM, ~62 Mo) est résolue À L'EXÉCUTION de la tâche (doFirst ci-dessous),
+    // JAMAIS à la configuration — une résolution impatiente téléchargeait ces jars
+    // pour CHAQUE invocation Gradle (test, coquille, APK…) et un échec réseau à ce
+    // moment cassait TOUT build ; ici, seuls les --composants le paient.
 
     classpath = project(':setup').sourceSets.main.runtimeClasspath
     mainClass = 'jo.forge.setup.packaging.PackagerComposants'
@@ -176,8 +176,7 @@ tasks.register('composants', JavaExec) {
                      '--compat-art',
                      project(':setup').file('src/compatArt/java').absolutePath,
                      '--dexeur', r8Jar?.absolutePath,
-                     '--signeur', apksigJar?.absolutePath,
-                     '--kotlin'] + jarsKotlin*.absolutePath
+                     '--signeur', apksigJar?.absolutePath]
     // Composant aapt2-<abi> : publié depuis v0.2.8 (prébuilt Android de
     // ReVanced/aapt2, voir ci-dessus). FORGE_SANS_AAPT2 omet explicitement le
     // composant (garde juridique docs/distribution.md §7) ; sans FORGE_AAPT2,
@@ -206,4 +205,18 @@ tasks.register('composants', JavaExec) {
         arguments.addAll(['--version-aapt2', versionAapt2])
     }
     args = arguments.findAll { it != null }
+    // L'ENSEMBLE Kotlin (compilateur + dépendances runtime de son POM) est résolu
+    // ICI, à l'exécution : trié par nom pour un assemblage déterministe —
+    // l'embarquable seul meurt à l'exécution (NoClassDefFoundError coroutines,
+    // constaté) et la stdlib doit vivre dans le même composant dexé.
+    doFirst {
+        def jarsKotlin = configurations.kotlinCompiler.files
+                .findAll { it.isFile() }.sort { a, b -> a.name <=> b.name }
+        if (jarsKotlin.isEmpty()) {
+            throw new GradleException("configuration kotlinCompiler vide — "
+                    + "org.jetbrains.kotlin:kotlin-compiler-embeddable inrésolvable")
+        }
+        args('--kotlin')
+        jarsKotlin.each { jar -> args(jar.absolutePath) }
+    }
 }

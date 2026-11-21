@@ -78,6 +78,32 @@ jobs:
       - name: Tests JVM (api, json, client, setup, engine)
         run: ./gradlew --no-daemon :api:test :json:test :client:test :setup:test :engine:test --stacktrace
 
+      - name: Résumé des tests échoués (visible sans accès aux journaux)
+        # Les journaux bruts exigent d'être connecté : ce résumé court (noms des
+        # tests en échec + premières lignes d'exception, plafonnées) reste lisible
+        # dans l'extrait de step affiché publiquement — le run v0.2.9 du
+        # 2026-11-21 a échoué sans que l'échec soit identifiable autrement.
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import glob
+          import xml.etree.ElementTree as ET
+          échecs = []
+          for rapport in glob.glob('*/build/test-results/test/*.xml'):
+              try:
+                  arbre = ET.parse(rapport)
+              except ET.ParseError:
+                  continue
+              for cas in arbre.iter('testcase'):
+                  for échec in list(cas.iter('failure')) + list(cas.iter('error')):
+                      nom = f"{cas.get('classname', '?')}.{cas.get('name', '?')}"
+                      texte = (échec.get('message') or échec.text or '').strip()[:400]
+                      échecs.append(f"ÉCHEC {nom}\n  {texte}")
+          print('\n'.join(échecs) if échecs else
+                "(aucun rapport de test en échec — l'échec est ailleurs : "
+                "résolution de dépendances, compilation…)")
+          PY
+
       - name: Tests de la coquille (chargement du moteur installé)
         run: ./gradlew --no-daemon :app:testDebugUnitTest --stacktrace
 
