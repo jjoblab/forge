@@ -28,18 +28,45 @@ import java.util.List;
  * avec un message actionnable (et NON un NoClassDefFoundError au milieu d'un
  * build).</p>
  *
- * <p><b>État de la validation</b> : la compilation Kotlin est VALIDÉE sur JVM
- * (tests {@code KotlinCompilerTest} et {@code BuildKotlinTest}). Sur ART, le
- * moteur de référence a dû instrumenter le compilateur en profondeur (passes
- * bytecode, shims, contournements JIT — REF-133/135) : notre propre audit ART
- * reste À MENER, constat consigné dans {@code docs/limites-et-suite.md}. Le
- * composant est publié marqué « expérimental ».</p>
+ * <p><b>Audit ART (v0.2.11)</b> : le premier {@code compileKotlin} sur l'appareil
+ * (rapport v0.2.10, projet kotlin-simple) mourait par
+ * {@code IllegalStateException: Resource not found: …/PathUtil.class} — le
+ * compilateur s'auto-localise par {@code ClassLoader.getResource("…class")},
+ * or le jar dexé ne porte PLUS d'entrées {@code .class} (remplacées par les
+ * dex). Le bytecode 2.0.21 lu montre DEUX appels distincts de cette
+ * auto-localisation, tous deux évitables par arguments publics, SANS la
+ * moindre passe bytecode (divergence assumée d'avec le moteur de référence,
+ * REF-133, qui recompile le compilateur : notre jar dexé — vérifié sur
+ * l'assemblage — CONSERVE {@code META-INF/extensions/compiler.xml}, les
+ * {@code .kotlin_builtins} et les {@code .kotlin_module}, lus par
+ * {@code java.util.zip.ZipFile}, disponible sur ART) :</p>
+ * <ol>
+ *   <li>{@code computeKotlinPaths} : {@code -kotlin-home <répertoire existant>}
+ *       court-circuite la recherche par ressource (le répertoire doit exister —
+ *       sinon « Kotlin home does not exist or is not a directory ») ;</li>
+ *   <li>le démarrage de l'environnement ({@code KotlinCoreEnvironment}) :
+ *       {@code -Xintellij-plugin-root <kotlin-compiler.jar>} désigne le jar réel
+ *       qui porte la configuration des points d'extension.</li>
+ * </ol>
  *
- * <p><b>Politique d'options</b> (miroir de celle d'ECJ) : avertissements coupés
- * ({@code -nowarn}), cible JVM alignée sur {@code javaRelease} du module,
- * {@code -no-reflect} (le module qui veut kotlin-reflect le déclare en dépendance
- * Maven). La bibliothèque standard est laissée au compilateur (l'embarquable la
- * porte) ; à l'exécution, elle passe par le résolveur Maven du module.</p>
+ * <p><b>Politique d'options</b> : avertissements coupés ({@code -nowarn}), cible
+ * JVM alignée sur {@code javaRelease} du module, {@code -no-reflect} (le module
+ * qui veut kotlin-reflect le déclare en dépendance Maven), {@code -no-stdlib}
+ * TOUJOURS — la bibliothèque standard vient du classpath (jar de la stdlib
+ * localisé sur le classpath du moteur en JVM de test, dépendance Maven du
+ * module sur l'appareil : le chargeur d'ART ne sert pas les entrées
+ * {@code .class} d'un jar dexé) ; son absence est un AVERTISSEMENT actionnable
+ * (le Kotlin builtins-only compile, l'exécution exigera la stdlib) — et
+ * {@code -no-jdk} quand la bibliothèque de plate-forme est fournie
+ * ({@code android.jar} au classpath, ART compris : il n'y a pas de JDK hôte à
+ * emprunter).</p>
+ *
+ * <p><b>Compilation jointe</b> (v0.2.11) : les sources {@code .java} du module
+ * accompagnent les {@code .kt} en arguments libres — kotlinc les PARSE pour la
+ * résolution de symboles (le Kotlin peut référencer le Java du même module, le
+ * {@code R.java} d'une application Android compris) mais n'émets DES classes
+ * que pour le Kotlin ; ECJ compile ensuite le Java CONTRE ces classes. Motif du
+ * moteur de référence (KotlinJvmCompiler.compile).</p>
  */
 public final class KotlinCompiler {
 
@@ -59,6 +86,12 @@ public final class KotlinCompiler {
 
     /** Suffixe des sources Kotlin. */
     private static final String SUFFIXE_KOTLIN = ".kt";
+
+    /** Suffixe des sources Java (compilation jointe : parsées, non émises). */
+    private static final String SUFFIXE_JAVA = ".java";
+
+    /** Propriété publique du compilateur : garder l'environnement entre builds. */
+    private static final String PROPRIÉTÉ_KEEPALIVE = "kotlin.environment.keepalive";
 
     private KotlinCompiler() {
     }
@@ -90,29 +123,53 @@ public final class KotlinCompiler {
     }
 
     /**
+     * Localise le jar du composant kotlin-compiler installé dans le moteur
+     * (appareil : {@code components/kotlin-compiler/lib/kotlin-compiler.jar}),
+     * ou {@code null} s'il n'y est pas (JVM de développement : le compilateur
+     * vient du classpath de test et n'a besoin ni de maison ni de racine).
+     *
+     * @param engineHome racine du moteur installé (peut être null).
+     * @return le chemin du jar dexé, ou null.
+     */
+    public static Path jarComposant(Path engineHome) {
+        if (engineHome == null) {
+            return null;
+        }
+        Path jar = engineHome.resolve("components").resolve("kotlin-compiler")
+                .resolve("lib").resolve("kotlin-compiler.jar");
+        return Files.isRegularFile(jar) ? jar : null;
+    }
+
+    /**
      * Compile des sources Kotlin vers un répertoire de classes.
      *
-     * @param sources    fichiers {@code .kt} à compiler (au moins un).
-     * @param classpath  entrées du classpath de compilation (jars et répertoires,
-     *                   dépendances de projet déjà compilées comprises).
-     * @param plateforme bibliothèque de plate-forme ({@code android.jar}) : ajoutée
-     *                   au classpath — la validation ART reste à mener (voir la
-     *                   javadoc de classe).
-     * @param outputDir  répertoire de sortie des {@code .class} (créé s'il manque).
-     * @param jvmCible   cible JVM ({@code -jvm-target}, ex. 17).
-     * @param sink       puits des diagnostics structurés.
+     * @param sources        fichiers {@code .kt} à compiler (au moins un).
+     * @param sourcesJava    fichiers {@code .java} du module (compilation jointe :
+     *                       parsés pour la résolution de symboles, jamais émis).
+     * @param classpath      entrées du classpath de compilation (jars et
+     *                       répertoires, dépendances de projet comprises).
+     * @param plateforme     bibliothèque de plate-forme ({@code android.jar}) :
+     *                       ajoutée au classpath, signalée par {@code -no-jdk}.
+     * @param jarCompilateur jar du composant kotlin-compiler (maison Kotlin et
+     *                       racine de configuration IntelliJ sur l'appareil), ou
+     *                       null sur la JVM de développement.
+     * @param outputDir      répertoire de sortie des {@code .class} (créé s'il manque).
+     * @param jvmCible       cible JVM ({@code -jvm-target}, ex. 17).
+     * @param sink           puits des diagnostics structurés.
      * @return le résultat : succès, lignes de console, nombre d'erreurs.
      * @throws IOException si la préparation du répertoire de sortie échoue ou que
      *                     le compilateur est absent (message actionnable).
      */
-    public static CompileResult compiler(List<Path> sources, List<Path> classpath,
-                                         List<Path> plateforme, Path outputDir,
+    public static CompileResult compiler(List<Path> sources, List<Path> sourcesJava,
+                                         List<Path> classpath, List<Path> plateforme,
+                                         Path jarCompilateur, Path outputDir,
                                          int jvmCible, DiagnosticSink sink)
             throws IOException {
         Files.createDirectories(outputDir);
         if (sources.isEmpty()) {
             return new CompileResult(true, List.of("aucune source Kotlin à compiler"), 0);
         }
+        environnementPersistant();
         Class<?> compilateur = classeCompilateur();
         if (compilateur == null) {
             String message = "compilateur Kotlin absent du moteur — installez le "
@@ -123,22 +180,50 @@ public final class KotlinCompiler {
         }
 
         List<String> argumentsCli = new ArrayList<>(List.of(
-                "-nowarn", "-no-reflect",
+                "-nowarn", "-no-reflect", "-no-stdlib",
                 "-jvm-target", Integer.toString(jvmCible),
                 "-d", outputDir.toString()));
         List<Path> cheminComplet = new ArrayList<>(classpath);
         cheminComplet.addAll(plateforme);
-        // Bibliothèque standard : le compilateur embarqué ne la porte PAS — il la
-        // cherche dans un « Kotlin home » inexistant (avertissements) ou exige
-        // -no-stdlib. On la localise SUR NOTRE CLASSPATH (jar de la stdlib à côté
-        // du compilateur, composant ou classpath de test) et on la pose
-        // explicitement : symboles résolus, aucun avertissement, aucun répertoire
-        // maison à deviner. Introuvable (classloader muet) : -no-stdlib quand
-        // même, le module devra porter sa stdlib en dépendance Maven.
+        // Bibliothèque standard : elle vient TOUJOURS du classpath, jamais d'un
+        // « Kotlin home » à deviner (c'est la recherche automatique qui tue le
+        // compilateur sur ART). Le jar qui la porte (classpath de test, JVM) est
+        // posé explicitement ; sur l'appareil, le module porte sa stdlib en
+        // dépendance Maven — le chargeur d'ART ne sert pas les entrées .class
+        // d'un jar dexé.
         Path stdlib = jarDeLaClasse("kotlin.jvm.internal.Intrinsics");
         if (stdlib != null) {
             cheminComplet.add(stdlib);
-            argumentsCli.add("-no-stdlib");
+        }
+        String stdlibAbsente = problèmeStdlib(stdlib, cheminComplet);
+        if (stdlibAbsente != null) {
+            // AVERTISSEMENT, pas un échec : du Kotlin qui n'utilise que les
+            // builtins (Int, String, Any…) compile sans stdlib — mais TOUTE
+            // classe Kotlin référencera kotlin.jvm.internal.Intrinsics à
+            // l'EXÉCUTION : le module doit porter sa stdlib pour tourner.
+            sink.report(new Diagnostic(
+                    jo.forge.api.BuildEvent.Severity.WARNING, "", 0, 0, null,
+                    stdlibAbsente, TOOL));
+        }
+        // Plate-forme : fournie (android.jar, ART compris) → le compilateur ne
+        // cherchera pas de JDK hôte qui n'existe pas (motif du moteur de
+        // référence : -no-jdk sur ART, la plate-forme est déjà au classpath).
+        if (EcjCompiler.surArt() || !plateforme.isEmpty()) {
+            argumentsCli.add("-no-jdk");
+        }
+        // Maison Kotlin et racine de configuration IntelliJ (correctif v0.2.11,
+        // audit ART en tête de classe) : -kotlin-home EXIGE un répertoire
+        // existant — la racine du composant (parent de lib/) l'est toujours
+        // quand le jar existe.
+        Path maisonKotlin = null;
+        if (jarCompilateur != null && jarCompilateur.getParent() != null
+                && jarCompilateur.getParent().getParent() != null
+                && Files.isDirectory(jarCompilateur.getParent().getParent())) {
+            maisonKotlin = jarCompilateur.getParent().getParent();
+            argumentsCli.add("-kotlin-home");
+            argumentsCli.add(maisonKotlin.toString());
+            argumentsCli.add("-Xintellij-plugin-root");
+            argumentsCli.add(jarCompilateur.toString());
         }
         if (!cheminComplet.isEmpty()) {
             argumentsCli.add("-classpath");
@@ -146,6 +231,7 @@ public final class KotlinCompiler {
                     cheminComplet.stream().map(Path::toString).toList()));
         }
         sources.forEach(source -> argumentsCli.add(source.toString()));
+        sourcesJava.forEach(source -> argumentsCli.add(source.toString()));
 
         Collecteur collecteur = new Collecteur(sink);
         try {
@@ -175,6 +261,10 @@ public final class KotlinCompiler {
                     argumentsCompilateur);
             boolean succes = code != null && "OK".equals(((Enum<?>) code).name());
             List<String> console = new ArrayList<>();
+            if (maisonKotlin != null) {
+                console.add("maison Kotlin : " + maisonKotlin
+                        + " ; configuration IntelliJ : " + jarCompilateur.getFileName());
+            }
             console.add("kotlinc " + argumentsCli.size() + " argument(s), sortie : "
                     + ((Enum<?>) code).name());
             return new CompileResult(succes, console, collecteur.erreurs);
@@ -219,6 +309,57 @@ public final class KotlinCompiler {
     }
 
     /**
+     * Indique si un fichier est une source Java (compilation jointe).
+     *
+     * @param chemin fichier à tester.
+     * @return {@code true} pour un {@code .java}.
+     */
+    public static boolean estSourceJava(Path chemin) {
+        return chemin.getFileName().toString().endsWith(SUFFIXE_JAVA);
+    }
+
+    /**
+     * Message d'absence de la bibliothèque standard Kotlin au classpath, ou
+     * {@code null} si elle y est : soit le jar du moteur la porte (JVM de test,
+     * localisé par {@link #jarDeLaClasse}), soit le classpath de compilation
+     * contient un jar {@code kotlin-stdlib*.jar} (dépendance Maven du module,
+     * seul chemin sur l'appareil). Testable indépendamment du classloader.
+     *
+     * @param stdlibMoteur jar de la stdlib localisé sur le classpath du moteur.
+     * @param classpath    classpath de compilation complet (plate-forme comprise).
+     * @return le message d'erreur, ou null si la stdlib est présente.
+     */
+    static String problèmeStdlib(Path stdlibMoteur, List<Path> classpath) {
+        if (stdlibMoteur != null) {
+            return null;
+        }
+        for (Path entrée : classpath) {
+            String nom = entrée.getFileName().toString();
+            if (nom.endsWith(".jar") && nom.startsWith("kotlin-stdlib")) {
+                return null;
+            }
+        }
+        return "bibliothèque standard Kotlin absente du classpath — déclarez la "
+                + "dépendance Maven org.jetbrains.kotlin:kotlin-stdlib pour ce "
+                + "module dans forge.json (le compilateur du moteur ne fournit "
+                + "pas la stdlib)";
+    }
+
+    /**
+     * Demande au compilateur de garder son environnement applicatif entre les
+     * compilations : {@code kotlin.environment.keepalive}, propriété publique
+     * lue à la PREMIÈRE création de l'environnement — sans elle, chaque build
+     * re-dresse l'environnement et relit tous les jars du classpath (motif du
+     * moteur de référence, KotlinEnvironmentKeepAlive). Idempotente, ne remplace
+     * jamais un choix explicite de l'hôte.
+     */
+    private static void environnementPersistant() {
+        if (System.getProperty(PROPRIÉTÉ_KEEPALIVE) == null) {
+            System.setProperty(PROPRIÉTÉ_KEEPALIVE, "true");
+        }
+    }
+
+    /**
      * Localise le jar qui porte une classe, sur le classpath du moteur (réflexion
      * inverse : la ressource sert son archive). Utilisé pour poser la bibliothèque
      * standard Kotlin au classpath de compilation.
@@ -238,9 +379,18 @@ public final class KotlinCompiler {
             if (séparateur <= 0) {
                 return null;
             }
+            String brut = chemin.substring(0, séparateur);
+            // Le chemin d'une URL jar EMBARQUE le schéma interne (« file:/… ») :
+            // le retirer, sinon Path.of fabrique un chemin inexistant. Le bug —
+            // concret, trouvé par la sonde du worker de test v0.2.11 — faisait
+            // renvoyer null PARTOUT, même sur la JVM : la stdlib n'était jamais
+            // posée au classpath de compilation, seuls les builtins (chargés du
+            // chargeur, pas d'un « home ») permettaient de compiler.
+            if (brut.startsWith("file:")) {
+                brut = brut.substring("file:".length());
+            }
             Path jar = Path.of(java.net.URLDecoder.decode(
-                    chemin.substring(0, séparateur),
-                    java.nio.charset.StandardCharsets.UTF_8));
+                    brut, java.nio.charset.StandardCharsets.UTF_8));
             return java.nio.file.Files.isRegularFile(jar) ? jar : null;
         } catch (Exception introuvable) {
             return null;

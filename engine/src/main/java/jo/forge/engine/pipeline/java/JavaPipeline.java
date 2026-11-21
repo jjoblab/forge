@@ -135,6 +135,10 @@ public final class JavaPipeline {
                 : List.of();
 
         List<Task> tasks = new ArrayList<>();
+        // Jar du composant kotlin-compiler (appareil) : maison Kotlin et racine
+        // de configuration IntelliJ du compilateur — null sur la JVM de
+        // développement (classpath de test, aucun besoin).
+        Path jarKotlinCompilateur = KotlinCompiler.jarComposant(engineHome);
         for (ForgeModule module : model.modules()) {
             if (module.type() != ModuleType.JAVA_LIBRARY) {
                 tasks.addAll(jo.forge.engine.pipeline.android.AndroidPipeline
@@ -159,13 +163,15 @@ public final class JavaPipeline {
                     model.repositories(), horsLigne);
             tasks.add(resolve);
             if (module.estKotlin()) {
-                // Module Kotlin (v0.2.9) : le Kotlin compile d'abord, le Java du
-                // module compile ensuite CONTRE ses classes (même répertoire de
-                // sortie — le jar n'y voit qu'un module). Un module sans source
-                // .kt passe sa compileKotlin sans rien faire.
+                // Module Kotlin (v0.2.9) : le Kotlin compile d'abord — en
+                // compilation JOINTE depuis v0.2.11 (les .java du module sont
+                // parsés par kotlinc pour la résolution de symboles) — le Java
+                // du module compile ensuite CONTRE ses classes (même répertoire
+                // de sortie — le jar n'y voit qu'un module). Un module sans
+                // source .kt passe sa compileKotlin sans rien faire.
                 tasks.add(new KotlinCompilerTask(module, layout, dependances,
                         new ArrayList<>(classpath), plateformeJava,
-                        resolve.cheminClasspath()));
+                        resolve.cheminClasspath(), List.of(), jarKotlinCompilateur));
                 List<String> dependancesJava = new ArrayList<>(dependances);
                 dependancesJava.add(module.kotlinCompileTaskName());
                 List<Path> classpathJava = new ArrayList<>(classpath);

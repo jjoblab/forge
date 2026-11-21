@@ -17,6 +17,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
@@ -31,6 +32,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <p>C'est le test d'intégration du correctif : détection ART réelle (propriété
  * système), localisation réelle du composant, compilation réelle contre
  * android.jar réel (tranches lambda embarquées comprises), jusqu'aux jars.</p>
+ *
+ * <p>v0.2.11 — même simulation pour KOTLIN : le composant kotlin-compiler est
+ * posé dans la maison (jar réel du classpath de test, comme l'installateur le
+ * lie) et le premier compileKotlin — celui qui mourait sur l'appareil par
+ * {@code Resource not found: …/PathUtil.class} (rapport v0.2.10) — doit passer
+ * par la maison et la racine de configuration explicites.</p>
  */
 class SimulationArtTest {
 
@@ -134,6 +141,98 @@ class SimulationArtTest {
             }
             if (ancienJar != null) {
                 System.setProperty("forge.androidJar", ancienJar);
+            }
+        }
+    }
+
+    @Test
+    void kotlinCompileSurArtAvecLeComposantInstallé() throws Exception {
+        Path androidJar = OutilsAndroidDeTest.androidJar();
+        assumeTrue(androidJar != null,
+                "android.jar réel indisponible — test ignoré");
+        assumeTrue(KotlinCompiler.disponible(),
+                "kotlin-compiler-embeddable requis sur le classpath de test");
+
+        // Le projet de l'appareil : kotlin-simple, module Kotlin mixte.
+        Projets.fichier(temporaire, "forge.json", """
+                { "modelVersion": 1,
+                  "repositories": [],
+                  "modules": [
+                    { "name": "kalc", "type": "java-library", "language": "kotlin" }
+                  ] }
+                """);
+        Projets.fichier(temporaire, "kalc/src/main/kotlin/demo/Calculs.kt", """
+                package demo
+
+                object Calculs {
+                    fun doubler(x: Int): Int = x * 2
+
+                    fun saluer(nom: String): String = "Salut, $nom !"
+                }
+                """);
+        Projets.fichier(temporaire, "kalc/src/main/java/demo/Principal.java", """
+                package demo;
+
+                public final class Principal {
+                    private Principal() { }
+
+                    public static void main(String[] args) {
+                        System.out.println(Calculs.INSTANCE.saluer("Forge"));
+                        System.out.println("doubled=" + Calculs.INSTANCE.doubler(21));
+                    }
+                }
+                """);
+
+        // Le moteur installé sur l'appareil : platform-34 ET le composant
+        // kotlin-compiler (jar réel — copie de l'embarqué du classpath de test,
+        // l'installateur lie le dexé de la même façon).
+        Path maison = temporaire.resolve("engines/0.2.11");
+        Files.createDirectories(maison.resolve("components/platform-34"));
+        Files.copy(androidJar,
+                maison.resolve("components/platform-34/android.jar"));
+        Path jarCompilateur = KotlinCompiler.jarDeLaClasse(
+                "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler");
+        assertNotNull(jarCompilateur,
+                "le jar du compilateur doit être localisable sur le classpath de test");
+        Files.createDirectories(maison.resolve("components/kotlin-compiler/lib"));
+        Files.copy(jarCompilateur,
+                maison.resolve("components/kotlin-compiler/lib/kotlin-compiler.jar"));
+
+        // Le moteur croit être sur ART : la chaîne compile contre android.jar
+        // avec -no-jdk, la maison et la racine de configuration explicites.
+        String ancienNom = System.getProperty("java.vm.name");
+        System.setProperty("java.vm.name", "Dalvik");
+        try {
+            ForgeModel modèle = ModelCodec.read(temporaire);
+            List<Task> tâches = JavaPipeline.tasksFor(modèle, temporaire,
+                    false, "arm64-v8a", maison);
+            TaskGraph graphe = TaskGraph.of(tâches);
+            ProjectLayout disposition = new ProjectLayout(temporaire);
+            FingerprintStore magasin = new FingerprintStore(disposition.stateDir(),
+                    temporaire, avertissement -> { });
+            Enregisteur événements = new Enregisteur();
+            TaskExecutor exécuteur = new TaskExecutor(graphe, événements,
+                    new jo.forge.engine.tasks.CancellationFlag(), magasin, 2,
+                    temporaire);
+            TaskExecutor.BuildResult résultat = exécuteur.execute();
+
+            assertTrue(résultat.success(), "le build Kotlin doit réussir sur "
+                    + "(simulé) ART — journal : " + événements.journalErreur
+                    + " diagnostics : " + événements.diagnostics
+                    + " états : " + événements.états);
+            assertTrue(Files.isRegularFile(temporaire.resolve(
+                            "build/kalc/classes/demo/Calculs.class")),
+                    "la classe Kotlin est émise");
+            assertTrue(Files.isRegularFile(temporaire.resolve(
+                            "build/kalc/classes/demo/Principal.class")),
+                    "la classe Java suit (ECJ contre les classes Kotlin)");
+            assertTrue(Files.isRegularFile(temporaire.resolve("build/kalc/libs/kalc.jar")),
+                    "le jar sort — arbre : " + arbre(temporaire));
+        } finally {
+            if (ancienNom != null) {
+                System.setProperty("java.vm.name", ancienNom);
+            } else {
+                System.clearProperty("java.vm.name");
             }
         }
     }

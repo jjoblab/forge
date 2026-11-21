@@ -20,6 +20,8 @@ import java.util.stream.Collectors;
 import java.util.zip.ZipFile;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
@@ -30,6 +32,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * complet MIXTE — le Java du module compile CONTRE les classes Kotlin — avec
  * exécution réelle du résultat, et diagnostic structuré d'une erreur de
  * compilation Kotlin.
+ *
+ * <p>v0.2.11 : compilation JOINTE (le Kotlin voit le Java du même module),
+ * maison Kotlin + racine de configuration IntelliJ explicites (correctif ART),
+ * et message actionnable quand la stdlib manque au classpath.</p>
  *
  * <p>Le compilateur Kotlin vient du classpath de TEST (kotlin-compiler-embeddable) ;
  * sur l'appareil il vient du composant {@code kotlin-compiler} installé. Sans lui,
@@ -142,6 +148,124 @@ class KotlinPipelineTest {
 
         TaskExecutor.BuildResult résultat = exécuter(new Enregistreur());
         assertTrue(résultat.success(), "build sans .kt : " + résultat);
+    }
+
+    @Test
+    void compilationJointeLeKotlinVoitLeJavaDuModule() throws Exception {
+        assumeTrue(KotlinCompiler.disponible(),
+                "kotlin-compiler-embeddable requis sur le classpath de test");
+        // Le Kotlin référencE le Java du MÊME module (l'inverse du test précédent)
+        // — impossible avant v0.2.11 : kotlinc ne voyait que les .kt.
+        Projets.fichier(temporaire, "forge.json", """
+                { "modelVersion": 1,
+                  "repositories": [],
+                  "modules": [
+                    { "name": "kalc", "type": "java-library", "language": "kotlin" }
+                  ] }
+                """);
+        Projets.fichier(temporaire, "kalc/src/main/java/demo/Devise.java", """
+                package demo;
+
+                public enum Devise {
+                    EURO("\u20ac"),
+                    DOLLAR("$");
+
+                    private final String symbole;
+
+                    Devise(String symbole) {
+                        this.symbole = symbole;
+                    }
+
+                    public String symbole() {
+                        return symbole;
+                    }
+                }
+                """);
+        Projets.fichier(temporaire, "kalc/src/main/kotlin/demo/Calculs.kt", """
+                package demo
+
+                object Calculs {
+                    fun prixLibellé(montant: Int, devise: Devise): String =
+                            "$montant${devise.symbole()}"
+                }
+                """);
+        Projets.fichier(temporaire, "kalc/src/main/java/demo/Principal.java", """
+                package demo;
+
+                public final class Principal {
+                    private Principal() { }
+
+                    public static void main(String[] args) {
+                        System.out.println(Calculs.INSTANCE.prixLibellé(42, Devise.EURO));
+                    }
+                }
+                """);
+
+        Enregistreur événements = new Enregistreur();
+        TaskExecutor.BuildResult résultat = exécuter(événements);
+        assertTrue(résultat.success(), "la compilation jointe doit réussir : " + résultat
+                + " — diagnostics : " + événements.diagnostics.stream()
+                .map(jo.forge.engine.diag.Diagnostic::toLogLine).toList());
+
+        // Le Java n'est JAMAIS émis par kotlinc : Devise.class vient d'ECJ, après.
+        Path classes = temporaire.resolve("build/kalc/classes");
+        assertTrue(Files.isRegularFile(classes.resolve("demo/Calculs.class"))
+                        && Files.isRegularFile(classes.resolve("demo/Devise.class"))
+                        && Files.isRegularFile(classes.resolve("demo/Principal.class")),
+                "les trois classes existent (Kotlin émise par kotlinc, Java par ECJ)");
+
+        String sortie = exécuterJava(classes, "demo.Principal");
+        assertTrue(sortie.contains("42\u20ac"),
+                "le Kotlin a bien résolu le Java du même module : " + sortie);
+    }
+
+    @Test
+    void maisonKotlinExpliciteDuComposantNeCassePasLaCompilation() throws Exception {
+        assumeTrue(KotlinCompiler.disponible(),
+                "kotlin-compiler-embeddable requis sur le classpath de test");
+        projetKotlin();
+        // Le composant kotlin-compiler tel que l'installateur le pose sur
+        // l'appareil : components/kotlin-compiler/lib/kotlin-compiler.jar (ici la
+        // copie du jar embarqué du classpath de test — les arguments -kotlin-home
+        // et -Xintellij-plugin-root sont les mêmes, correctif v0.2.11).
+        Path jarEmbarqué = KotlinCompiler.jarDeLaClasse(
+                "org.jetbrains.kotlin.cli.jvm.K2JVMCompiler");
+        assertNotNull(jarEmbarqué,
+                "le jar du compilateur doit être localisable sur le classpath de test");
+        Path maison = temporaire.resolve("engines/0.2.11");
+        Files.createDirectories(maison.resolve("components/kotlin-compiler/lib"));
+        Files.copy(jarEmbarqué,
+                maison.resolve("components/kotlin-compiler/lib/kotlin-compiler.jar"));
+
+        ForgeModel modèle = ModelCodec.read(temporaire);
+        List<Task> tâches = JavaPipeline.tasksFor(modèle, temporaire,
+                false, "arm64-v8a", maison);
+        TaskGraph graphe = TaskGraph.of(tâches);
+        ProjectLayout disposition = new ProjectLayout(temporaire);
+        FingerprintStore magasin = new FingerprintStore(disposition.stateDir(),
+                temporaire, avertissement -> { });
+        TaskExecutor exécuteur = new TaskExecutor(graphe, new Enregistreur(),
+                new jo.forge.engine.tasks.CancellationFlag(), magasin, 2, temporaire);
+        assertTrue(exécuteur.execute().success(),
+                "le build doit réussir avec la maison et la racine explicites");
+        assertTrue(Files.isRegularFile(temporaire.resolve("build/kalc/libs/kalc.jar")),
+                "le jar sort malgré les arguments supplémentaires");
+    }
+
+    @Test
+    void stdlibAbsenteEstDiteClairement() {
+        // Le jar du moteur la porte → tout va bien.
+        assertNull(KotlinCompiler.problèmeStdlib(Path.of("kotlin-compiler.jar"),
+                List.of()));
+        // Dépendance Maven du module au classpath → tout va bien (chemin appareil).
+        assertNull(KotlinCompiler.problèmeStdlib(null,
+                List.of(Path.of("cache/kotlin-stdlib-2.0.21.jar"))));
+        // Nulle part (appareil, module sans dépendance) → message actionnable.
+        String message = KotlinCompiler.problèmeStdlib(null,
+                List.of(Path.of("components/platform-34/android.jar")));
+        assertNotNull(message, "l'absence de stdlib doit être dite");
+        assertTrue(message.contains("kotlin-stdlib"),
+                "le message cite la dépendance à déclarer : " + message);
     }
 
     // ---- Harnais -----------------------------------------------------------
