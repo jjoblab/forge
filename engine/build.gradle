@@ -8,7 +8,7 @@ plugins {
 }
 
 group = 'jo.forge'
-version = '0.2.16'
+version = '0.2.17'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -159,7 +159,7 @@ tasks.named('processResources') { dependsOn 'tranchesLambdaJar' }
 // Publication (étape 12) : assemblage des composants du moteur et du manifeste.
 // ---------------------------------------------------------------------------
 
-def versionComposants = '0.2.16'
+def versionComposants = '0.2.17'
 
 tasks.register('composants', JavaExec) {
     group = 'publication'

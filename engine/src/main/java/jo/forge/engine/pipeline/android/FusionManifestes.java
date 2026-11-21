@@ -3,17 +3,14 @@ package jo.forge.engine.pipeline.android;
 import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
+import org.w3c.dom.NamedNodeMap;
 import org.w3c.dom.Node;
 
-import javax.xml.XMLConstants;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.transform.OutputKeys;
-import javax.xml.transform.Transformer;
-import javax.xml.transform.TransformerFactory;
-import javax.xml.transform.dom.DOMSource;
-import javax.xml.transform.stream.StreamResult;
+import jo.forge.engine.util.DomSûr;
+
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -51,7 +48,19 @@ import java.util.Set;
  * {@code tools:} (replace/remove/overrideLibrary), les placeholders
  * {@code ${applicationId}}, et l'élévation d'erreur sur conflit d'attribut —
  * ici le manifeste applicatif GAGNE silencieusement et la fusion est annoncée
- * au journal. JAXP/DOM est disponible sur la JVM comme sur ART.</p>
+ * au journal.</p>
+ *
+ * <p><b>ART</b> (rapport appareil v0.2.16, correctif v0.2.17) : JAXP/DOM existe
+ * sur la JVM comme sur ART, mais PAS ses fonctionnalités de durcissement
+ * Xerces — la première mouture posait {@code disallow-doctype-decl} en dur et
+ * tuait {@code processResources} sur l'appareil (« manifeste illisible :
+ * …disallow-doctype-decl », récidive exacte du crash POM de v0.2.9).
+ * L'analyse passe désormais par {@link DomSûr} (DOCTYPE refusé par scan du
+ * prologue, garde-fous au mieux, résolveur d'entités vide) et la
+ * sérialisation par un ÉCRIVEUR MAISON : {@code javax.xml.transform} n'est
+ * pas fiable sur ART — le moteur de référence écrit lui aussi son manifeste
+ * fusionné à la main pour cette raison (REF-163) ; les éléments de manifeste
+ * ne portent que des attributs, jamais de contenu texte mélangé.</p>
  */
 public final class FusionManifestes {
 
@@ -218,14 +227,17 @@ public final class FusionManifestes {
         return élément.getAttribute("android:" + nomLocal);
     }
 
+    /**
+     * Analyse un manifeste par le DOM durci de {@link DomSûr} : le DOCTYPE est
+     * refusé par SCAN DU PROLOGUE avant tout parseur (absolu et portable — la
+     * fonctionnalité Xerces qui portait cette garde n'existe pas sur ART, le
+     * rapport appareil v0.2.16 en a fait les frais), puis le DOM conscient des
+     * espaces de noms s'exécute avec ses garde-fous posés UN PAR UN au mieux.
+     */
     private static Document analyser(byte[] octets) throws IOException {
         try {
-            DocumentBuilderFactory fabrique =
-                    DocumentBuilderFactory.newInstance();
-            fabrique.setNamespaceAware(true);
-            fabrique.setFeature(
-                    "http://apache.org/xml/features/disallow-doctype-decl", true);
-            return fabrique.newDocumentBuilder()
+            DomSûr.refuserDoctype(octets);
+            return DomSûr.nouveauParseur(true)
                     .parse(new ByteArrayInputStream(octets));
         } catch (Exception échec) {
             throw new IOException("manifeste illisible : " + échec.getMessage(),
@@ -233,17 +245,62 @@ public final class FusionManifestes {
         }
     }
 
+    /**
+     * Écrit le manifeste fusionné par un ÉCRIVEUR MAISON — jamais
+     * {@code javax.xml.transform} : le Transformer n'est pas fiable sur ART et
+     * le moteur de référence sérialise pareillement à la main (REF-163). Les
+     * éléments de manifeste ne portent que des attributs : éléments + attributs
+     * échappés, indentation stable, éléments vides auto-fermants — exactement
+     * ce qu'aapt2 attend.
+     */
     private static void écrire(Document document, Path sorties) throws IOException {
+        StringBuilder texte = new StringBuilder();
+        texte.append("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n");
+        écrireÉlément(document.getDocumentElement(), texte, 0);
         try {
-            Transformer transformeur = TransformerFactory.newInstance()
-                    .newTransformer();
-            transformeur.setOutputProperty(OutputKeys.ENCODING, "utf-8");
-            transformeur.setOutputProperty(OutputKeys.OMIT_XML_DECLARATION, "no");
-            transformeur.transform(new DOMSource(document),
-                    new StreamResult(Files.newOutputStream(sorties)));
-        } catch (Exception échec) {
+            Files.write(sorties, texte.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException échec) {
             throw new IOException("manifeste fusionné non sérialisable : "
                     + échec.getMessage(), échec);
         }
+    }
+
+    /** Écrit un élément : attributs en document ordre, enfants indentés. */
+    private static void écrireÉlément(Element élément, StringBuilder texte,
+                                       int profondeur) {
+        String indentation = "    ".repeat(profondeur);
+        texte.append(indentation).append('<').append(élément.getTagName());
+        NamedNodeMap attributs = élément.getAttributes();
+        for (int i = 0; i < attributs.getLength(); i++) {
+            Attr attribut = (Attr) attributs.item(i);
+            texte.append(' ').append(attribut.getName()).append("=\"")
+                    .append(échapper(attribut.getValue())).append('"');
+        }
+        List<Element> enfants = enfants(élément);
+        if (enfants.isEmpty()) {
+            texte.append("/>\n");
+        } else {
+            texte.append(">\n");
+            for (Element enfant : enfants) {
+                écrireÉlément(enfant, texte, profondeur + 1);
+            }
+            texte.append(indentation).append("</")
+                    .append(élément.getTagName()).append(">\n");
+        }
+    }
+
+    /** Échappe une valeur d'attribut (&amp;, &lt;, &gt;, &quot;). */
+    private static String échapper(String valeur) {
+        StringBuilder texte = new StringBuilder(valeur.length());
+        for (int i = 0; i < valeur.length(); i++) {
+            switch (valeur.charAt(i)) {
+                case '&' -> texte.append("&amp;");
+                case '<' -> texte.append("&lt;");
+                case '>' -> texte.append("&gt;");
+                case '"' -> texte.append("&quot;");
+                default -> texte.append(valeur.charAt(i));
+            }
+        }
+        return texte.toString();
     }
 }

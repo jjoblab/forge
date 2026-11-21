@@ -3,14 +3,9 @@ package jo.forge.engine.deps;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
 import java.io.ByteArrayInputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.util.ArrayList;
-import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -20,8 +15,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Tests du parseur POM durci : champs, parents, gestion, exclusions, relogement —
  * et défenses (DOCTYPE rejeté — ABSOLUMENT et sur tout runtime, XML invalide
- * rejeté, durcissement qui survit à un parseur sans fonctionnalités, comme
- * celui d'ART).
+ * rejeté). Depuis la v0.2.17, le durcissement et son double ART (fabrique sans
+ * fonctionnalités) vivent dans {@link jo.forge.engine.util.DomSûr} — testés
+ * par {@code DomSûrTest}, PARTAGÉS avec la fusion de manifestes.
  */
 class PomParserTest {
 
@@ -183,19 +179,10 @@ class PomParserTest {
     }
 
     @Test
-    void durcissementSurvitÀUnParseurSansFonctionnalités() {
-        // Constat v0.2.9 (rapport appareil, kotlin-simple) : le parseur DOM
-        // d'ART ne reconnaît AUCUNE des fonctionnalités de durcissement
-        // (setFeature lève ParserConfigurationException(URI)) et la
-        // configuration tuait TOUTE résolution Maven. durcir doit survivre à
-        // une fabrique qui refuse tout — et poser quand même les garde-fous
-        // de l'API standard.
-        FabriqueArt art = new FabriqueArt();
-        PomParser.durcir(art); // ne doit PAS lancer
-        assertTrue(art.posées.contains("namespaceAware=false"),
-                "les réglages standard restent posés : " + art.posées);
-        assertTrue(art.posées.contains("expandEntityReferences=false"),
-                "l'expansion des entités reste morte : " + art.posées);
+    void racineInattendueRejetée() {
+        assertThrows(ResolverException.class, () ->
+                PomParser.parse(new ByteArrayInputStream(
+                        "<pasUnProjet/>".getBytes(StandardCharsets.UTF_8)), COORD));
     }
 
     /** Préfixe les octets d'un BOM UTF-8. */
@@ -206,64 +193,5 @@ class PomParserTest {
         avecBom[2] = (byte) 0xBF;
         System.arraycopy(corps, 0, avecBom, 3, corps.length);
         return avecBom;
-    }
-
-    /**
-     * Double de fabrique simulant le parseur DOM d'ART : NE CONNAÎT aucune
-     * fonctionnalité ({@code setFeature} lève {@code ParserConfigurationException(URI)}
-     * — le crash appareil v0.2.9) ni aucun attribut JAXP 1.5.
-     */
-    private static final class FabriqueArt extends DocumentBuilderFactory {
-
-        final List<String> posées = new ArrayList<>();
-
-        @Override
-        public DocumentBuilder newDocumentBuilder() {
-            throw new UnsupportedOperationException("pas utilisé par durcir");
-        }
-
-        @Override
-        public void setFeature(String nom, boolean valeur)
-                throws ParserConfigurationException {
-            throw new ParserConfigurationException(nom);
-        }
-
-        @Override
-        public boolean getFeature(String nom)
-                throws ParserConfigurationException {
-            throw new ParserConfigurationException(nom);
-        }
-
-        @Override
-        public void setAttribute(String nom, Object valeur) {
-            throw new IllegalArgumentException(nom);
-        }
-
-        @Override
-        public Object getAttribute(String nom) {
-            throw new IllegalArgumentException(nom);
-        }
-
-        @Override
-        public void setNamespaceAware(boolean conscience) {
-            posées.add("namespaceAware=" + conscience);
-        }
-
-        @Override
-        public void setExpandEntityReferences(boolean expansion) {
-            posées.add("expandEntityReferences=" + expansion);
-        }
-
-        @Override
-        public void setXIncludeAware(boolean état) {
-            posées.add("xIncludeAware=" + état);
-        }
-    }
-
-    @Test
-    void racineInattendueRejetée() {
-        assertThrows(ResolverException.class, () ->
-                PomParser.parse(new ByteArrayInputStream(
-                        "<pasUnProjet/>".getBytes(StandardCharsets.UTF_8)), COORD));
     }
 }

@@ -19,10 +19,19 @@ import java.util.TreeSet;
  * Java 1.0 : aucune bibliothèque d'analyse de bytecode n'est nécessaire. Les
  * types tableaux ({@code [Ljava/lang/String;}) sont réduits à leur type
  * d'élément, les primitifs ignorés.</p>
+ *
+ * <p>Depuis la v0.2.17, {@link #lireChaînes} expose aussi les CHAÎNES du pool
+ * ({@code CONSTANT_Utf8}) — la garde structurelle XML/ART
+ * ({@code SurfaceXmlArtTest}) y traque les URI de fonctionnalités Xerces posées
+ * hors de {@code DomSûr}.</p>
  */
 public final class RéférencesDeClasse {
 
     private RéférencesDeClasse() {
+    }
+
+    /** Un pool lu : références de classes et chaînes, triées. */
+    private record PoolLu(Set<String> références, Set<String> chaînes) {
     }
 
     /**
@@ -34,6 +43,31 @@ public final class RéférencesDeClasse {
      * @throws IOException si le format est inattendu.
      */
     public static Set<String> lire(InputStream flux) throws IOException {
+        return lirePool(flux).références();
+    }
+
+    /**
+     * Collecte les chaînes ({@code CONSTANT_Utf8}) du pool de constantes d'un
+     * fichier de classe : noms, descripteurs… et littéraux de code (les URI de
+     * fonctionnalités XML, par exemple).
+     *
+     * @param flux les octets du fichier {@code .class}.
+     * @return chaînes distinctes, triées.
+     * @throws IOException si le format est inattendu.
+     */
+    public static Set<String> lireChaînes(InputStream flux) throws IOException {
+        return lirePool(flux).chaînes();
+    }
+
+    /**
+     * Lit le pool de constantes d'un fichier de classe : chaque entrée est
+     * étiquetée, les long/double en occupent deux.
+     *
+     * @param flux les octets du fichier {@code .class}.
+     * @return le pool réduit (références de classes, chaînes).
+     * @throws IOException si le format est inattendu.
+     */
+    private static PoolLu lirePool(InputStream flux) throws IOException {
         DataInputStream entrée = new DataInputStream(flux);
         if (entrée.readInt() != 0xCAFEBABE) {
             throw new IOException("n'est pas un fichier de classe (magie absente)");
@@ -43,6 +77,7 @@ public final class RéférencesDeClasse {
         // Pool 1-indexé : les entrées long/double en occupent deux.
         String[] chaînes = new String[nombre];
         int[] classes = new int[nombre];
+        Set<String> toutesChaînes = new TreeSet<>();
         for (int index = 1; index < nombre; index++) {
             int étiquette = entrée.readUnsignedByte();
             switch (étiquette) {
@@ -51,6 +86,7 @@ public final class RéférencesDeClasse {
                     byte[] octets = new byte[longueur];
                     entrée.readFully(octets);
                     chaînes[index] = new String(octets, StandardCharsets.UTF_8);
+                    toutesChaînes.add(chaînes[index]);
                 }
                 case 7 -> classes[index] = entrée.readUnsignedShort(); // Class
                 case 3, 4 -> entrée.skipBytes(4);   // Integer, Float
@@ -75,7 +111,7 @@ public final class RéférencesDeClasse {
                 }
             }
         }
-        return références;
+        return new PoolLu(références, toutesChaînes);
     }
 
     /**
