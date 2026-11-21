@@ -400,6 +400,30 @@ class DependencyResolverTest {
     }
 
     @Test
+    void pomTéléchargéMaisInvalideNEstPasAnnoncéIntrouvable() throws Exception {
+        // Honnêteté du diagnostic (constat v0.2.9 sur ART) : un POM
+        // TÉLÉCHARGÉ mais rejeté (DOCTYPE ici) doit être dit INVALIDE —
+        // « introuvable » envoyait sur une piste réseau erronée — et ne
+        // doit pas rester en cache.
+        try (DépôtLocal dépôt = DépôtLocal.démarrer()) {
+            Coordinate c = new Coordinate("demo", "piege", "1.0"); // nom ASCII (URL)
+            dépôt.publierPom(c, "<!DOCTYPE project><project><groupId>demo</groupId>"
+                    + "<artifactId>piege</artifactId><version>1.0</version></project>");
+            dépôt.publierJar(c, jarBidon());
+
+            DependencyResolver résolveur = résolveur(dépôt, false, new ArrayList<>());
+            ResolverException échec = assertThrows(ResolverException.class, () ->
+                    résolveur.resolve(List.of(new DependencyResolver.RootDependency(
+                            c, DependencyScope.IMPLEMENTATION)), ConflictPolicy.NEWEST));
+            assertTrue(échec.getMessage().contains("POM invalide"),
+                    "le POM téléchargé mais rejeté est dit invalide : "
+                            + échec.getMessage());
+            assertTrue(!échec.getMessage().startsWith("POM introuvable"),
+                    "pas de fausse piste réseau : " + échec.getMessage());
+        }
+    }
+
+    @Test
     void horsLigneCachePuisÉchecClair() throws Exception {
         try (DépôtLocal dépôt = DépôtLocal.démarrer()) {
             Coordinate a = new Coordinate("demo", "lib-a", "1.0");

@@ -562,7 +562,10 @@ public final class DependencyResolver {
 
     /**
      * Charge le POM d'une coordonnée : cache d'abord, dépôts ensuite (hors ligne :
-     * cache seul, échec clair).
+     * cache seul, échec clair). Un POM TÉLÉCHARGÉ mais rejeté (DOCTYPE, structure)
+     * est dit INVALIDE — pas « introuvable », qui enverrait sur une piste réseau
+     * erronée — et n'est pas laissé en cache (un nouvel essai re-téléchargera, un
+     * miroir sain récupérera).
      */
     private RawPom chargerPom(Coordinate coordonnée) {
         if (cache.aPom(coordonnée)) {
@@ -577,6 +580,7 @@ public final class DependencyResolver {
                     + " (cache négatif) et toujours absent du cache");
         }
         StringBuilder erreurs = new StringBuilder();
+        boolean téléchargéMaisInvalide = false;
         for (String dépôt : dépôts) {
             String url = dépôt + cheminRessource(coordonnée, ".pom");
             try {
@@ -586,11 +590,26 @@ public final class DependencyResolver {
             } catch (HttpTransport.Introuvable introuvable) {
                 cache.marquerIntrouvable(coordonnée, "pom");
                 erreurs.append(introuvable.getMessage()).append(" ; ");
-            } catch (IOException | ResolverException e) {
+            } catch (ResolverException invalide) {
+                // Le dépôt a RÉPONDU (téléchargement et somme vérifiés) mais le
+                // contenu est rejeté : effacer le fichier du cache et le DIRE.
+                try {
+                    Files.deleteIfExists(cache.cheminPom(coordonnée));
+                } catch (IOException purgeImpossible) {
+                    // Le fichier invalide restera jusqu'à sa prochaine
+                    // réécriture — sans conséquence : le parse échouera pareil.
+                }
+                téléchargéMaisInvalide = true;
+                erreurs.append(url).append(" : ").append(invalide.getMessage())
+                        .append(" ; ");
+            } catch (IOException e) {
                 erreurs.append(url).append(" : ").append(e.getMessage()).append(" ; ");
             }
         }
-        throw new ResolverException("POM introuvable pour " + coordonnée
+        throw new ResolverException((téléchargéMaisInvalide
+                ? "POM invalide pour " + coordonnée
+                        + " (téléchargé mais son contenu est rejeté)"
+                : "POM introuvable pour " + coordonnée)
                 + " — dépôts essayés : " + erreurs);
     }
 

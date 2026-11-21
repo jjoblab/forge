@@ -3,11 +3,17 @@ package jo.forge.engine.deps;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
+import org.xml.sax.InputSource;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.io.InputStream;
+import java.io.StringReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
@@ -20,11 +26,18 @@ import java.util.Set;
 /**
  * Parseur POM strict et durci.
  *
- * <p>Défenses (parité avec l'exigence de sécurité du projet, et avec la garde du moteur
- * de référence) : <strong>DOCTYPE interdit</strong> (défense XXE), entités externes
- * désactivées, DTD externe non chargée. Les espaces de noms sont ignorés (les POM du
- * monde réel mélangent avec et sans préfixe). Toute anomalie structurelle est rejetée
- * avec un message citant la coordonnée.</p>
+ * <p>Défenses XXE <strong>portables</strong> (constat v0.2.9 sur ART : la
+ * fonctionnalité Xerces {@code disallow-doctype-decl} n'y est pas reconnue et
+ * tuait la PREMIÈRE résolution Maven d'un build appareil — kotlin-simple) :
+ * DOCTYPE interdit par scan du PROLOGUE en octets bruts (indépendant du
+ * runtime, même position que Maven), entités externes mortes par un résolveur
+ * d'entités vide (interface standard honorée de la JVM comme d'ART — motif du
+ * moteur de référence), expansion désactivée ; les fonctionnalités de
+ * durcissement Xerces/JAXP se posent AU MIEUX — une fonctionnalité absente du
+ * runtime ne tue jamais la résolution (le moteur de référence enveloppe les
+ * siennes de {@code runCatching} pour la même raison). Les espaces de noms
+ * sont ignorés (les POM du monde réel mélangent avec et sans préfixe). Toute
+ * anomalie structurelle est rejetée avec un message citant la coordonnée.</p>
  */
 public final class PomParser {
 
@@ -40,18 +53,19 @@ public final class PomParser {
      * @throws ResolverException si le fichier est illisible ou structurellement invalide.
      */
     public static RawPom parse(Path fichier, Coordinate coordonnée) {
-        try (InputStream entrée = Files.newInputStream(fichier)) {
-            return parse(entrée, coordonnée);
+        try {
+            return parse(Files.readAllBytes(fichier), coordonnée);
         } catch (ResolverException e) {
             throw e;
-        } catch (Exception e) {
+        } catch (IOException e) {
             throw new ResolverException("POM illisible pour " + coordonnée + " ("
                     + fichier + ") : " + e.getMessage(), e);
         }
     }
 
     /**
-     * Analyse un POM depuis un flux.
+     * Analyse un POM depuis un flux (lu en entier : le prologue est scanné
+     * avant toute construction de parseur).
      *
      * @param entrée     flux XML.
      * @param coordonnée coordonnée attendue (messages).
@@ -60,8 +74,29 @@ public final class PomParser {
      */
     public static RawPom parse(InputStream entrée, Coordinate coordonnée) {
         try {
+            return parse(entrée.readAllBytes(), coordonnée);
+        } catch (IOException e) {
+            throw new ResolverException("POM illisible pour " + coordonnée + " : "
+                    + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Analyse un POM depuis ses octets — la porte d'entrée commune : le
+     * prologue est scanné AVANT tout parseur (rejet DOCTYPE absolu), puis le
+     * DOM durci s'exécute.
+     *
+     * @param octets      octets du POM.
+     * @param coordonnée  coordonnée attendue (messages).
+     * @return le POM brut.
+     * @throws ResolverException si le contenu est structurellement invalide ou
+     *                           porte un DOCTYPE.
+     */
+    public static RawPom parse(byte[] octets, Coordinate coordonnée) {
+        refuserDoctype(octets, coordonnée);
+        try {
             DocumentBuilder constructeur = nouveauParseur();
-            Document document = constructeur.parse(entrée);
+            Document document = constructeur.parse(new ByteArrayInputStream(octets));
             Element projet = document.getDocumentElement();
             if (!"project".equals(nomLocal(projet))) {
                 throw new ResolverException("POM " + coordonnée
@@ -163,21 +198,147 @@ public final class PomParser {
     }
 
     /**
-     * Constructeur DOM durci : DOCTYPE interdit, entités externes mortes.
+     * Rejette tout POM dont le PROLOGUE porte une déclaration DOCTYPE — la garde
+     * XXE absolue et PORTABLE du parseur : la fonctionnalité Xerces qui la portait
+     * sur la JVM n'existe pas sur ART, et le traitement sûr JAXP standard
+     * n'y interdit pas les DOCTYPE. Le scan ne lit que le prologue (avant
+     * l'élément racine) : le mot-clé {@code <!DOCTYPE} y est en MAJUSCULES
+     * (grammaire XML), et une section CDATA du CONTENU ne peut pas créer de
+     * faux positif — elle suit nécessairement la racine. Le refus est total :
+     * un DOCTYPE suffit à porter des entités externes (XXE) comme internes
+     * (bombe à entités) ; aucun POM légitime n'en porte (même position que
+     * Maven, qui rejette pareillement).
+     *
+     * @param octets      octets du POM.
+     * @param coordonnée  coordonnée attendue (message).
+     * @throws ResolverException si le prologue porte une déclaration DOCTYPE.
+     */
+    static void refuserDoctype(byte[] octets, Coordinate coordonnée) {
+        int début = bomUtf8(octets);
+        String prologue = new String(octets, début, octets.length - début,
+                StandardCharsets.ISO_8859_1);
+        int i = 0;
+        while (true) {
+            while (i < prologue.length() && prologue.charAt(i) <= ' ') {
+                i++; // Espaces du prologue (tabulations, sauts, espaces).
+            }
+            if (commence(prologue, i, "<?")) {
+                int fin = prologue.indexOf("?>", i + 2);
+                if (fin < 0) {
+                    return; // Prologue inachevé : le parseur donnera l'erreur réelle.
+                }
+                i = fin + 2;
+            } else if (commence(prologue, i, "<!--")) {
+                int fin = prologue.indexOf("-->", i + 4);
+                if (fin < 0) {
+                    return;
+                }
+                i = fin + 3;
+            } else if (commence(prologue, i, "<!DOCTYPE")) {
+                throw new ResolverException("POM invalide pour " + coordonnée
+                        + " : DOCTYPE interdit dans le prologue (garde XXE, même"
+                        + " position que Maven)");
+            } else {
+                return; // Élément racine (ou fin) : plus de DOCTYPE possible après.
+            }
+        }
+    }
+
+    /** Longueur du BOM UTF-8 s'il ouvre les octets (0 sinon). */
+    private static int bomUtf8(byte[] octets) {
+        return octets.length >= 3 && (octets[0] & 0xFF) == 0xEF
+                && (octets[1] & 0xFF) == 0xBB && (octets[2] & 0xFF) == 0xBF ? 3 : 0;
+    }
+
+    /** Le texte commence par le préfixe à l'indice donné ? */
+    private static boolean commence(String texte, int indice, String préfixe) {
+        return texte.regionMatches(indice, préfixe, 0, préfixe.length());
+    }
+
+    /**
+     * Constructeur DOM durci : le rejet des DOCTYPE est déjà garanti par le
+     * scan du prologue AVANT ce parseur ; ici viennent les garde-fous
+     * SUPPLÉMENTAIRES que le runtime propose, puis le résolveur d'entités
+     * vide — mort des entités externes sur tout runtime (interface standard).
      */
     private static DocumentBuilder nouveauParseur() throws Exception {
         DocumentBuilderFactory fabrique = DocumentBuilderFactory.newInstance();
+        durcir(fabrique);
+        DocumentBuilder constructeur = fabrique.newDocumentBuilder();
+        // Résolveur d'entités vide : TOUTE entité externe résout vers le vide —
+        // interface standard honorée de la JVM comme d'ART, là où les
+        // fonctionnalités SAX/Xerces ne sont pas reconnues (motif du moteur de
+        // référence).
+        constructeur.setEntityResolver((identifiantPublic, identifiantSystème) ->
+                new InputSource(new StringReader("")));
+        return constructeur;
+    }
+
+    /**
+     * Configure une fabrique DOM avec tous les garde-fous disponibles — CHACUN
+     * AU MIEUX. Constat v0.2.9 (rapport appareil, kotlin-simple) : les URI de
+     * fonctionnalités Xerces (et même certaines standard SAX) ne sont pas
+     * reconnues par le parseur DOM d'ART (KXml), dont {@code setFeature} lève
+     * {@code ParserConfigurationException(URI)} — la configuration TUAIT toute
+     * résolution Maven sur l'appareil (aucun build antérieur n'avait de
+     * dépendance Maven : kotlin-stdlib fut la première). Un garde-fou absent ne
+     * doit jamais tuer la résolution : le scan du prologue
+     * ({@link #refuserDoctype}) et le résolveur d'entités vide couvrent les
+     * mêmes menaces sur tout runtime. Visible pour les tests (double de
+     * fabrique simulant ART).
+     *
+     * @param fabrique la fabrique à durcir.
+     */
+    static void durcir(DocumentBuilderFactory fabrique) {
         fabrique.setNamespaceAware(false);
-        fabrique.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-        fabrique.setFeature("http://xml.org/sax/features/external-general-entities", false);
-        fabrique.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-        fabrique.setFeature("http://apache.org/xml/features/nonvalidating/load-external-dtd",
-                false);
-        fabrique.setXIncludeAware(false);
         fabrique.setExpandEntityReferences(false);
-        fabrique.setAttribute(XMLConstants.ACCESS_EXTERNAL_DTD, "");
-        fabrique.setAttribute(XMLConstants.ACCESS_EXTERNAL_SCHEMA, "");
-        return fabrique.newDocumentBuilder();
+        try {
+            fabrique.setXIncludeAware(false);
+        } catch (UnsupportedOperationException nonProposé) {
+            // Fabriques sans support XInclude : inactif par défaut de toute façon.
+        }
+        activer(fabrique, "http://apache.org/xml/features/disallow-doctype-decl");
+        activer(fabrique, XMLConstants.FEATURE_SECURE_PROCESSING);
+        désactiver(fabrique, "http://xml.org/sax/features/external-general-entities");
+        désactiver(fabrique, "http://xml.org/sax/features/external-parameter-entities");
+        désactiver(fabrique,
+                "http://apache.org/xml/features/nonvalidating/load-external-dtd");
+        attributVide(fabrique, XMLConstants.ACCESS_EXTERNAL_DTD);
+        attributVide(fabrique, XMLConstants.ACCESS_EXTERNAL_SCHEMA);
+    }
+
+    /**
+     * Pose une fonctionnalité de durcissement {@code true} si le runtime la
+     * reconnaît (sinon : rien — voir la javadoc de {@link #durcir}).
+     */
+    private static void activer(DocumentBuilderFactory fabrique, String nom) {
+        try {
+            fabrique.setFeature(nom, true);
+        } catch (ParserConfigurationException nonReconnu) {
+            // Fonctionnalité absente de ce runtime : le scan et le résolveur
+            // d'entités vide couvrent la même menace.
+        }
+    }
+
+    /**
+     * Pose une fonctionnalité de durcissement {@code false} si le runtime la
+     * reconnaît (sinon : rien).
+     */
+    private static void désactiver(DocumentBuilderFactory fabrique, String nom) {
+        try {
+            fabrique.setFeature(nom, false);
+        } catch (ParserConfigurationException nonReconnu) {
+            // Idem.
+        }
+    }
+
+    /** Vide un attribut d'accès externe (JAXP 1.5) s'il est reconnu (sinon : rien). */
+    private static void attributVide(DocumentBuilderFactory fabrique, String nom) {
+        try {
+            fabrique.setAttribute(nom, "");
+        } catch (IllegalArgumentException | UnsupportedOperationException nonReconnu) {
+            // Attribut absent de ce runtime.
+        }
     }
 
     /** Premier enfant direct portant ce nom (espaces de noms ignorés). */
