@@ -8,7 +8,7 @@ plugins {
 }
 
 group = 'jo.forge'
-version = '0.2.8'
+version = '0.2.9'
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -124,7 +124,7 @@ tasks.named('processResources') { dependsOn 'tranchesLambdaJar' }
 // Publication (étape 12) : assemblage des composants du moteur et du manifeste.
 // ---------------------------------------------------------------------------
 
-def versionComposants = '0.2.8'
+def versionComposants = '0.2.9'
 
 tasks.register('composants', JavaExec) {
     group = 'publication'
@@ -193,5 +193,17 @@ tasks.register('composants', JavaExec) {
     def cléPrivée = System.getenv('FORGE_CLE_PRIVEE')
     if (cléPrivée) {
         arguments.addAll(['--clé-privée', cléPrivée])
-    }    args = arguments.findAll { it != null }
+    }
+    // Économie de données (v0.2.9) : versions d'outils dérivées du contenu et URL
+    // de la release pérenne « outils » — la CI les fournit pour la publication ;
+    // sans elles, comportement historique (URL de la version du moteur).
+    def urlOutils = System.getenv('FORGE_URL_OUTILS')
+    if (urlOutils) {
+        arguments.addAll(['--url-outils', urlOutils])
+    }
+    def versionAapt2 = System.getenv('FORGE_VERSION_AAPT2')
+    if (versionAapt2) {
+        arguments.addAll(['--version-aapt2', versionAapt2])
+    }
+    args = arguments.findAll { it != null }
 }

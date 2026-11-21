@@ -154,7 +154,17 @@ jobs:
           # Le composant aapt2-arm64-v8a (prébuilt ReVanced téléchargé ci-dessus)
           # est publié depuis v0.2.8 : sans lui, tout module application Android
           # échoue avant la première tâche (localisateur d'outils).
+          # Le composant kotlin-compiler (feuille de route langages) est publié
+          # depuis v0.2.9 — expérimental sur ART, validé sur JVM.
           FORGE_AAPT2: /tmp/aapt2-arm64-v8a
+          # Économie de données (v0.2.9) : les composants d'OUTILS reçoivent une
+          # version dérivée de leur contenu (ne bouge que si le contenu bouge) et
+          # résident sur la release pérenne « outils » — un manifeste v0.2.10
+          # pointe l'archive publiée en v0.2.9 sans la re-téléverser, et
+          # l'appareil ne re-télécharge jamais un contenu identique (cache local
+          # par empreinte de contenu).
+          FORGE_URL_OUTILS: https://github.com/jjoblab/forge/releases/download/outils
+          FORGE_VERSION_AAPT2: "1.1.0"
         run: |
           echo "$FORGE_MANIFEST_KEY" > /tmp/cle-privee.b64
           FORGE_CLE_PRIVEE=/tmp/cle-privee.b64 ./gradlew --no-daemon :engine:composants
@@ -172,7 +182,7 @@ jobs:
           open('/tmp/cle-publique.b64', 'w').write(''.join(morceaux))
           PY
           ./gradlew --no-daemon :setup:jar :json:jar :api:jar -q
-          java -cp "setup/build/libs/setup-0.2.8.jar:json/build/libs/json-0.2.8.jar:api/build/libs/api-0.2.8.jar" \
+          java -cp "setup/build/libs/setup-0.2.9.jar:json/build/libs/json-0.2.9.jar:api/build/libs/api-0.2.9.jar" \
             jo.forge.setup.manifest.OutilManifeste verifier \
             engine/build/composants/manifest.json /tmp/cle-publique.b64 \
             engine/build/composants/manifest.sig
@@ -196,10 +206,22 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
+          # Release pérenne des OUTILS d'abord : le manifeste qui vient d'être
+          # signé pointe ces URLs, elles doivent être servies AVANT lui. Le
+          # --clobber ré-écrit une archive de contenu identique sans conséquence
+          # (même somme, l'appareil ne re-télécharge pas).
+          OUTILS=$(ls engine/build/composants/platform-*.zip \
+                  engine/build/composants/aapt2-*.zip 2>/dev/null || true)
+          if [ -n "$OUTILS" ]; then
+            gh release view outils >/dev/null 2>&1 \
+              || gh release create outils --title "Composants d'outils (pérenne)" \
+                 --notes "Archives stables des composants d'outils (platform, aapt2), référencées par les manifestes du moteur. Ne pas supprimer : les installations en cours dépendent de ces URLs."
+            gh release upload outils $OUTILS --clobber
+          fi
           gh release create "$GITHUB_REF_NAME" \
             engine/build/composants/*.zip \
             engine/build/composants/manifest.json \
             engine/build/composants/manifest.sig \
             app/build/outputs/apk/debug/app-debug.apk \
             --title "Forge $GITHUB_REF_NAME" \
-            --notes "Composants du moteur (dexés pour ART ; platform-34 embarque android.jar, aapt2-arm64-v8a embarque le prébuilt Android de ReVanced/aapt2), manifeste signé (ECDSA P-256) et coquille (APK de débogage, installable). Vérifiez le manifeste avec la clé publique épinglée dans la coquille (ClesForge) avant toute installation."
+            --notes "Composants du moteur (dexés pour ART ; platform-34 embarque android.jar, aapt2-arm64-v8a embarque le prébuilt Android de ReVanced/aapt2, kotlin-compiler embarque le compilateur Kotlin — expérimental sur ART), manifeste signé (ECDSA P-256) et coquille (APK de débogage, installable). Les composants d'outils résident sur la release « outils » pérenne : une mise à jour du moteur ne re-télécharge que ce qui a changé (cache local par empreinte de contenu). Vérifiez le manifeste avec la clé publique épinglée dans la coquille (ClesForge) avant toute installation."
