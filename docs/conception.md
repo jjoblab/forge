@@ -245,7 +245,7 @@ redirections incontrôlé constaté REF-126).
 | `engine-core` | `engine.jar` (classes.dex du moteur) + `lib/*.jar` dexées (ECJ, dexeur, signeur) | ~15-25 Mo | — |
 | `aapt2-arm64-v8a`, `aapt2-x86_64` | binaire natif par ABI | ~2-4 Mo/ABI | — |
 | `platform-<api>` | `android.jar` du niveau visé (34 à la publication, PUBLIÉ depuis v0.2.7) | ~24 Mo | — |
-| `kotlin-compiler` (optionnel) | compilateur Kotlin dexé | ~30 Mo | — |
+| `kotlin-compiler` (optionnel, PUBLIÉ depuis v0.2.9 — expérimental sur ART) | compilateur Kotlin dexé (`kotlin-compiler-embeddable` + dépendances runtime de son POM, 6 dex) | ~19 Mo | — |
 
 Chaque entrée : `id`, `version`, `size`, `sha256`, `urls` (miroirs), `abis`, `minAppVersion`,
 `depends`. Le cœur (compilateur Java, dexeur, signeur) est **découpé en entrées distinctes du

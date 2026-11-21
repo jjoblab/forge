@@ -18,6 +18,10 @@ tout écart est consigné ici.
 | Post-4 — Correctif ECJ sur ART | **Fait** (2026-11-21) | Constat `v0.2.3` (rapport de diagnostic copié depuis l'appareil) : `core:compileJava` échoue par `Can't find bundle for base name …batch.messages, locale fr_HT` — d8 ne convertit que les classes, les ressources d'ECJ (bundles de messages, tables `.rsc` du parseur et du scanner, ~1,04 Mo) étaient perdues au dexage, et sur JVM les tests ne le voyaient pas (jar complet au classpath). Correctif : les jars dexés conservent toute entrée non-classe des jars sources (manifeste et signatures du jar d'origine écartés — ils ne signent plus rien une fois fusionnés ; `about.html` d'ECJ conservé, notice EPL-2.0 exigée à la redistribution §7), car le classloader d'ART sert les entrées zip d'un jar du classpath (`DexPathList`/`ClassPathURLStreamHandler`, API 28+). Doublons identiques dédupliqués, conflits de contenu refusés, ordre et horodatages fixes (déterminisme des composants). Publication `v0.2.4`. |
 | Post-4 — Code de sortie honnête | **Fait** (2026-11-21) | Constat `v0.2.3` : le rapport disait « code de sortie : inconnu (processus encore vivant ou code non encore publié) » d'un moteur pourtant à l'arrêt. Deux causes : (1) `codeSortie()` ne publiait que ce que la sentinelle rapportait — une sentinelle muette (interrompue) laissait le code à `null` pour toujours ; il se guérit désormais seul (processus fini sans publication = `waitFor` immédiat, testé avec connexion sans aucun fil) ; (2) le sondage de mort (2,5 s) tournait sur la file mono-fil de la coquille et retardait l'arrêt du moteur mis en file derrière lui — le moteur restait vivant pendant qu'on l'attendait. La mort est publiée sur son propre fil, et un canal fermé sans code s'affiche désormais comme tel (« canal du moteur fermé, processus encore vivant ») au lieu de prétendre à un arrêt. Publication `v0.2.5`. |
 | Post-4 — API `java.compiler` sur ART | **Fait** (2026-11-21) | Constat `v0.2.5` (rapport de diagnostic depuis l'appareil) : `core:compileJava` échoue par `Failed resolution of: Ljavax/lang/model/SourceVersion;`. Audit des pools de constantes d'ECJ 3.36 : 63 classes référencées dans `javax.lang.model`/`javax.annotation.processing`/`javax.tools` — exactement le module `java.compiler` qu'Android n'embarque pas (`batch/FileSystem` appelle `SourceVersion.valueOf` à CHAQUE compilation, hors processeurs d'annotations) ; aucune référence `sun.*`/`jdk.*`/`Runtime$Version` (le relogement de la référence, REF-155, n'est pas nécessaire à cette version d'ECJ). Correctif : le composant `java-compiler` embarque l'API du module, extraite de l'image `jrt` de la JVM d'assemblage à chaque assemblage (JDK épinglé en CI), MOINS `javax.lang.model.SourceVersion`, réécrit pour ART — l'original lit `Runtime.version()` dans son initialiseur, classe absente d'ART et non redéfinissable (`java.*` interdit dans un dex) — et compilé par ECJ lui-même avec `android.jar` en chemin d'amorçage ; garde-fou d'assemblage : toute classe de l'API référencée par ECJ doit être servie par le jar produit (échec nommé sinon, jamais un composant incomplet en production). Audit des autres composants : apksig propre (0 référence absente), r8 en porte 4 (voir « Manques »). Même correctif de franchise : un `LinkageError` ne s'affiche plus « probablement un manque de mémoire » — classification par famille (`MessagesErreursGraves`) et diagnostic structuré dans la trace (elle était vide). Publication `v0.2.6`. |
+| Post-4 — Outils Android distribués, chaîne Android sur ART | **Fait jusqu'à packageApk** (2026-11-20/21, `v0.2.7`-`v0.2.8`) | `v0.2.7` publie `platform-34` (android.jar, ~24 Mo — sans lui ECJ ne résout pas `java.lang.Object` sur ART) et le chemin de compilation sans image (plate-forme au classpath de tout module, tranches lambda, correctif varargs) ; `v0.2.8` publie `aapt2-arm64-v8a` (~4,7 Mo, prébuilt Android de ReVanced/aapt2, segments alignés 16 Ko — pages 4 Ko ET 16 Ko) et fait porter son VERDICT final au journal du build (le rapport « jamais terminé » du 2026-11-20 était un faux négatif : la réimportation des exemples effaçait les traces). Rapports appareil du 2026-11-21 : l'exemple `multi-modules-java` construit de bout en bout (6 tâches, 801 ms), et `application-android` valide sur ART `processResources` (PREMIER `exec` d'un binaire téléchargé depuis le stockage privé — W^X, D-04 : le bit exécutable est réparé avant la première exécution), `compileJava` avec R générées, `dex` et `packageApk` (APK non signé produit) ; `signApk` échouait sur `Cannot run program keytool` (binaire du JDK, absent d'ART) — corrigé en `v0.2.9` (ligne suivante). |
+| Post-4 — Économie de données mobiles | **Fait** (2026-11-21, `v0.2.9`) | Constat utilisateur `v0.2.8` : chaque publication re-téléchargeait TOUT (platform-34 ~24 Mo et aapt2 compris) même quand le contenu n'avait pas changé — la version du composant était celle du moteur. Le manifeste porte désormais une EMPREINTE DE CONTENU par composant (SHA-256 canonique des fichiers extraits) ; l'installateur conserve ces fichiers sous `forge/cache/composants/<empreinte>` et les LIE par lien dur dans le nouveau moteur quand le manifeste réclame la même empreinte : zéro octet réseau pour un contenu identique. Le cache est amorcé depuis le moteur en place avant remplacement (la mise à jour `v0.2.8` → `v0.2.9` économise déjà platform-34 et aapt2), survit aux mises à jour et désinstallations, se vérifie par sommes et se purge explicitement. La publication s'aligne : versions des composants d'OUTILS dérivées de leur contenu (`<base>.<somme8>`, ex. `34.0.0.dba22cde`), release GitHub pérenne « outils » (un manifeste futur pointe les archives existantes sans les re-téléverser), l'assembleur accepte plusieurs `classes*.dex` (préalable au composant Kotlin), et la coquille annonce le volume réel (« déjà téléchargé — aucun octet », Mo évités). |
+| Post-4 — Clé de signature de débogage en pur Java | **Fait** (2026-11-21, `v0.2.9`) | Constat `v0.2.8` (rapport appareil, `application-android`) : `app:signApk` mourait par `Cannot run program keytool: error=2` — keytool est un binaire du JDK, ART n'en a pas. La paire RSA et le certificat X.509 auto-signé sont générés EN PROCESSUS (`CertificatAutoSigné`) : encodage DER minimal écrit à la main, signature SHA256withRSA par les seules API publiques de `java.security` (présentes sur JVM comme sur ART), certificat revalidé par `CertificateFactory` et `X509Certificate.verify` à la sortie. Stockage `.forge/debug-key.forge` (conteneur maison : certificat DER + clé PKCS#8) — le lecteur PKCS12 d'ART ne déchiffre pas les clés PBES2/PBKDF2 qu'écrit un keytool moderne (constat d'interopérabilité pris au moteur de référence) ; le p12 hérité de la chaîne `v0.2.8` reste LU là où la plate-forme l'accepte (un projet démarré sur JVM garde sa signature). Chaque projet garde SA clé (un APK de débogage ne doit pas être remplaçable par un APK construit ailleurs). Tests : certificat relu et vérifié (y compris GeneralizedTime au-delà de 2050), conteneur identique relu, p12 repris, APK signé v1+v2 vérifié par ApkVerifier, deux projets deux clés. |
+| Post-4 — Kotlin sur JVM (feuille de route langages) | **Fait sur JVM, EXPÉRIMENTAL sur ART** (2026-11-21, `v0.2.9`) | Composant `kotlin-compiler` publié (marqué expérimental) : `kotlin-compiler-embeddable` 2.0.21 + ses dépendances runtime du POM (stdlib, reflect, script-runtime, daemon, coroutines, trove4j — l'embarquable SEUL meurt à l'exécution : `NoClassDefFoundError kotlinx/coroutines/CoroutineScope` constaté), 8 jars dexés en 6 `classes*.dex` (~19 Mo zippé) ; la fusion des ressources du dexage gagne les conflits `META-INF/*.kotlin_module` par PREMIER jar (la distribution Kotlin livre les mêmes modules dans plusieurs jars — 11 chemins en conflit mesurés, même gagnant qu'un classpath de bureau), le tas de d8 est borné à 2 Go (3 Go tuait le processus par tueur OOM sur les machines de 4 Go — code 137 muet, désormais nommé dans le message d'échec). Moteur : champ `language` du module (`java` par défaut, `kotlin` → tâche `compileKotlin` AVANT `compileJava`, même répertoire de classes — le Java du module compile CONTRE les classes Kotlin ; une dépendance de projet dépend de la tâche du LANGAGE de son frère ; Android+Kotlin refusé explicitement, message actionnable — Compose suivra), conventions `src/main/kotlin` puis `src/main/java`, compilateur appelé EN PROCESSUS par réflexion sur les seules API publiques stables (`K2JVMCompiler`, `MessageCollector` proxyfié — diagnostics structurés fichier/ligne/colonne), stdlib de compilation posée depuis le classpath du moteur (JVM) ou en dépendance Maven du module (appareil — le classloader d'ART ne sert pas les entrées `.class` d'un jar dexé). Exemple `examples/kotlin-simple` (mixte Kotlin+Java, stdlib en dépendance Maven). Validé sur JVM : câblage du graphe, build complet avec EXÉCUTION du résultat, diagnostic structuré d'une erreur, module sans source `.kt`. Reste à mener : l'audit ART dédié (la référence a dû instrumenter le compilateur en profondeur — passes bytecode, shims, contournements JIT, REF-133/135) et la compilation jointe Kotlin→Java du même module (aujourd'hui Java après Kotlin, l'inverse n'est pas résolu). |
 
 ### Phase 4 : détail par étape
 
@@ -78,8 +82,9 @@ tout écart est consigné ici.
   `aapt2-arm64-v8a` est publié aussi : prébuilt Android du projet ReVanced/aapt2
   (source AOSP Apache-2.0, segments LOAD alignés 16 Ko — se charge sur les appareils
   à pages de 4 Ko ET de 16 Ko) ; le prébuilt x86_64 des build-tools Google reste
-  le repli des machines de développement. À constater sur appareil : l'exécution
-  elle-même du binaire depuis le stockage privé (W^X, D-04).
+  le repli des machines de développement. Exécution du binaire depuis le stockage
+  privé **VALIDÉE sur appareil** (`v0.2.8`, rapport du 2026-11-21 : `processResources`
+  passe, le bit exécutable est réparé avant la première exécution — W^X, D-04).
 - **Écran de build et installation** : l'assistant d'installation est CÂBLÉ depuis
   l'étape 14 (canal, composants, tailles, avertissement données mobiles, progression,
   reprise, réparation, désinstallation). Restent non vérifiés sur appareil réel :
@@ -94,13 +99,30 @@ tout écart est consigné ici.
   stderr et rapports **validés** (c'est eux qui ont livré chaque diagnostic des
   correctifs `v0.2.3`→`v0.2.7`). **Build Java complet validé** depuis `v0.2.7` :
   l'exemple `multi-modules-java` construit de bout en bout sur l'appareil (rapports du
-  2026-11-20 — `compileJava` des deux modules, `jar`, sortie propre du moteur ; le
-  premier rapport « jamais terminé » était un faux négatif : la réimportation des
+  2026-11-20 — `compileJava` des deux modules, `jar`, sortie propre du moteur, 801 ms ;
+  le premier rapport « jamais terminé » était un faux négatif : la réimportation des
   exemples avait effacé les traces, corrigé en `v0.2.8` par le verdict final dans le
-  journal). Restent à constater : les maillons Android `processResources` (premier
-  `exec` du binaire `aapt2` téléchargé, W^X, D-04) puis `dex`/`packageApk`/`signApk`
-  sur ART, l'installation par PackageInstaller et le tueur de processus Android 12+
-  (D-02). Le repli `DexClassLoader` reste conçu mais non câblé.
+  journal). **Chaîne Android validée jusqu'à `packageApk`** depuis `v0.2.8` (rapports du
+  2026-11-21, exemple `application-android`) : `processResources` (PREMIER `exec` d'un
+  binaire téléchargé depuis le stockage privé — W^X, D-04, le bit exécutable est réparé
+  avant la première exécution), `compileJava` avec R générées, `dex`, `packageApk` —
+  seul `signApk` échouait (keytool, binaire du JDK absent d'ART), corrigé en `v0.2.9`
+  par la clé en pur Java (génération en processus). Restent à constater : `signApk`
+  sur l'appareil avec le correctif `v0.2.9`, l'installation par PackageInstaller de
+  l'APK produit et le tueur de processus Android 12+ (D-02). Le repli `DexClassLoader`
+  reste conçu mais non câblé.
+- **Kotlin (v0.2.9) — périmètre et limites assumées** : modules `java-library` en
+  Kotlin uniquement (Android+Kotlin refusé avec message actionnable — Compose attendra
+  l'audit ART du compilateur) ; compilation MIXTE d'un seul sens par module —
+  `compileKotlin` précède `compileJava`, le Java du module voit les classes Kotlin,
+  l'inverse (du Kotlin qui référencerait du Java du MÊME module) relève de la
+  compilation jointe, non livrée ; la stdlib de COMPILATION vient du classpath du
+  moteur sur la JVM de test et d'une dépendance Maven du module sur l'appareil (le
+  classloader d'ART ne sert pas les entrées `.class` d'un jar dexé — le composant ne
+  peut pas la porter en classes lisibles par kotlinc) ; processeurs d'annotations
+  (KAPT/KSP) non livrés (parité avec le pipeline Java, où ils sont désactivés). Sur
+  ART, le composant est publié EXPÉRIMENTAL : l'audit dédié reste à mener (la
+  référence a dû instrumenter le compilateur en profondeur — REF-133/135).
 - **Audit ART des composants distribués (v0.2.6)** — mêmes outils d'audit que pour ECJ
   (lecture des pools de constantes) : `apksig` **propre** (0 classe référencée absente
   d'ART) ; `r8` en porte **4**, toutes hors du chemin D8 du dexage simple que Forge
@@ -169,36 +191,41 @@ tout écart est consigné ici.
    `1b1a3052168a52f38a91ea03c87831a0d94c1fff`, jamais copié ni référencé hors de
    `docs/REFERENCES.md`.
 
-## Procédure de test sur appareil (v0.2.8)
+## Procédure de test sur appareil (v0.2.9)
 
-La chaîne est testable de bout en bout depuis la publication `v0.2.8` (la `v0.2.3`
+La chaîne est testable de bout en bout depuis la publication `v0.2.9` (la `v0.2.3`
 compilait encore son premier projet Java en échec : ressources d'ECJ perdues au
 dexage, `Can't find bundle … locale fr_HT` — corrigé en `v0.2.4` ; le code de
 sortie du moteur est honnête depuis la `v0.2.5` ; le crash `SourceVersion` sur
-ART — API `java.compiler` absente d'Android — est corrigé en `v0.2.6` ; les
-messages d'erreurs graves ne prétendent plus systématiquement à un manque de
-mémoire ; et `v0.2.7` corrige l'échec « The type java.lang.Object cannot be
-resolved » : plate-forme `platform-34` publiée, compilation sans image sur ART,
-tranches lambda embarquées et correctif varargs `originalSourceLevel`) :
+ART — API `java.compiler` absente d'Android — est corrigé en `v0.2.6` ;
+`v0.2.7` corrige l'échec « The type java.lang.Object cannot be resolved »
+(plate-forme `platform-34` publiée, compilation sans image, tranches lambda,
+correctif varargs) ; `v0.2.8` publie `aapt2-arm64-v8a` et porte le verdict final
+dans le journal du build ; `v0.2.9` ajoute l'économie de données (cache par
+empreinte de contenu — la mise à jour depuis `v0.2.8` ne re-télécharge PAS
+platform-34 ni aapt2), la clé de signature de débogage en pur Java (le crash
+keytool d'ART — rapport `v0.2.8`, `app:signApk` — est corrigé) et le composant
+`kotlin-compiler`, expérimental sur ART) :
 
 1. **Installer la coquille** : APK signé de la clé d'essai joint à la version GitHub
-   `v0.2.8` (`app-debug.apk`), installation par chargement latéral (autoriser les
+   `v0.2.9` (`app-debug.apk`), installation par chargement latéral (autoriser les
    sources inconnues). Les versions de test successives s'installent l'une sur
    l'autre (clé d'essai stable, jetons CI) ; une installation antérieure signée
    autrement (clé de débogage éphémère d'un exécutant, comme l'APK d'artefact des
-   builds de branche) doit d'abord être désinstallée. Une `v0.2.1`-`v0.2.7` déjà
+   builds de branche) doit d'abord être désinstallée. Une `v0.2.1`-`v0.2.8` déjà
    installée se met à jour directement par-dessus.
 2. **Mettre à jour le moteur** : section *Installation du moteur* — *Charger le
    manifeste* puis *Réinstaller (mise à jour ou réparation)* : les composants de la
-   `v0.2.8` remplacent ceux des versions antérieures — NOUVEAU : le composant
-   `aapt2-arm64-v8a` (~4,7 Mo, prébuilt Android de ReVanced/aapt2) est publié et
-   installé, et le journal du build se termine par son verdict final (réussite ou
-   échec, avec durée — le rapport « build jamais terminé » du 2026-11-20 était un
-   faux négatif : la réimportation des exemples efface les traces du projet). La
-   `v0.2.7` avait apporté `platform-34` (~24 Mo, android.jar), les tranches lambda
-   et le chemin de compilation sans image (plate-forme au classpath de tout
-   module, correctif varargs compris) ; la `v0.2.6` l'API `java.compiler` pour
-   ART, la `v0.2.4` le correctif des ressources, la `v0.2.5` le client au code de
+   `v0.2.9` remplacent ceux des versions antérieures — NOUVEAU : le cache par
+   empreinte de contenu (économies de données) amorce depuis le moteur en place,
+   puis `platform-34` et `aapt2-arm64-v8a`, de contenu inchangé, s'installent
+   SANS AUCUN OCTET réseau (l'assistant l'annonce et totalise les Mo évités) ;
+   seul ce qui a changé (cœur, compilateurs) passe par le réseau. Le composant
+   `kotlin-compiler` (~19 Mo, 6 dex, expérimental sur ART) est proposé depuis la
+   `v0.2.9`. Rappels : le journal du build porte son verdict final depuis la
+   `v0.2.8` ; la `v0.2.7` avait apporté `platform-34` (~24 Mo, android.jar) et le
+   chemin de compilation sans image ; la `v0.2.6` l'API `java.compiler` pour ART,
+   la `v0.2.4` le correctif des ressources, la `v0.2.5` le client au code de
    sortie auto-guéri.
 3. **Construire l'exemple Java** : bouton *Importer les projets d'exemple* (stockage
    privé, aucune permission), puis *Construire* — le moteur démarre dans son propre
@@ -213,10 +240,24 @@ tranches lambda embarquées et correctif varargs `originalSourceLevel`) :
    `application-android` — premier passage COMPLET de la chaîne Android sur ART
    (`processResources` par le binaire `aapt2` du composant, `compileJava` avec les R
    générées, `dex` par d8 en processus, `packageApk`, `signApk`), puis bouton
-   *Installer l'APK* sur l'artefact produit. C'est le premier `exec` d'un binaire
-   téléchargé sur l'appareil (W^X, D-04) : un échec à `processResources` avec
-   l'autotest « aapt2 version ÉCHOUE aussi » dira ABI/noyau, pas entrées.
-5. **En cas de problème (débogage)** : bouton *Copier les journaux* (presse-papiers)
+   *Installer l'APK* sur l'artefact produit. `processResources`/`dex`/`packageApk`
+   sont VALIDÉS sur appareil (rapports `v0.2.8` du 2026-11-21 — premier `exec` d'un
+   binaire téléchargé, W^X, D-04 : le bit exécutable est réparé avant la première
+   exécution ; un échec à `processResources` avec l'autotest « aapt2 version
+   ÉCHOUE aussi » dirait ABI/noyau, pas entrées). `signApk` est LE point à
+   constater avec la `v0.2.9` : la clé de débogage est générée EN PROCESSUS en pur
+   Java (`Cannot run program keytool` — keytool est un binaire du JDK, absent
+   d'ART — est corrigé) ; l'APK signé v1+v2 obtenu, le bouton *Installer l'APK*
+   (PackageInstaller) devient le premier test réel d'installation.
+5. **Construire l'exemple Kotlin (expérimental)** : même parcours avec le chemin
+   `kotlin-simple` — exige le composant `kotlin-compiler` (assistant, ~19 Mo). Le
+   module `kalc` mélange Kotlin (`src/main/kotlin`) et Java (`src/main/java`) : la
+   chaîne est `resolveDependencies` (télécharge `kotlin-stdlib` depuis Maven
+   Central) → `compileKotlin` → `compileJava` → `jar`. **État `v0.2.9` :
+   EXPÉRIMENTAL sur ART** — validé sur JVM, l'audit ART du compilateur reste à
+   mener (la référence a dû l'instrumenter en profondeur) ; tout échec ici est
+   attendu et précieux : joindre le rapport (journal du moteur, trace JSON).
+6. **En cas de problème (débogage)** : bouton *Copier les journaux* (presse-papiers)
    ou *Partager* (courriel, notes…) — le rapport contient le contexte (versions,
    appareil, projet), le journal du build (qui porte son verdict final depuis la
    `v0.2.8`), le **journal du moteur** (stderr capturé
@@ -232,39 +273,49 @@ tranches lambda embarquées et correctif varargs `originalSourceLevel`) :
 
 Points observés par ce test : lancement `app_process` avec `CLASSPATH` (D-01),
 jars dexés en lecture seule, tueur de processus Android 12+ (D-02). Le premier
-`exec` du binaire `aapt2` téléchargé (W^X, D-04) et l'installation par
-PackageInstaller sont désormais observables — les composants Android sont publiés
-depuis la `v0.2.8`.
+`exec` du binaire `aapt2` téléchargé (W^X, D-04) est VALIDÉ (`v0.2.8`, rapport du
+2026-11-21) ; l'installation par PackageInstaller est le prochain point observable
+(avec l'APK signé de la `v0.2.9`), de même que l'économie de données de la mise à
+jour (message « déjà téléchargé — aucun octet », Mo évités).
 
 ## Prochaines étapes (après la Phase 4)
 
 1. **Vérification sur appareil réel (ART)** — le build Java complet est validé
-   (`multi-modules-java`, `v0.2.7`, rapports du 2026-11-20) ; restent les maillons
-   Android (`processResources` par aapt2 — premier `exec` d'un binaire téléchargé —,
-   `dex`, `package`, `signature`) et l'installation PackageInstaller de l'APK produit.
-   Le maillon ECJ est doublement déverrouillé (ressources `v0.2.4`, API
-   `java.compiler` `v0.2.6`) ; chaque échec restant se lira dans un rapport qui
+   (`multi-modules-java`, `v0.2.7`, rapports du 2026-11-20 ; re-confirmé `v0.2.8`,
+   801 ms) et la chaîne Android est validée JUSQU'À `packageApk` (`v0.2.8`, rapports
+   du 2026-11-21 — `processResources` par aapt2, premier `exec` d'un binaire
+   téléchargé, VALIDÉ, W^X D-04 ; `dex` ; `packageApk`). Restent : `signApk` avec le
+   correctif `v0.2.9` (clé en pur Java — le crash keytool est corrigé, à re-constater
+   sur l'appareil), l'installation PackageInstaller de l'APK produit et le tueur de
+   processus Android 12+ (D-02). Chaque échec restant se lira dans un rapport qui
    classe les erreurs graves par famille depuis la `v0.2.6` et dont le journal porte
-   le verdict final depuis la `v0.2.8`.
+   le verdict final depuis la `v0.2.8` ; la mise à jour `v0.2.8` → `v0.2.9` permet
+   aussi de constater l'économie de données (aucun octet re-téléchargé pour
+   `platform-34` et `aapt2`).
 2. **Prébuilt `aapt2` ANDROID** — **FAIT en `v0.2.8`** : le composant
    `aapt2-arm64-v8a` est publié (prébuilt du projet ReVanced/aapt2, source AOSP
    Apache-2.0, segments LOAD alignés 16 Ko — la construction AOSP dédiée envisagée
    n'est plus nécessaire ; validation de redistribution dans `distribution.md` §7).
    Les autres ABI (armeabi-v7a, x86, x86_64) suivront à la demande — même source,
    même chaîne CI.
-3. **Feuille de route langages — Kotlin, Compose, multiplate-forme** (état : Java
-   seul ; la référence prouve chaque maillon, voir REF-130..136 et REF-145) :
-   - *Kotlin (cibles JVM/Android)* : réalisable sur le même schéma que Java — un
-     composant `kotlin-compiler` dexé embarquant `kotlin-compiler-embeddable`
-     (distribué sur Maven Central, jar de ~55 Mo en 2.0.x — à comparer au ~65 Mo
-     mesuré par la référence pour son artefact fusionné, REF-130), avec sa propre
-     passe d'audit ART (la référence a dû instrumenter le compilateur en profondeur
-     pour l'exécuter sur ART : passes bytecode, shims, contournements JIT,
-     REF-133/REF-135 — notre liste de contrôle). Ordre proposé : compilation
-     `compileKotlin` d'un module simple, mixte Java/Kotlin (ECJ et kotlinc se
-     partagent le classpath résolu), incrémental (REF-131/REF-132), puis KSP plutôt
-     que KAPT pour Room/Hilt (choix de la référence également). La bibliothèque
-     standard et les coroutines passent par le résolveur Maven déjà livré.
+3. **Feuille de route langages — Kotlin, Compose, multiplate-forme** (état :
+   Kotlin LIVRÉ sur JVM en `v0.2.9` — modules `java-library`, mixte Java/Kotlin,
+   composant `kotlin-compiler` publié EXPÉRIMENTAL sur ART ; la référence prouve
+   chaque maillon, voir REF-130..136 et REF-145) :
+   - *Kotlin (cibles JVM/Android)* — **FAIT pour la cible JVM en `v0.2.9`** (composant
+     dexé multi-dex de ~19 Mo : `kotlin-compiler-embeddable`
+     2.0.21 + dépendances runtime de son POM — l'embarquable seul meurt par
+     `NoClassDefFoundError` coroutines ; tâche `compileKotlin` avant `compileJava`,
+     même répertoire de classes ; stdlib de compilation par le classpath du moteur
+     (JVM) ou en dépendance Maven du module (appareil) ; exemple `kotlin-simple`).
+     Restent : l'AUDIT ART dédié (la référence a dû instrumenter le compilateur en
+     profondeur pour l'exécuter sur ART : passes bytecode, shims, contournements JIT,
+     REF-133/REF-135 — notre liste de contrôle), la compilation jointe
+     Kotlin→Java du même module (sens unique aujourd'hui), l'incrémental fin
+     (REF-131/REF-132), le câblage Android+Kotlin (refusé explicitement pour
+     l'instant), puis KSP plutôt que KAPT pour Room/Hilt (choix de la référence
+     également ; les processeurs d'annotations sont désactivés, parité Java). La
+     bibliothèque standard et les coroutines passent par le résolveur Maven livré.
    - *Compose* : au-dessus de Kotlin — plugin compilateur Compose (embarqué avec
      Kotlin 2.x, activation par sonde de classpath REF-136) + dépendances
      `androidx.compose.*` résolues par Maven + la chaîne Android complète

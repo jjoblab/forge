@@ -89,11 +89,17 @@ des `targetSdk` antérieurs à 23).
    complète — tests, assemblage des composants dexés (`:engine:composants` :
    engine-core, java-compiler, dexeur, signeur, platform-34 et aapt2-arm64-v8a
    depuis v0.2.8 — le prébuilt Android de ReVanced/aapt2 téléchargé à l'exécution,
-   voir §7),
+   voir §7 —, et kotlin-compiler depuis v0.2.9 — ~19 Mo, 6 dex, expérimental sur
+   ART, voir §7),
    signature du manifeste avec le secret `FORGE_MANIFEST_KEY`, **vérification de la
    signature contre la clé publique épinglée** (prouve que le jeton CI et la coquille
    parlent de la même paire), publication d'une version GitHub avec tous les
-   artefacts. La **clé privée ECDSA du manifeste ne sort jamais de la CI** (secret
+   artefacts. Depuis v0.2.9 (économie de données), les composants d'OUTILS
+   (`platform-*`, `aapt2-*`) sont AUSSI téléversés sur la release pérenne
+   « `outils` » et leur version est DÉRIVÉE de leur contenu (`<base>.<somme8>`) :
+   un manifeste ultérieur pointe l'archive déjà publiée sans la re-téléverser, et
+   l'appareil ne re-télécharge jamais un contenu identique (cache local par
+   empreinte de contenu, mise à jour sans octet superflu). La **clé privée ECDSA du manifeste ne sort jamais de la CI** (secret
    GitHub, posé le 2026-11-20, première génération) ; la clé publique correspondante
    est épinglée dans `app/src/main/java/jo/forge/app/ClesForge.java`.
 2. **Rotation de clé** : prévue par la conception sans changement de format — la coquille
@@ -111,6 +117,12 @@ des `targetSdk` antérieurs à 23).
 
 - **Versionnement sémantique** pour la coquille, le moteur et chaque composant ; le protocole
   `api` a sa propre version (négociation à la poignée de main, conception D-07).
+- Depuis `v0.2.9` : la version des composants d'OUTILS (`platform-*`, `aapt2-*`) est
+  DÉRIVÉE de leur contenu (`<base>.<somme8>`, ex. `34.0.0.dba22cde`) — elle ne bouge
+  que si le contenu bouge — et ces archives résident sur la release GitHub pérenne
+  « `outils` » : une mise à jour du moteur ne re-télécharge que ce qui a réellement
+  changé (le manifeste porte une empreinte de contenu par composant ; l'appareil lie
+  par lien dur les fichiers déjà téléchargés).
 - Le moteur se met à jour **sans mettre à jour l'application** (c'est le but de l'architecture)
   ; la coquille trop vieille pour un manifeste est refusée proprement (`minAppVersion`) avec le
   message « mettez à jour l'application pour installer ce moteur ».
@@ -153,7 +165,28 @@ moteur figé entre deux mises à jour de l'application, perte de l'installation 
     vraies fabriques). Rien à redistribuer de Google ici : nos tranches remplacent
     le `core-lambda-stubs.jar` des build-tools sans le copier ;
   - d8/R8 (dexeur) : Apache-2.0 ;
-  - apksig (signature) : Apache-2.0.
+  - apksig (signature) : Apache-2.0 ;
+  - compilateur Kotlin (composant `kotlin-compiler`, publié depuis v0.2.9 —
+    expérimental sur ART) : `kotlin-compiler-embeddable` 2.0.21 et ses dépendances
+    runtime du POM (`kotlin-stdlib`, `kotlin-reflect`, `kotlin-script-runtime`,
+    `kotlin-daemon-embeddable`, `kotlinx-coroutines-core-jvm`,
+    `org.jetbrains:annotations` — tous **Apache-2.0**) **plus trove4j
+    (`org.jetbrains.intellij.deps:trove4j`, LGPL-2.1 — voir ci-dessous)** ; ~19 Mo
+    dexés (6 `classes*.dex`). L'embarquable seul meurt à l'exécution
+    (`NoClassDefFoundError` coroutines, constat v0.2.9) : l'ensemble du POM est
+    distribué. Les métadonnées `META-INF/*.kotlin_module` en conflit entre jars
+    sont gagnées par le premier jar (même gagnant qu'un classpath de bureau) ;
+  - **trove4j (LGPL-2.1)** : le compilateur Kotlin en a BESOIN à l'exécution
+    (`gnu/trove/TObjectHashingStrategy` — `NoClassDefFoundError` constaté v0.2.9
+    sans lui) ; le jar Maven d'origine n'embarque AUCUNE notice, et la
+    redistribution exige la licence et une offre de source : Forge embarque donc
+    `META-INF/notice-trove4j.txt` dans le jar du composant (licence, provenance,
+    source complète correspondante — dépôt amont JetBrains et artefact de sources
+    Maven Central). Le composant est un OUTIL téléchargé séparément, chargé par le
+    classloader du moteur dans son propre processus : aucun code de la coquille ni
+    des projets de l'utilisateur ne l'embarque. Si le propriétaire du dépôt juge
+    l'offre de source insuffisante au sens strict du LGPL §4, le repli est de
+    publier le source de trove4j aux côtés des releases (même chaîne CI).
 - **Aucun code du moteur de référence** n'est embarqué (réimplémentation indépendante, voir
   [`REFERENCES.md`](REFERENCES.md) §licence) ; sa licence GPL-3.0 ne contamine donc pas la
   nôtre.
@@ -190,8 +223,10 @@ moteur figé entre deux mises à jour de l'application, perte de l'installation 
   : l'état du moteur est reconstitué (magasin d'empreintes atomique, conception D-12) et le
   diagnostic distingue « tué par le système » d'un échec de build.
 - **Espace disque** : l'assistant affiche tailles exactes et espace libre avant tout
-  téléchargement ; le moteur complet (cœur + plateforme + `aapt2` + Kotlin optionnel) pèse
-  ~100 Mo téléchargés.
+  téléchargement ; le moteur complet (cœur ~7 Mo + plateforme ~23 Mo + `aapt2` ~4,7 Mo +
+  Kotlin optionnel ~19 Mo) pèse ~55 Mo téléchargés (v0.2.9, composants zippés mesurés) —
+  et une mise à jour au contenu inchangé ne re-télécharge RIEN (cache par empreinte de
+  contenu, v0.2.9).
 - **Données mobiles** : avertissement systématique avant téléchargement sur réseau payant,
   avec la taille totale.
 - **Batterie** : builds annulables à tout instant, extinction automatique du moteur au repos.
