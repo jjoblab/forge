@@ -208,7 +208,7 @@ jobs:
           open('/tmp/cle-publique.b64', 'w').write(''.join(morceaux))
           PY
           ./gradlew --no-daemon :setup:jar :json:jar :api:jar -q
-          java -cp "setup/build/libs/setup-0.2.9.jar:json/build/libs/json-0.2.9.jar:api/build/libs/api-0.2.9.jar" \
+          java -cp "setup/build/libs/setup-0.2.10.jar:json/build/libs/json-0.2.10.jar:api/build/libs/api-0.2.10.jar" \
             jo.forge.setup.manifest.OutilManifeste verifier \
             engine/build/composants/manifest.json /tmp/cle-publique.b64 \
             engine/build/composants/manifest.sig
