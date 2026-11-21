@@ -111,6 +111,17 @@ import java.util.zip.ZipOutputStream;
  *       [--clé-privée &lt;pkcs8-b64&gt;] [--sans-outils-android]
  * </pre>
  *
+ * <p><b>Invariant d'archive finale</b> (correctif v0.2.20, rapport appareil v0.2.19 :
+ * le plugin compilateur Compose manquait à l'appareil alors que le diagnostic y
+ * renvoyait — la réparation re-servait le cache au même contenu périmé) :
+ * l'entrée de manifeste d'un composant (taille, somme, empreinte de contenu) est
+ * calculée sur l'archive FINALE, après que TOUTES ses entrées y sont posées —
+ * le plugin Compose est embarqué dans la même passe d'empaquetage que le jar
+ * dexé principal, et AUCUNE écriture postérieure n'existe (l'ajouteur tardif
+ * d'entrée est retiré ; la cohérence est de plus VÉRIFIÉE à l'installation par
+ * {@code EngineInstaller}, qui refuse une archive dont l'empreinte ne correspond
+ * pas au manifeste signé).</p>
+ *
  * <p><b>Versions dérivées du contenu</b> (v0.2.9, économie de données mobiles) :
  * les composants d'outils ({@code aapt2-&lt;abi&gt;}, {@code platform-&lt;api&gt;}) ne portent
  * PLUS la version du moteur — qui changeait à chaque publication quand bien même
@@ -337,14 +348,6 @@ public final class PackagerComposants {
                         dirCompatKotlin));
             }
             vérifierRéférencesStax(jarsKotlin);
-            composants.add(composantDexé(sortie, version, "kotlin-compiler",
-                    "compilateur Kotlin embarqué (kotlin-compiler-embeddable, StAX "
-                            + "et surface javax pour ART) — expérimental, validation "
-                            + "ART en cours",
-                    List.of("engine-core"),
-                    d8, androidJar, jarsKotlin,
-                    Map.of("META-INF/notice-trove4j.txt", NOTICE_TROVE4J,
-                            "META-INF/notice-stax.txt", NOTICE_STAX)));
             // Plugin compilateur Compose (v0.2.15) : un SECOND jar dexé du même
             // composant, lib/compose-compiler.jar. Pourquoi séparé du gros jar : le
             // compilateur lit le descripteur de services DANS le fichier passé à
@@ -353,6 +356,17 @@ public final class PackagerComposants {
             // classpath du moteur (délégation parente du chargeur de plugins sur
             // ART, où les octets .class d'un jar ne se définissent pas) — la
             // session pose tout lib/*.jar au CLASSPATH.
+            //
+            // Correctif v0.2.20 (rapport appareil v0.2.19) : le jar est dexé et
+            // prêt AVANT l'assemblage du composant, embarqué dans la MÊME passe
+            // d'empaquetage — l'entrée de manifeste (taille, somme, empreinte de
+            // contenu) décrit l'archive FINALE, plugin compris. L'ordre historique
+            // (manifeste calculé, PUIS plugin ajouté à l'archive) publiait un
+            // manifeste décrivant un contenu sans plugin : l'appareil servait le
+            // cache au contenu périmé (même empreinte — le bouton Réparer avec) et
+            // le plugin n'atteignait JAMAIS l'appareil ; une installation fraîche,
+            // elle, échouait sur la somme de l'archive publiée.
+            Map<String, Path> fichiersAdditionnels = Map.of();
             if (options.containsKey("compose-plugin")) {
                 if (androidJar == null || !Files.isRegularFile(androidJar)) {
                     throw new IOException("--compose-plugin exige --android-jar "
@@ -367,13 +381,20 @@ public final class PackagerComposants {
                 écrireJarDexé(dexes, List.of(jarPlugin), Map.of(
                         "META-INF/notice-compose-compiler.txt",
                         NOTICE_COMPOSE_COMPILER), jarDexé);
-                Path archiveKotlin = sortie.resolve(
-                        "kotlin-compiler-" + version + ".zip");
-                ajouterÀArchive(archiveKotlin, jarDexé, "lib/compose-compiler.jar");
+                fichiersAdditionnels = Map.of("lib/compose-compiler.jar", jarDexé);
                 System.out.println("[composant kotlin-compiler] plugin Compose dexé "
                         + "-> lib/compose-compiler.jar (" + Files.size(jarDexé)
                         + " octets, " + dexes.size() + " dex)");
             }
+            composants.add(composantDexé(sortie, version, "kotlin-compiler",
+                    "compilateur Kotlin embarqué (kotlin-compiler-embeddable, StAX "
+                            + "et surface javax pour ART) — expérimental, validation "
+                            + "ART en cours",
+                    List.of("engine-core"),
+                    d8, androidJar, jarsKotlin,
+                    Map.of("META-INF/notice-trove4j.txt", NOTICE_TROVE4J,
+                            "META-INF/notice-stax.txt", NOTICE_STAX),
+                    fichiersAdditionnels));
         }
         if (options.containsKey("aapt2") && !sansOutilsAndroid) {
             String abi = options.getOrDefault("abi", List.of("arm64-v8a")).get(0);
@@ -431,7 +452,7 @@ public final class PackagerComposants {
             String id, String description, List<String> dépendances, Path d8,
             Path androidJar, List<Path> jars) throws IOException, InterruptedException {
         return composantDexé(sortie, version, id, description, dépendances, d8,
-                androidJar, jars, Map.of());
+                androidJar, jars, Map.of(), Map.of());
     }
 
     /**
@@ -445,6 +466,30 @@ public final class PackagerComposants {
             String id, String description, List<String> dépendances, Path d8,
             Path androidJar, List<Path> jars, Map<String, String> notices)
             throws IOException, InterruptedException {
+        return composantDexé(sortie, version, id, description, dépendances, d8,
+                androidJar, jars, notices, Map.of());
+    }
+
+    /**
+     * Assemble un composant dexé AVEC fichiers additionnels de l'archive (correctif
+     * v0.2.20 : le plugin compilateur Compose du composant kotlin-compiler,
+     * {@code lib/compose-compiler.jar}). Les fichiers additionnels sont embarqués
+     * dans la MÊME passe d'empaquetage que le jar dexé principal — l'archive
+     * produite est FINALE et l'entrée de manifeste (taille, somme, empreinte de
+     * contenu) la décrit telle quelle. Aucune écriture postérieure n'existe :
+     * l'ajouteur tardif d'entrée, responsable du rapport appareil v0.2.19 (manifeste
+     * décrivant un contenu SANS plugin, cache de l'appareil servant ce contenu
+     * périmé indéfiniment), est retiré.
+     *
+     * @param notices             entrées supplémentaires du jar principal.
+     * @param fichiersAdditionnels chemins d'entrée d'archive vers fichiers posés
+     *                             tels quels (ex. jar dexé du plugin Compose).
+     */
+    private static ComponentManifest composantDexé(Path sortie, String version,
+            String id, String description, List<String> dépendances, Path d8,
+            Path androidJar, List<Path> jars, Map<String, String> notices,
+            Map<String, Path> fichiersAdditionnels)
+            throws IOException, InterruptedException {
         if (androidJar == null || !Files.isRegularFile(androidJar)) {
             throw new IOException("composant " + id + " : --android-jar requis "
                     + "pour le dexage");
@@ -452,7 +497,8 @@ public final class PackagerComposants {
         Path travail = Files.createTempDirectory("forge-dex-" + id);
         List<Path> dexes = dexer(d8, androidJar, jars, travail, id);
         Path archive = sortie.resolve(id + "-" + version + ".zip");
-        emballerJarDexe(dexes, archive, cheminDexe(id), jars, notices);
+        emballerJarDexe(dexes, archive, cheminDexe(id), jars, notices,
+                fichiersAdditionnels);
         System.out.println("[composant " + id + "] " + archive.getFileName() + " ("
                 + Files.size(archive) + " octets, " + dexes.size() + " dex) — "
                 + description);
@@ -773,39 +819,6 @@ public final class PackagerComposants {
     }
 
     /**
-     * Ajoute un fichier à une archive de composant EXISTANTE (réécriture
-     * atomique : toutes les entrées présentes sont recopiées, la nouvelle
-     * suit).
-     */
-    private static void ajouterÀArchive(Path archive, Path fichier, String cheminInterne)
-            throws IOException {
-        Path temporaire = archive.resolveSibling(archive.getFileName() + ".part");
-        try (java.util.zip.ZipFile existante = new java.util.zip.ZipFile(
-                archive.toFile());
-             ZipOutputStream zip = new ZipOutputStream(
-                     Files.newOutputStream(temporaire))) {
-            for (ZipEntry entrée : existante.stream()
-                    .sorted(Comparator.comparing(ZipEntry::getName)).toList()) {
-                ZipEntry copie = new ZipEntry(entrée.getName());
-                copie.setTime(HORODATAGE_FIXE);
-                zip.putNextEntry(copie);
-                existante.getInputStream(entrée).transferTo(zip);
-                zip.closeEntry();
-            }
-            ZipEntry nouvelle = new ZipEntry(cheminInterne);
-            nouvelle.setTime(HORODATAGE_FIXE);
-            zip.putNextEntry(nouvelle);
-            Files.copy(fichier, zip);
-            zip.closeEntry();
-        }
-        try {
-            Files.move(temporaire, archive, StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException pasAtomique) {
-            Files.move(temporaire, archive, StandardCopyOption.REPLACE_EXISTING);
-        }
-    }
-
-    /**
      * Garde-fou StAX du composant kotlin-compiler (correctif v0.2.14) : toute
      * classe {@code javax/xml/stream/} référencée par l'un des jars de
      * l'ensemble doit être servie par l'un d'eux — sinon échec nommé de
@@ -1067,19 +1080,48 @@ public final class PackagerComposants {
     static void emballerJarDexe(List<Path> dexes, Path archive, String cheminDestination,
                                 List<Path> jarsSources, Map<String, String> notices)
             throws IOException {
+        emballerJarDexe(dexes, archive, cheminDestination, jarsSources, notices, Map.of());
+    }
+
+    /**
+     * Variante avec fichiers ADDITIONNELS de l'archive (correctif v0.2.20) : le
+     * jar dexé principal est posé à son chemin de destination PUIS chaque fichier
+     * additionnel au sien (ordre trié, horodatage fixe — déterminisme), en UNE
+     * SEULE passe d'écriture atomique. L'archive produite est FINALE : c'est
+     * celle-là que l'entrée de manifeste doit décrire — le rapport appareil
+     * v0.2.19 est né d'un ajout postérieur (voir
+     * {@link #composantDexé(Path, String, String, String, List, Path, Path, List,
+     * Map, Map)}).
+     *
+     * @param fichiersAdditionnels chemins d'entrée d'archive vers fichiers posés
+     *                             tels quels (ex. {@code lib/compose-compiler.jar}).
+     */
+    static void emballerJarDexe(List<Path> dexes, Path archive, String cheminDestination,
+                                List<Path> jarsSources, Map<String, String> notices,
+                                Map<String, Path> fichiersAdditionnels) throws IOException {
         Path travail = Files.createTempFile("forge-jar-dexe", ".jar");
         try {
             écrireJarDexé(dexes, jarsSources, notices, travail);
-            zipperFichier(archive, travail, cheminDestination);
+            if (fichiersAdditionnels.isEmpty()) {
+                zipperFichier(archive, travail, cheminDestination);
+            } else {
+                SortedMap<String, Path> entrées = new TreeMap<>(fichiersAdditionnels);
+                entrées.put(cheminDestination, travail);
+                zipperFichiers(archive, entrées);
+            }
         } finally {
             Files.deleteIfExists(travail);
         }
     }
 
     /**
-     * Écrit le JAR DEXÉ LUI-MÊME (sans l'enrobe d'archive mono-entrée) — pour un
-     * second jar d'un composant existant, ajouté ensuite par
-     * {@link #ajouterÀArchive}.
+     * Écrit le JAR DEXÉ LUI-MÊME (sans l'enrobe d'archive) — pour un second jar
+     * d'un composant (ex. plugin compilateur Compose), embarqué ensuite par
+     * {@link #emballerJarDexe(List, Path, String, List, Map, Map)} comme fichier
+     * additionnel de l'archive, AVANT que son entrée de manifeste ne soit
+     * calculée (correctif v0.2.20 : un ajout postérieur laissait le manifeste
+     * décrire un contenu que l'archive publiée ne portait pas — rapport appareil
+     * v0.2.19).
      */
     static void écrireJarDexé(List<Path> dexes, List<Path> jarsSources,
                               Map<String, String> notices, Path sortie) throws IOException {
@@ -1282,8 +1324,12 @@ public final class PackagerComposants {
      * {@code outils} quand {@code urlOutils} est donné (un contenu identique reste
      * servi par la même URL d'une publication à l'autre) ; sinon la version du
      * moteur (comportement historique).
+     *
+     * <p>Package-privé pour les tests de cohérence manifeste ↔ archive publiée
+     * (correctif v0.2.20) : l'entrée doit décrire l'archive FINALE, après que
+     * toutes ses entrées y sont posées.</p>
      */
-    private static ComponentManifest manifesteDe(Path archive, String version,
+    static ComponentManifest manifesteDe(Path archive, String version,
             List<String> abis, List<String> dépendances, String urlOutils)
             throws IOException {
         String url = urlOutils != null
@@ -1332,6 +1378,40 @@ public final class PackagerComposants {
             zip.putNextEntry(entrée);
             Files.copy(fichier, zip);
             zip.closeEntry();
+        }
+        try {
+            Files.move(temporaire, archive, StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING);
+        } catch (IOException pasAtomique) {
+            Files.move(temporaire, archive, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /**
+     * Zip déterministe MULTI-entrées (correctif v0.2.20) : chaque couple chemin
+     * d'entrée → fichier est posé dans l'ordre trié des chemins, en une seule
+     * écriture atomique ({@code .part} puis renommage). C'est la SEULE manière
+     * de produire une archive de composant à plusieurs fichiers : l'archive
+     * écrite ici est FINALE, et l'entrée de manifeste la décrit telle quelle —
+     * l'écriture postérieure d'une archive déjà déclarée au manifeste (à
+     * l'origine du rapport appareil v0.2.19) n'a plus de fonction pour
+     * l'exécuter.
+     *
+     * @param archive archive du composant à écrire ({@code <id>-<version>.zip}).
+     * @param entrées chemins d'entrée vers fichiers (triés avant écriture).
+     */
+    private static void zipperFichiers(Path archive, SortedMap<String, Path> entrées)
+            throws IOException {
+        Path temporaire = archive.resolveSibling(archive.getFileName() + ".part");
+        try (ZipOutputStream zip = new ZipOutputStream(
+                Files.newOutputStream(temporaire))) {
+            for (Map.Entry<String, Path> entrée : entrées.entrySet()) {
+                ZipEntry fichier = new ZipEntry(entrée.getKey());
+                fichier.setTime(HORODATAGE_FIXE);
+                zip.putNextEntry(fichier);
+                Files.copy(entrée.getValue(), zip);
+                zip.closeEntry();
+            }
         }
         try {
             Files.move(temporaire, archive, StandardCopyOption.ATOMIC_MOVE,

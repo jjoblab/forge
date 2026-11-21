@@ -171,6 +171,7 @@ public final class EngineInstaller {
                     octetsÉvités += composant.size();
                 } else {
                     Path archive = source.fetch(composant, progress, cancel);
+                    vérifierEmpreinte(composant, archive);
                     extractor.extract(archive, staging);
                     // Seuls les fichiers NOUVEAUX appartiennent à ce composant (un composant
                     // suivant ne doit pas hériter des fichiers du précédent).
@@ -218,6 +219,44 @@ public final class EngineInstaller {
             // Le staging a pu rester en lecture seule : rétablir avant suppression.
             retablirEcriture(staging);
             Files2.supprimerRecursivement(staging);
+        }
+    }
+
+    /**
+     * Vérifie que l'archive téléchargée correspond à l'EMPREINTE DE CONTENU du
+     * manifeste signé (correctif v0.2.20, rapport appareil v0.2.19) : la somme
+     * SHA-256 garantit que l'octet est celui que le manifeste annonce, l'empreinte
+     * que le CONTENU extrait sera celui que le cache et la réparation serviront
+     * ensuite. La chaîne v0.2.15–v0.2.19 publiait exactement l'incohérence que ce
+     * garde intercepte pour kotlin-compiler (somme d'une archive, empreinte d'une
+     * autre — sans plugin) : sur un appareil sans cache, l'installation échouait
+     * sur la somme ; sur un appareil AVEC cache, c'était pire — l'empreinte
+     * périmée faisait servir l'ancien contenu sans plugin, SANS AUCUN échec, et le
+     * bouton Réparer re-servait le même cache. Ce contrôle échoue désormais
+     * nommément, AVANT extraction, dès que la chaîne de publication ment.
+     *
+     * @param composant composant voulu (empreinte du manifeste signé).
+     * @param archive   archive complète, somme déjà vérifiée par la source.
+     * @throws InstallException si l'empreinte de l'archive ne correspond pas au
+     *                           manifeste — installation refusée, état intact.
+     */
+    private static void vérifierEmpreinte(ComponentManifest composant, Path archive) {
+        if (composant.empreinte() == null) {
+            return; // Manifeste antérieur à v0.2.9 : pas d'identité de contenu.
+        }
+        String empreinte;
+        try {
+            empreinte = EmpreinteContenu.deArchive(archive);
+        } catch (IOException illisible) {
+            throw new InstallException("composant " + composant.id()
+                    + " : archive téléchargée illisible ("
+                    + illisible.getMessage() + ")");
+        }
+        if (!empreinte.equals(composant.empreinte())) {
+            throw new InstallException("composant " + composant.id()
+                    + " : l'archive téléchargée ne correspond pas à l'empreinte de "
+                    + "contenu du manifeste signé — chaîne de publication "
+                    + "incohérente, installation refusée");
         }
     }
 

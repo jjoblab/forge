@@ -187,6 +187,51 @@ class EngineInstallerTest {
     }
 
     @Test
+    void archiveDontLEmpreinteDivergeDuManifesteRefusée() throws IOException {
+        // Régression v0.2.20 (rapport appareil v0.2.19) : la chaîne de publication
+        // signait pour kotlin-compiler une empreinte de contenu SANS le jar du
+        // plugin Compose tandis que l'archive publiée le portait. Un appareil sans
+        // cache échouait sur la somme ; un appareil AVEC cache servait
+        // silencieusement le contenu périmé — plugin jamais installé, bouton
+        // Réparer impuissant. Ici la SOMME est honnête mais l'EMPREINTE ment :
+        // l'installateur doit refuser nommément, AVANT extraction, état intact.
+        Path archive = paquetsDir.resolve("kotlin-compiler-0.2.20.zip");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(archive))) {
+            zip.putNextEntry(new ZipEntry("lib/kotlin-compiler.jar"));
+            zip.write("dex du compilateur".getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+            zip.putNextEntry(new ZipEntry("lib/compose-compiler.jar"));
+            zip.write("dex du plugin".getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        // Le contenu périmé : l'archive sans le plugin, celle que l'empreinte des
+        // manifestes v0.2.15–v0.2.19 décrivait.
+        Path périmée = paquetsDir.resolve("kotlin-compiler-perime.zip");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(périmée))) {
+            zip.putNextEntry(new ZipEntry("lib/kotlin-compiler.jar"));
+            zip.write("dex du compilateur".getBytes(StandardCharsets.UTF_8));
+            zip.closeEntry();
+        }
+        ComponentManifest menteur = new ComponentManifest("kotlin-compiler", "0.2.20",
+                Files.size(archive), Files2.sha256(archive),
+                List.of("http://127.0.0.1:" + serveur.getAddress().getPort()
+                        + "/kotlin-compiler"),
+                List.of("all"), 1, List.of(), EmpreinteContenu.deArchive(périmée));
+
+        EngineInstaller installateur = installateurLocal();
+        InstallException refus = assertThrows(InstallException.class,
+                () -> installateur.install(manifeste("0.2.20", List.of(menteur)),
+                        "arm64-v8a", null, new CancellationToken()));
+        assertTrue(refus.getMessage().contains("empreinte"),
+                "le refus nomme l'empreinte : " + refus.getMessage());
+        assertTrue(refus.getMessage().contains("kotlin-compiler"),
+                "le refus nomme le composant : " + refus.getMessage());
+        assertNull(installateur.currentState(), "aucun état après refus");
+        assertFalse(Files.exists(home.engineDir("0.2.20")),
+                "aucun moteur visible après refus");
+    }
+
+    @Test
     void miseAJourRemplaceLancienMoteur() throws IOException {
         ComponentManifest v1 = composantLocal("engine-core", "0.1.0", List.of(),
                 "engine.jar");

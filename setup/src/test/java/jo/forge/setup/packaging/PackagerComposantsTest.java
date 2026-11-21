@@ -1,6 +1,9 @@
 package jo.forge.setup.packaging;
 
+import jo.forge.setup.manifest.ComponentManifest;
+import jo.forge.setup.manifest.EmpreinteContenu;
 import jo.forge.setup.packaging.fixtures.ClasseQuiRéférenceLApi;
+import jo.forge.setup.util.Files2;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -13,6 +16,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipInputStream;
@@ -338,6 +342,64 @@ class PackagerComposantsTest {
                     + "ComposePluginRegistrar.class") == null,
                     "les .class ne doublonnent pas le dex");
         }
+    }
+
+    @Test
+    void manifesteDécritLArchivePubliéeAvecLePluginCompose() throws IOException {
+        // Régression v0.2.20 (rapport appareil v0.2.19) : l'entrée de manifeste du
+        // composant kotlin-compiler décrivait l'archive SANS lib/compose-compiler.jar
+        // — calculée AVANT l'ajout tardif du plugin à l'archive. Sur l'appareil,
+        // l'empreinte périmée faisait servir le cache au contenu sans plugin (le
+        // bouton Réparer avec) ; une installation fraîche échouait sur la somme de
+        // l'archive publiée. L'entrée de manifeste doit décrire l'archive FINALE,
+        // plugin compris — taille, somme ET empreinte de contenu.
+        Path dex = temporaire.resolve("classes.dex");
+        Files.write(dex, "dex du compilateur".getBytes(StandardCharsets.UTF_8));
+        Path dexPlugin = temporaire.resolve("plugin-classes.dex");
+        Files.write(dexPlugin, "dex du plugin".getBytes(StandardCharsets.UTF_8));
+        Path jarPlugin = temporaire.resolve("compose-compiler.jar");
+        PackagerComposants.écrireJarDexé(List.of(dexPlugin), List.of(jarPluginCompose()),
+                Map.of("META-INF/notice-compose-compiler.txt", "Apache-2.0"),
+                jarPlugin);
+        Path archive = temporaire.resolve("kotlin-compiler-0.2.20.zip");
+
+        PackagerComposants.emballerJarDexe(List.of(dex), archive,
+                "lib/kotlin-compiler.jar", List.of(),
+                Map.of("META-INF/notice-trove4j.txt", "LGPL-2.1"),
+                Map.of("lib/compose-compiler.jar", jarPlugin));
+
+        // L'archive publiée porte les DEUX jars.
+        try (ZipFile publiée = new ZipFile(archive.toFile())) {
+            assertNotNull(publiée.getEntry("lib/kotlin-compiler.jar"),
+                    "le jar du compilateur est dans l'archive");
+            assertNotNull(publiée.getEntry("lib/compose-compiler.jar"),
+                    "le plugin est dans l'archive publiée");
+        }
+
+        // L'entrée de manifeste décrit CETTE archive-là, octet pour octet.
+        ComponentManifest entrée = PackagerComposants.manifesteDe(archive, "0.2.20",
+                List.of("all"), List.of("engine-core"), null);
+        assertEquals(Files.size(archive), entrée.size(),
+                "taille du manifeste = taille de l'archive publiée");
+        assertEquals(Files2.sha256(archive), entrée.sha256(),
+                "somme du manifeste = somme de l'archive publiée");
+        assertEquals(EmpreinteContenu.deArchive(archive), entrée.empreinte(),
+                "l'empreinte couvre l'archive publiée, plugin compris");
+
+        // Et PAS le contenu sans plugin — la valeur que le bug publiait (preuve
+        // du rapport v0.2.19 : l'empreinte du manifeste égalait exactement
+        // celle de l'archive sans le plugin).
+        Map<String, String> sansPlugin = new TreeMap<>();
+        try (ZipFile zip = new ZipFile(archive.toFile())) {
+            for (ZipEntry e : zip.stream().toList()) {
+                if (!e.isDirectory()
+                        && !e.getName().equals("lib/compose-compiler.jar")) {
+                    sansPlugin.put(e.getName(), Files2.sha256(zip.getInputStream(e)));
+                }
+            }
+        }
+        assertNotEquals(EmpreinteContenu.deCarte(sansPlugin), entrée.empreinte(),
+                "le manifeste ne décrit plus le contenu sans plugin");
     }
 
     @Test
