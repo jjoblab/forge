@@ -16,6 +16,7 @@ import jo.forge.api.MessageIO;
 import jo.forge.api.Pong;
 import jo.forge.api.ProtocolVersions;
 import jo.forge.api.Status;
+import jo.forge.engine.server.ConsoleDeBuild;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -66,6 +67,9 @@ public final class FakeEngineServer {
     private final ExecutorService buildExecutor;
     private final Map<String, Future<?>> runningBuilds = new ConcurrentHashMap<>();
 
+    /** Version de protocole négociée à la poignée de main (1 avant négociation). */
+    private volatile int protocoleNégocié = ProtocolVersions.PROTOCOL_MIN;
+
     /**
      * Crée le serveur sur les flux donnés.
      *
@@ -114,6 +118,7 @@ public final class FakeEngineServer {
                             out, "Version de protocole refusée : " + hello.protocolVersion()));
                     return false;
                 }
+                protocoleNégocié = hello.protocolVersion();
                 // Accusé de poignée de main : la coquille attend cette confirmation.
                 reply(frame, FrameType.CLIENT_HELLO, out -> MessageIO.writeClientHello(
                         out, new ClientHello(ENGINE_VERSION, hello.protocolVersion())));
@@ -157,13 +162,22 @@ public final class FakeEngineServer {
 
     /**
      * Déroule le scénario du build scripté (succès, échec ou lent selon l'identifiant).
+     *
+     * <p>Parité protocole 4 (D-21) avec le vrai moteur : vers une coquille moderne,
+     * les lignes de console (tâche à l'issue, verdict) partent composées PAR LE
+     * MOTEUR et le niveau demandé ({@code consoleLevel}) filtre le journal ; vers une
+     * coquille ancienne, le scénario d'avant — la coquille compose elle-même.</p>
      */
     private void runScriptedBuild(BuildRequest request) {
         String id = request.buildId();
         long start = System.currentTimeMillis();
+        ConsoleDeBuild console = new ConsoleDeBuild(request.options().consoleLevel());
+        boolean consoleMoteur = protocoleNégocié >= 4;
         try {
-            event(new BuildEvent.LogEvent(id, now(), BuildEvent.LogEvent.LogLevel.INFO,
-                    "Build factice démarré pour " + request.projectRoot()));
+            if (!consoleMoteur || console.visible(BuildEvent.LogEvent.LogLevel.INFO)) {
+                event(new BuildEvent.LogEvent(id, now(), BuildEvent.LogEvent.LogLevel.INFO,
+                        "Build factice démarré pour " + request.projectRoot()));
+            }
             event(new BuildEvent.TaskStateEvent(id, now(), "demo:compile",
                     BuildEvent.TaskState.STARTED, 0));
             if (id.startsWith("slow-")) {
@@ -181,23 +195,48 @@ public final class FakeEngineServer {
                 event(new BuildEvent.DiagnosticEvent(id, now(),
                         BuildEvent.Severity.ERROR, "src/Demo.java", 7, 12,
                         "demo:error", "erreur simulée pour les tests", "fake-engine"));
-                event(new BuildEvent.TaskStateEvent(id, now(), "demo:compile",
-                        BuildEvent.TaskState.FAILED, 60));
-                event(new BuildEvent.BuildFinished(id, now(), false, "demo:compile",
-                        System.currentTimeMillis() - start, "échec simulé"));
+                BuildEvent.TaskStateEvent échec = new BuildEvent.TaskStateEvent(id, now(),
+                        "demo:compile", BuildEvent.TaskState.FAILED, 60);
+                event(échec);
+                if (consoleMoteur) {
+                    consoleLigne(id, console.ligneTâche(échec));
+                }
+                BuildEvent.BuildFinished fin = new BuildEvent.BuildFinished(id, now(),
+                        false, "demo:compile", System.currentTimeMillis() - start,
+                        "échec simulé");
+                if (consoleMoteur) {
+                    consoleLigne(id, console.verdict(fin));
+                }
+                event(fin);
                 return;
             }
-            event(new BuildEvent.TaskStateEvent(id, now(), "demo:compile",
-                    BuildEvent.TaskState.SUCCEEDED, 60));
+            BuildEvent.TaskStateEvent succès = new BuildEvent.TaskStateEvent(id, now(),
+                    "demo:compile", BuildEvent.TaskState.SUCCEEDED, 60);
+            event(succès);
+            if (consoleMoteur) {
+                consoleLigne(id, console.ligneTâche(succès));
+            }
             event(new BuildEvent.ProgressEvent(id, now(), 1, 1));
-            event(new BuildEvent.BuildFinished(id, now(), true, null,
-                    System.currentTimeMillis() - start, "build factice réussi"));
+            BuildEvent.BuildFinished fin = new BuildEvent.BuildFinished(id, now(), true,
+                    null, System.currentTimeMillis() - start, "build factice réussi");
+            if (consoleMoteur) {
+                consoleLigne(id, console.verdict(fin));
+            }
+            event(fin);
         } catch (InterruptedException interrupted) {
             Thread.currentThread().interrupt();
             // L'accusé d'annulation est envoyé par cancelBuild(), qui nous a interrompus.
         } catch (IOException ioError) {
             diagnostics.println("Erreur d'écriture du canal : " + ioError.getMessage());
         }
+    }
+
+    /**
+     * Émet une ligne de console composée par le moteur (protocole 4, LIFECYCLE).
+     */
+    private void consoleLigne(String buildId, String ligne) throws IOException {
+        event(new BuildEvent.LogEvent(buildId, now(),
+                BuildEvent.LogEvent.LogLevel.LIFECYCLE, ligne));
     }
 
     /**

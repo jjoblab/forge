@@ -12,6 +12,7 @@ import java.util.List;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * Tests des codecs de messages : aller-retour de chaque type, chaînes longues, valeurs
@@ -62,6 +63,46 @@ class MessageIOTest {
     }
 
     @Test
+    void buildRequestAvecNiveauDeConsole() throws IOException {
+        for (BuildEvent.LogEvent.LogLevel niveau : BuildEvent.LogEvent.LogLevel.values()) {
+            BuildRequest message = new BuildRequest("b-" + niveau, "/p",
+                    new BuildOptions(2, false, false, false, 4096, "arm64-v8a", niveau));
+            BuildRequest relue = roundTrip(message, MessageIO::writeBuildRequest,
+                    MessageIO::readBuildRequest);
+            assertEquals(niveau, relue.options().consoleLevel(),
+                    "le niveau de console doit survivre à l'aller-retour");
+            assertEquals(niveau == BuildEvent.LogEvent.LogLevel.DEBUG,
+                    relue.options().verbose(),
+                    "verbose dérive du niveau (une seule source de vérité)");
+        }
+    }
+
+    @Test
+    void chargeDAvantSansNiveauDeConsoleRemplaceParLeDéfaut() throws IOException {
+        // Une coquille d'avant le protocole 4 n'écrit PAS le niveau de console : le
+        // lecteur tolérant dérive du booléen verbose (bavard → DEBUG, sinon le
+        // LIFECYCLE par défaut) — l'ancienne charge reste lisible.
+        for (boolean verbose : new boolean[] {false, true}) {
+            ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+            DataOutputStream out = new DataOutputStream(bytes);
+            MessageIO.writeString(out, "b-ancienne");
+            MessageIO.writeString(out, "/projets/demo");
+            out.writeInt(2);
+            out.writeBoolean(false);
+            out.writeBoolean(true);
+            out.writeBoolean(verbose);
+            out.writeLong(4096);
+            MessageIO.writeString(out, "arm64-v8a");
+
+            BuildRequest relue = MessageIO.readBuildRequest(new DataInputStream(
+                    new ByteArrayInputStream(bytes.toByteArray())));
+            assertEquals(verbose ? BuildEvent.LogEvent.LogLevel.DEBUG
+                            : BuildEvent.LogEvent.LogLevel.LIFECYCLE,
+                    relue.options().consoleLevel());
+        }
+    }
+
+    @Test
     void chaineAuDelaDe64Kio() throws IOException {
         String grande = "é".repeat(70_000); // 2 octets par caractère : 140 000 octets.
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();
@@ -88,7 +129,9 @@ class MessageIOTest {
     void chaqueTypeEvenement() throws IOException {
         BuildEvent[] evenements = {
             new BuildEvent.LogEvent("b1", 1, BuildEvent.LogEvent.LogLevel.WARN, "attention"),
-            new BuildEvent.DiagnosticEvent("b1", 2, BuildEvent.Severity.ERROR, "A.java",
+            new BuildEvent.LogEvent("b1", 2, BuildEvent.LogEvent.LogLevel.LIFECYCLE,
+                    "> Tâche app:compileJava — À JOUR"),
+            new BuildEvent.DiagnosticEvent("b1", 3, BuildEvent.Severity.ERROR, "A.java",
                     12, 3, "javac:err", "symbole introuvable", "compilateur-java"),
             new BuildEvent.TaskStateEvent("b1", 3, "app:compile",
                     BuildEvent.TaskState.UP_TO_DATE, 45),
@@ -116,6 +159,30 @@ class MessageIOTest {
         assertEquals(BuildEvent.TaskState.FROM_CACHE,
                 BuildEvent.TaskState.fromWire(6));
         assertThrows(ProtocolException.class, () -> BuildEvent.TaskState.fromWire(99));
+    }
+
+    @Test
+    void lifecycleASonCodeFiliaireEtSaPlaceDansLaSévérité() {
+        // Code filaire : identifiant STABLE, choisi librement (5 — pas d'ordre).
+        assertEquals(5, BuildEvent.LogEvent.LogLevel.LIFECYCLE.wireCode());
+        assertEquals(BuildEvent.LogEvent.LogLevel.LIFECYCLE,
+                BuildEvent.LogEvent.LogLevel.fromWire(5));
+        assertThrows(ProtocolException.class,
+                () -> BuildEvent.LogEvent.LogLevel.fromWire(99));
+
+        // Sévérité : la grandeur ordonnée du filtrage de console (D-21).
+        BuildEvent.LogEvent.LogLevel[] duPlusLégerAuPlusLourd = {
+                BuildEvent.LogEvent.LogLevel.DEBUG,
+                BuildEvent.LogEvent.LogLevel.INFO,
+                BuildEvent.LogEvent.LogLevel.LIFECYCLE,
+                BuildEvent.LogEvent.LogLevel.WARN,
+                BuildEvent.LogEvent.LogLevel.ERROR,
+        };
+        for (int i = 1; i < duPlusLégerAuPlusLourd.length; i++) {
+            assertTrue(duPlusLégerAuPlusLourd[i - 1].sévérité()
+                            < duPlusLégerAuPlusLourd[i].sévérité(),
+                    "la sévérité ordonne DEBUG < INFO < LIFECYCLE < WARN < ERROR");
+        }
     }
 
     @Test

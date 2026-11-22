@@ -48,7 +48,14 @@ public final class InstallateurApk {
             session = installateur.openSession(identifiant);
             try (InputStream flux = Files.newInputStream(apk)) {
                 try (var sortie = session.openWrite("forge-apk", 0, Files.size(apk))) {
-                    flux.transferTo(sortie);
+                    // Copie manuelle (8 Kio) : InputStream.transferTo exige l'API 33 —
+                    // la coquille promet minSdk 28, la méthode manquait sur l'appareil
+                    // (plantage NoSuchMethodError à l'installation, bloqué par lint).
+                    byte[] tampon = new byte[8192];
+                    int lus;
+                    while ((lus = flux.read(tampon)) >= 0) {
+                        sortie.write(tampon, 0, lus);
+                    }
                 }
             }
             // La confirmation système suit : jamais d'installation silencieuse.

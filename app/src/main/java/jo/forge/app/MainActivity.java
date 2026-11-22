@@ -131,6 +131,16 @@ public class MainActivity extends Activity {
      * est REPRISE automatiquement, pas affichée comme un échec. */
     private volatile boolean buildEnCours = false;
 
+    /**
+     * Le moteur courant compose-t-il lui-même les lignes de la console (protocole
+     * 4, décision D-21) ? Vrai : la coquille n'AFFICHE plus que les lignes reçues
+     * (le moteur dicte le format, exactement comme Gradle dicte ses sorties) et le
+     * tri se fait côté moteur par l'argument {@code consoleLevel}. Faux (moteur plus
+     * ancien) : la coquille retombe sur sa composition locale d'avant — le protocole
+     * négocié dit laquelle des deux consoles vit.
+     */
+    private volatile boolean consoleDuMoteur = false;
+
     /** Chemin du build en cours (reprise automatique D-20). */
     private volatile String buildChemin = "";
 
@@ -251,7 +261,9 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Un niveau de journal est-il affiché à la verbosité courante ?
+     * Un niveau de journal est-il affiché à la verbosité courante ? (Mode composition
+     * locale uniquement : face à un moteur protocole 4, le tri est déjà fait côté
+     * moteur par l'argument {@code consoleLevel}.)
      *
      * @param niveau le niveau de l'entrée.
      * @return {@code true} si l'entrée doit figurer au journal.
@@ -603,7 +615,8 @@ public class MainActivity extends Activity {
         afficherRésumé(getString(R.string.import_running));
         exécuteur.submit(() -> {
             try {
-                Path projets = Path.of(getFilesDir().getAbsolutePath(), "projets");
+                Path projets = java.nio.file.Paths.get(getFilesDir().getAbsolutePath(),
+                        "projets");
                 Files.createDirectories(projets);
                 List<String> importés = new ArrayList<>();
                 String[] noms = getAssets().list("exemples");
@@ -614,7 +627,13 @@ public class MainActivity extends Activity {
                     Path temporaire = Files.createTempFile("forge-exemple-", ".zip");
                     try (var entrée = getAssets().open("exemples/" + nom);
                          var sortie = Files.newOutputStream(temporaire)) {
-                        entrée.transferTo(sortie);
+                        // Copie manuelle : transferTo exige l'API 33, la coquille
+                        // promet minSdk 28 (plantage à l'import sinon).
+                        byte[] tampon = new byte[8192];
+                        int lus;
+                        while ((lus = entrée.read(tampon)) >= 0) {
+                            sortie.write(tampon, 0, lus);
+                        }
                     }
                     String nomProjet = nom.substring(0, nom.length() - ".zip".length());
                     Path destination = projets.resolve(nomProjet);
@@ -631,7 +650,8 @@ public class MainActivity extends Activity {
                 }
                 List<String> liste = List.copyOf(importés);
                 runOnUiThread(() -> {
-                    cheminProjet.setText(Path.of(getFilesDir().getAbsolutePath(),
+                    cheminProjet.setText(java.nio.file.Paths.get(
+                            getFilesDir().getAbsolutePath(),
                             "projets", "multi-modules-java").toString());
                     afficherRésumé(getString(R.string.import_done,
                             String.join(", ", liste)));
@@ -722,11 +742,15 @@ public class MainActivity extends Activity {
                     mémoireTotaleMo() < 2500, journal::ajouter);
             moteurCourant.set(moteur);
             dernierClient.set(moteur);
+            consoleDuMoteur = moteur.protocolVersion() >= 4;
             String buildId = (sync ? "sync-" : "app-") + System.currentTimeMillis();
             dernierBuildId = buildId;
+            // Le tri des sorties est un ARGUMENT du moteur (D-21, l'équivalent des
+            // -q/-i/-d de Gradle) : la verbosité choisie part avec la requête, le
+            // moteur n'émet que ce niveau et plus.
             BuildRequest requête = new BuildRequest(buildId, chemin,
                     new BuildOptions(2, false, false, false, mémoireTotaleMo(),
-                            abiPrincipale()));
+                            abiPrincipale(), niveauConsoleDe(verbosité)));
             BuildStarted démarré = sync
                     ? moteur.sync(requête).get()
                     : moteur.startBuild(requête).get();
@@ -879,14 +903,25 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Affiche un événement de build dans le journal — le format des consoles de build
-     * classiques : une ligne par tâche avec son issue (exécutée, À JOUR, DU CACHE,
-     * SAUTÉE), la progression des téléchargements dans le résumé, et un verdict final
-     * décompté. À la fin, rétablit les boutons et propose l'installation si un APK a
-     * été produit, puis libère la VM du moteur (un build terminé n'a plus besoin
-     * d'un processus de 512 Mo qui traîne).
+     * Affiche un événement de build dans le journal. Depuis le protocole 4 (D-21),
+     * DEUX consoles existent selon le moteur négocié :
+     *
+     * <ul>
+     *   <li>moteur moderne : la coquille n'AFFICHE plus que les lignes de journal
+     *       reçues — lignes de tâches, verdict, diagnostics, tout est composé et trié
+     *       par le MOTEUR (l'argument {@code consoleLevel}, comme les -q/-i/-d de
+     *       Gradle) ; les événements structurés ne servent plus qu'à la barre, à la
+     *       ligne vivante et aux boutons ;</li>
+     *   <li>moteur plus ancien : la composition locale d'avant (une ligne par tâche
+     *       avec son issue, verdict décompté) — le même écran, la même coquille, sans
+     *       jamais rien doubler.</li>
+     * </ul>
      */
     private void afficherÉvénement(BuildEvent événement) {
+        if (consoleDuMoteur) {
+            afficherÉvénementConsoleMoteur(événement);
+            return;
+        }
         if (événement instanceof BuildEvent.LogEvent journal) {
             if (niveauAffiché(journal.level())) {
                 ajouterLigne(journal.message());
@@ -907,26 +942,83 @@ public class MainActivity extends Activity {
             this.progression.setProgress(Math.min(progression.tasksDone(),
                     progression.tasksTotal()));
         } else if (événement instanceof BuildEvent.BuildFinished fin) {
+            afficherFinLegacy(fin);
+        }
+    }
+
+    /**
+     * Affichage face à un moteur qui compose sa console (protocole 4) : chaque ligne
+     * du journal arrive DÉJÀ rédigée par le moteur (lignes de tâches à l'issue,
+     * diagnostics, téléchargements finis, verdict final) et DÉJÀ triée (le niveau de
+     * console est un argument du moteur) — la coquille représente, elle ne rédige
+     * plus. Les événements structurés gardent leurs rôles : barre de progression,
+     * ligne vivante du résumé, verdict pour les boutons.
+     */
+    private void afficherÉvénementConsoleMoteur(BuildEvent événement) {
+        if (événement instanceof BuildEvent.LogEvent journal) {
+            ajouterLigne(journal.message());
+        } else if (événement instanceof BuildEvent.ProgressEvent progression) {
+            this.progression.setIndeterminate(false);
+            this.progression.setMax(Math.max(1, progression.tasksTotal()));
+            this.progression.setProgress(Math.min(progression.tasksDone(),
+                    progression.tasksTotal()));
+        } else if (événement instanceof BuildEvent.HeartbeatEvent pulsation) {
+            afficherPulsation(pulsation);
+        } else if (événement instanceof BuildEvent.DownloadEvent téléchargement) {
+            afficherTéléchargementRésumé(téléchargement);
+        } else if (événement instanceof BuildEvent.BuildFinished fin) {
+            // La ligne de verdict est déjà arrivée par le journal (composée par le
+            // moteur) : ici, seuls l'état des boutons et le résumé changent.
             buildEnCours = false; // D-20 : verdict rendu — plus aucune reprise.
             progression.setIndeterminate(false);
-            // Le journal partagé doit se terminer par son PROPRE verdict : le
-            // rapport appareil du 2026-11-20 a lu « build jamais terminé » sur un
-            // build pourtant réussi — le journal s'arrêtait à la dernière tâche et
-            // le verdict ne vivait que dans le résumé, effacé par la réimportation
-            // des exemples (qui supprime aussi les traces du projet).
-            String verdict = fin.success()
-                    ? getString(R.string.build_finished_ok,
-                            Math.max(1, fin.durationMs() / 1000))
-                    : getString(R.string.build_finished_ko,
-                            fin.failedTask() == null ? "?" : fin.failedTask(),
-                            fin.message());
-            ajouterLigne(verdict);
-            ajouterLigne(fin.message());
-            afficherRésumé(verdict + " — " + fin.message());
+            afficherRésumé(fin.message());
             réinitialiserBoutons();
             installerButton.setEnabled(fin.success() && dernierApkConstruit() != null);
             exécuteur.submit(this::arrêterMoteurCourant);
         }
+        // TaskStateEvent et DiagnosticEvent : rien à afficher — le moteur a déjà
+        // composé leurs lignes ; la structure reste pour l'éditeur (saut à l'erreur).
+    }
+
+    /**
+     * Verdict en mode composition locale (moteur plus ancien) : le journal doit se
+     * terminer par son PROPRE verdict — le rapport appareil du 2026-11-20 a lu
+     * « build jamais terminé » sur un build pourtant réussi (le journal s'arrêtait
+     * à la dernière tâche, le verdict ne vivait que dans le résumé, effacé par la
+     * réimportation des exemples).
+     */
+    private void afficherFinLegacy(BuildEvent.BuildFinished fin) {
+        buildEnCours = false; // D-20 : verdict rendu — plus aucune reprise.
+        progression.setIndeterminate(false);
+        String verdict = fin.success()
+                ? getString(R.string.build_finished_ok,
+                        Math.max(1, fin.durationMs() / 1000))
+                : getString(R.string.build_finished_ko,
+                        fin.failedTask() == null ? "?" : fin.failedTask(),
+                        fin.message());
+        ajouterLigne(verdict);
+        ajouterLigne(fin.message());
+        afficherRésumé(verdict + " — " + fin.message());
+        réinitialiserBoutons();
+        installerButton.setEnabled(fin.success() && dernierApkConstruit() != null);
+        exécuteur.submit(this::arrêterMoteurCourant);
+    }
+
+    /**
+     * La verbosité de la coquille, traduite en argument de console du moteur (D-21) :
+     * essentiel → console de build classique (lignes de tâches et verdict), détaillé
+     * → + informations et téléchargements, tout → + débogage. C'est l'équivalent des
+     * choix -q/-i/-d de Gradle : le MOTEUR trie à l'émission, la coquille demande.
+     *
+     * @param verbosité la verbosité mémorisée.
+     * @return le niveau de console à passer à la requête de build.
+     */
+    private static BuildEvent.LogEvent.LogLevel niveauConsoleDe(Verbosité verbosité) {
+        return switch (verbosité) {
+            case ESSENTIEL -> BuildEvent.LogEvent.LogLevel.LIFECYCLE;
+            case DÉTAILLÉ -> BuildEvent.LogEvent.LogLevel.INFO;
+            case TOUT -> BuildEvent.LogEvent.LogLevel.DEBUG;
+        };
     }
 
     /**
@@ -965,9 +1057,10 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Un téléchargement : la ligne vivante du résumé suit le fichier en cours (nom,
-     * octets reçus sur total), et le journal (niveau détaillé) garde une ligne par
-     * fichier terminé — le silence réseau long n'existe plus.
+     * Un téléchargement (mode composition locale) : la ligne vivante du résumé suit
+     * le fichier en cours (nom, octets reçus sur total), et le journal (niveau
+     * détaillé) garde une ligne par fichier terminé — le silence réseau long
+     * n'existe plus.
      */
     private void afficherTéléchargement(BuildEvent.DownloadEvent téléchargement) {
         if (téléchargement.done()) {
@@ -976,6 +1069,19 @@ public class MainActivity extends Activity {
                         téléchargement.resource(), tailleLisible(
                         téléchargement.bytesDownloaded())));
             }
+            afficherRésumé(getString(R.string.build_in_progress));
+            return;
+        }
+        afficherTéléchargementRésumé(téléchargement);
+    }
+
+    /**
+     * Un téléchargement, côté résumé seul : la ligne vivante suit le fichier en
+     * cours (nom, octets reçus sur total). Utilisé seul face à un moteur protocole 4
+     * — la ligne de journal du fichier terminé est composée par le moteur.
+     */
+    private void afficherTéléchargementRésumé(BuildEvent.DownloadEvent téléchargement) {
+        if (téléchargement.done()) {
             afficherRésumé(getString(R.string.build_in_progress));
             return;
         }
@@ -1098,7 +1204,7 @@ public class MainActivity extends Activity {
         if (chemin.isEmpty()) {
             return null;
         }
-        Path traces = Path.of(chemin, ".forge", "traces");
+        Path traces = java.nio.file.Paths.get(chemin, ".forge", "traces");
         if (!Files.isDirectory(traces)) {
             return null;
         }
@@ -1142,7 +1248,7 @@ public class MainActivity extends Activity {
         if (chemin.isEmpty()) {
             return null;
         }
-        Path sorties = Path.of(chemin, "build");
+        Path sorties = java.nio.file.Paths.get(chemin, "build");
         if (!Files.isDirectory(sorties)) {
             return null;
         }

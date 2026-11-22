@@ -64,10 +64,13 @@ public final class EngineClient {
 
     private final EngineConnection connection;
     private final Hello hello;
+    /** Version de protocole effectivement négociée à la poignée de main. */
+    private final int protocoleNégocié;
 
-    private EngineClient(EngineConnection connection, Hello hello) {
+    private EngineClient(EngineConnection connection, Hello hello, int protocoleNégocié) {
         this.connection = connection;
         this.hello = hello;
+        this.protocoleNégocié = protocoleNégocié;
     }
 
     /**
@@ -140,7 +143,7 @@ public final class EngineClient {
             throw new EngineConnection.EngineConnectionException(
                     "Accusé de poignée de main inattendu : " + acknowledgement.type());
         }
-        return new EngineClient(connection, handshake.hello());
+        return new EngineClient(connection, handshake.hello(), chosen);
     }
 
     /**
@@ -150,6 +153,19 @@ public final class EngineClient {
      */
     public Hello hello() {
         return hello;
+    }
+
+    /**
+     * Version de protocole négociée avec ce moteur : la capacité RÉELLE du canal
+     * (pas la plage annoncée par {@link #hello()}). La coquille s'en sert pour ses
+     * dégradations — depuis le protocole 4, une coquille moderne n'affiche plus que
+     * les lignes de console COMPOSÉES PAR LE MOTEUR (D-21) ; face à un moteur plus
+     * ancien, elle retombe sur sa composition locale d'avant.
+     *
+     * @return la version négociée (entier positif).
+     */
+    public int protocolVersion() {
+        return protocoleNégocié;
     }
 
     /**

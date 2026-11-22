@@ -213,6 +213,9 @@ public final class MessageIO {
     /**
      * Encode un {@link BuildRequest}.
      *
+     * <p>Le niveau de console (protocole 4) part en fin de charge utile : un moteur
+     * plus ancien lit ses champs fixes et ignore l'excédent — pas de rupture.</p>
+     *
      * @param out    flux cible.
      * @param message message à encoder.
      * @throws IOException en cas d'erreur d'écriture.
@@ -226,10 +229,16 @@ public final class MessageIO {
         out.writeBoolean(message.options().verbose());
         out.writeLong(message.options().totalRamMb());
         writeString(out, message.options().abi());
+        out.writeInt(message.options().consoleLevel().wireCode());
     }
 
     /**
      * Décode un {@link BuildRequest}.
+     *
+     * <p>Lecteur tolérant : une charge d'avant le protocole 4 s'arrête après l'ABI
+     * (fin de flux avant le niveau de console) — le niveau est alors dérivé du
+     * booléen {@code verbose} historique, comme si l'appelant avait utilisé le
+     * constructeur de compatibilité.</p>
      *
      * @param in flux source.
      * @return le message décodé.
@@ -244,8 +253,16 @@ public final class MessageIO {
         boolean verbose = in.readBoolean();
         long totalRamMb = in.readLong();
         String abi = readString(in);
+        BuildEvent.LogEvent.LogLevel consoleLevel;
+        try {
+            consoleLevel = BuildEvent.LogEvent.LogLevel.fromWire(in.readInt());
+        } catch (java.io.EOFException chargeAncienne) {
+            consoleLevel = verbose ? BuildEvent.LogEvent.LogLevel.DEBUG
+                    : BuildEvent.LogEvent.LogLevel.LIFECYCLE;
+        }
         return new BuildRequest(buildId, projectRoot,
-                new BuildOptions(parallelism, lowMemory, offline, verbose, totalRamMb, abi));
+                new BuildOptions(parallelism, lowMemory, offline, verbose, totalRamMb,
+                        abi, consoleLevel));
     }
 
     /**

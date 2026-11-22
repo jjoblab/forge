@@ -573,6 +573,47 @@ D-16, D-18) rendent presque gratuite.
   mais imposerait le tas de l'application au compilateur Kotlin — l'arbitrage reste
   ouvert, la reprise automatique rend le tueur SUPPORTABLE en attendant.
 
+### D-21 — La console de build appartient au moteur (protocole 4, v0.2.26)
+
+Constat d'architecture : chaque coquille (l'app de test, JoIDE) RECOMPOSAIT les lignes
+de console depuis les événements structurés — badges d'issues (`À JOUR`, `DU CACHE`),
+verdict décompté, lignes de diagnostics. Deux coquilles = deux consoles qui divergent ;
+le format de sortie vivait chez l'afficheur alors que Gradle, notre référence de
+sémantique, DICTE ses sorties depuis le moteur et offre leur tri par arguments
+(`-q`, `-i`, `-d`).
+
+- **Le moteur compose, la coquille affiche** : une classe unique du moteur
+  (`ConsoleDeBuild`) rédige les lignes — `> Tâche app:compileJava — À JOUR` (rien au
+  démarrage, pas de badge = travail fait), verdict final `BUILD RÉUSSI en 12 s — N
+  tâches : …` / `BUILD ÉCHOUÉ à la tâche fautive` / `BUILD ANNULÉ`, diagnostics `⚠
+  fichier:ligne — message`, téléchargements finis `↓ fichier (taille)`. Les lignes
+  partent en `LogEvent` (nouveau niveau `LIFECYCLE`, sévérité entre INFO et WARN) ;
+  les coquilles protocole 4 n'affichent plus QUE ces lignes — représenter, filtrer,
+  jamais rédiger. Les événements structurés gardent leurs rôles : barre de
+  progression, ligne vivante de pulsation, saut à l'erreur pour l'éditeur, verdict
+  pour les boutons.
+- **Le tri est un argument, appliqué par le moteur** : `BuildOptions.consoleLevel`
+  (protocole 4, champ en fin de charge — lecteur tolérant pour les requêtes
+  d'avant : `verbose` dérivé). Défaut `LIFECYCLE` = la console de build classique
+  (tâches + verdict + avertissements + erreurs) ; `INFO` = l'équivalent du `-i` ;
+  `DEBUG` = le `-d` ; `WARN`/`ERROR` = le `-q` (les ERREURS ne peuvent jamais être
+  triées). Le booléen `verbose` historique est DÉRIVÉ du niveau : une seule source
+  de vérité. Une coquille reste libre de filtrer ENCORE pour son affichage local —
+  mais le tri de référence vit dans le moteur, demandé par argument.
+- **Le journal de trace reste complet** : le tri ne prive que le canal, jamais le
+  post-mortem — le journal borné de la trace (A-13) reçoit tout, y compris les
+  entrées DEBUG d'une console silencieuse et la transcription des lignes composées
+  (le modèle du scan Gradle).
+- **Dégradations sans double affichage** : vers une coquille protocole 3, le moteur
+  ne compose RIEN (elle compose encore elle-même, comme hier — aucune ligne
+  dupliquée), ne filtre rien non plus (elle filtrait elle-même, son comportement
+  tient), et le niveau `LIFECYCLE` ne part jamais sur son canal. Une coquille
+  protocole 4 face à un moteur ancienne génération retombe sur sa composition locale
+  (`EngineClient.protocolVersion()` lui dit laquelle des deux consoles vit).
+- **Le faux moteur suit** : `FakeEngineServer` compose les mêmes lignes vers les
+  coquilles protocole 4 — les tests de bout en bout (vrai processus) valident le
+  contrat réel, pas un simulacre.
+
 ## 4. Installateur (détail)
 
 Séquence du premier lancement (chaque exigence du cahier des charges y est visible) :

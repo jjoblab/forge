@@ -33,8 +33,19 @@ public final class ProtocolVersions {
      * interprétable comme un plantage. Le moteur n'émet la pulsation QUE vers une
      * coquille ayant négocié la version 3 ; une coquille plus ancienne ne la reçoit
      * pas (le silence d'avant restait la norme pour elle).</p>
+     *
+     * <p>Version 4 (additive) : la console appartient au moteur (décision D-21). Le
+     * moteur compose les lignes de la console de build (lignes de tâches, verdict,
+     * diagnostics, téléchargements finis — niveau {@code LIFECYCLE} nouveau) et la
+     * coquille se contente d'afficher ce qu'elle reçoit ; le tri des sorties devient
+     * un argument ({@code BuildOptions.consoleLevel}, équivalent des
+     * {@code -q}/{@code -i}/{@code -d} de Gradle) que le moteur APPLIQUE à l'émission.
+     * Une coquille plus ancienne négocie la version 3 : le moteur ne compose aucune
+     * ligne (elle les composait elle-même hier — rien ne double), le niveau
+     * {@code LIFECYCLE} ne part jamais sur le canal, et une charge de requête sans
+     * niveau de console reste lisible (lecteur tolérant, {@code verbose} dérivé).</p>
      */
-    public static final int PROTOCOL_MAX = 3;
+    public static final int PROTOCOL_MAX = 4;
 
     private ProtocolVersions() {
         // Constantes uniquement : pas d'instanciation.

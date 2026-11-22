@@ -26,23 +26,44 @@ public sealed interface BuildEvent permits
     /** Niveau de journal d'une entrée de log. */
     enum LogLevel {
         /** Détail de diagnostic, utile uniquement en mode bavard. */
-        DEBUG(1),
+        DEBUG(1, 1),
         /** Information normale de progression. */
-        INFO(2),
+        INFO(2, 2),
+        /**
+         * Ligne de vie de la console (protocole 4) : tâches, verdict, annonces de
+         * build. Le niveau par défaut d'une console de build — l'équivalent du
+         * {@code LIFECYCLE} de Gradle, entre INFO et avertissement : ce que la
+         * coquille doit afficher sans rien demander, l'essentiel du déroulé.
+         */
+        LIFECYCLE(5, 3),
         /** Avertissement : le build continue. */
-        WARN(3),
+        WARN(3, 4),
         /** Erreur : le build échouera ou a échoué. */
-        ERROR(4);
+        ERROR(4, 5);
 
         private final int wireCode;
+        private final int sévérité;
 
-        LogLevel(int wireCode) {
+        LogLevel(int wireCode, int sévérité) {
             this.wireCode = wireCode;
+            this.sévérité = sévérité;
         }
 
         /** Code filaire stable du niveau. */
         public int wireCode() {
             return wireCode;
+        }
+
+        /**
+         * Sévérité ordonnée pour le filtrage : {@code DEBUG < INFO < LIFECYCLE <
+         * WARN < ERROR}. Ce n'est PAS le code filaire (identifiant stable, sans
+         * ordre) : la sévérité est la grandeur physique que borne un niveau de
+         * console — une entrée est émise si sa sévérité atteint celle demandée.
+         *
+         * @return la sévérité (1 à 5).
+         */
+        public int sévérité() {
+            return sévérité;
         }
 
         /**
@@ -64,6 +85,11 @@ public sealed interface BuildEvent permits
 
     /**
      * Entrée de journal du build.
+     *
+     * <p>À partir du protocole 4, ces entrées portent AUSSI les lignes de la console
+     * elle-même (lignes de tâches, verdict — niveau {@code LIFECYCLE}) : le format
+     * de la console appartient au moteur, la coquille affiche ce qu'elle reçoit
+     * (décision D-21, parité avec Gradle qui dicte ses sorties).</p>
      *
      * @param buildId    identifiant du build.
      * @param timestamp  horodatage côté moteur (millisecondes epoch).

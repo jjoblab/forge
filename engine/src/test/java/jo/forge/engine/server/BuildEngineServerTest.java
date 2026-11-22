@@ -203,6 +203,144 @@ class BuildEngineServerTest {
         }
     }
 
+    @Test
+    @Timeout(60)
+    void laConsoleDuMoteurComposeTâchesEtVerdict() throws Exception {
+        // Protocole 4 (D-21) : les lignes de console partent COMPOSÉES par le moteur —
+        // une ligne de journal par tâche à son issue, un verdict final décompté, et
+        // RIEN de plus au niveau par défaut (l'annonce « build de … » en INFO est
+        // triée côté moteur, comme un -q de Gradle tait le superflu).
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(4);
+
+            List<BuildEvent> événements = session.build(temporaire,
+                    BuildEvent.LogEvent.LogLevel.LIFECYCLE);
+            assertTrue(dernier(événements, BuildEvent.BuildFinished.class).success());
+
+            List<String> lignesConsole = événements.stream()
+                    .filter(e -> e instanceof BuildEvent.LogEvent l
+                            && l.level() == BuildEvent.LogEvent.LogLevel.LIFECYCLE)
+                    .map(e -> ((BuildEvent.LogEvent) e).message())
+                    .toList();
+            long tâchesÀLIssue = événements.stream()
+                    .filter(e -> e instanceof BuildEvent.TaskStateEvent t
+                            && t.state() != BuildEvent.TaskState.STARTED)
+                    .count();
+            assertEquals(tâchesÀLIssue,
+                    lignesConsole.stream().filter(l -> l.startsWith("> Tâche ")).count(),
+                    "une ligne de console par tâche à son issue");
+            assertTrue(lignesConsole.stream().anyMatch(l -> l.startsWith("BUILD RÉUSSI en")),
+                    "le verdict clôt la console : " + lignesConsole);
+            assertTrue(événements.stream().noneMatch(e -> e instanceof BuildEvent.LogEvent l
+                            && l.message().startsWith("build de ")),
+                    "au niveau par défaut, l'annonce INFO est triée côté moteur");
+            // Le verdict est la DERNIÈRE ligne : rien ne suit le BuildFinished.
+            assertEquals(BuildEvent.BuildFinished.class,
+                    événements.get(événements.size() - 1).getClass());
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void niveauInfoDuMoteurRésoutLesLignesInformations() throws Exception {
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(4);
+            List<BuildEvent> événements = session.build(temporaire,
+                    BuildEvent.LogEvent.LogLevel.INFO);
+            assertTrue(dernier(événements, BuildEvent.BuildFinished.class).success());
+            assertTrue(événements.stream().anyMatch(e -> e instanceof BuildEvent.LogEvent l
+                            && l.message().startsWith("build de ")),
+                    "au niveau INFO, l'annonce de build revient (l'équivalent du -i)");
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void niveauErreurTaitLaConsoleMaisPasLaStructure() throws Exception {
+        // Console silencieuse (l'équivalent du -q de Gradle) : plus AUCUNE ligne de
+        // tâche ni de verdict — mais le flux STRUCTURÉ reste entier (états de tâches,
+        // progression, fin) : c'est lui qui nourrit barre et verdict d'interface.
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(4);
+            List<BuildEvent> événements = session.build(temporaire,
+                    BuildEvent.LogEvent.LogLevel.ERROR);
+            assertTrue(dernier(événements, BuildEvent.BuildFinished.class).success());
+            assertTrue(événements.stream().anyMatch(e ->
+                            e instanceof BuildEvent.TaskStateEvent t
+                                    && t.state() == BuildEvent.TaskState.SUCCEEDED),
+                    "les états de tâches restent émis (flux structuré)");
+            assertTrue(événements.stream().noneMatch(e -> e instanceof BuildEvent.LogEvent),
+                    "aucune ligne de journal au niveau ERROR sur un build réussi — reçues : "
+                            + événements.stream()
+                            .filter(e -> e instanceof BuildEvent.LogEvent)
+                            .map(e -> e.toString())
+                            .toList());
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void coquilleDAvantLeProtocole4NeReçoitAucuneLigneComposée() throws Exception {
+        // Une coquille qui négocie la version 3 compose ENCORE ses lignes depuis les
+        // événements structurés : le moteur ne doit RIEN lui envoyer de composé —
+        // sinon sa console afficherait chaque tâche deux fois.
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(3);
+            List<BuildEvent> événements = session.build(temporaire);
+            assertTrue(dernier(événements, BuildEvent.BuildFinished.class).success());
+            assertTrue(événements.stream().noneMatch(e -> e instanceof BuildEvent.LogEvent l
+                            && l.message().startsWith("> Tâche")),
+                    "aucune ligne de tâche composée vers une coquille ancienne");
+            assertTrue(événements.stream().noneMatch(e -> e instanceof BuildEvent.LogEvent l
+                            && l.message().startsWith("BUILD ")),
+                    "aucun verdict composé vers une coquille ancienne");
+            assertTrue(événements.stream().anyMatch(e -> e instanceof BuildEvent.LogEvent l
+                            && l.message().startsWith("build de ")),
+                    "le comportement d'avant tient : l'INFO n'est pas trié pour elle");
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void diagnosticDeCompilationComposeSaLigneAuNiveauÉcho() throws Exception {
+        // Protocole 4 : l'erreur de compilation garde son événement structuré (pour
+        // l'éditeur) ET arrive en ligne de console composée par le moteur, au niveau
+        // de sévérité correspondant (ERROR — jamais trié).
+        Projets.projetDeuxModules(temporaire);
+        Projets.fichier(temporaire, "core/src/main/java/demo/core/Fautif.java", """
+                package demo.core;
+
+                public class Fautif {
+                    int calcul() { return inconnu; }
+                }
+                """);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(4);
+            List<BuildEvent> événements = session.build(temporaire,
+                    BuildEvent.LogEvent.LogLevel.ERROR);
+            assertTrue(!dernier(événements, BuildEvent.BuildFinished.class).success());
+            assertTrue(événements.stream().anyMatch(e -> e instanceof BuildEvent.LogEvent l
+                            && l.level() == BuildEvent.LogEvent.LogLevel.ERROR
+                            && l.message().startsWith("⚠ ")
+                            && l.message().contains("Fautif.java")),
+                    "la ligne de diagnostic est composée par le moteur, même au niveau ERROR");
+            assertTrue(événements.stream().anyMatch(e ->
+                            e instanceof BuildEvent.TaskStateEvent t
+                                    && t.state() == BuildEvent.TaskState.FAILED
+                                    && t.taskName().equals("core:compileJava")),
+                    "l'état structuré de la tâche fautive reste émis");
+            session.arrêt();
+        }
+    }
+
     /**
      * Récupère le dernier événement du type demandé.
      */
@@ -282,19 +420,26 @@ class BuildEngineServerTest {
 
         /** Lance un build et collecte tous les événements jusqu'à la fin. */
         List<BuildEvent> build(Path racine) throws IOException {
-            return requête(FrameType.START_BUILD, racine);
+            return build(racine, null);
+        }
+
+        /** Lance un build au niveau de console demandé et collecte les événements. */
+        List<BuildEvent> build(Path racine, BuildEvent.LogEvent.LogLevel consoleLevel)
+                throws IOException {
+            return requête(FrameType.START_BUILD, racine, consoleLevel);
         }
 
         /** Lance un sync (protocole 2) et collecte les événements jusqu'à la fin. */
         List<BuildEvent> sync(Path racine) throws IOException {
-            return requête(FrameType.SYNC_BUILD, racine);
+            return requête(FrameType.SYNC_BUILD, racine, null);
         }
 
-        /** Envoie START_BUILD ou SYNC_BUILD et collecte le flux d'événements. */
-        List<BuildEvent> requête(FrameType type, Path racine) throws IOException {
+        /** Envoie START_BUILD ou SYNC_BUILD au niveau de console donné (null : défaut). */
+        List<BuildEvent> requête(FrameType type, Path racine,
+                                 BuildEvent.LogEvent.LogLevel consoleLevel) throws IOException {
             BuildRequest requête = new BuildRequest("b" + (++corrélation),
                     racine.toString(),
-                    new BuildOptions(2, false, false, false, 4096, "x86_64"));
+                    new BuildOptions(2, false, false, false, 4096, "x86_64", consoleLevel));
             écrire(type,
                     out -> MessageIO.writeBuildRequest(out, requête));
             Frame accusé = lireTrame();

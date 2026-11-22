@@ -247,7 +247,7 @@ public final class BuildEngineServer {
         long debut = System.currentTimeMillis();
         Path root = Path.of(request.projectRoot());
         EvenementsVersTrames events = new EvenementsVersTrames(buildId, root,
-                protocoleNégocié);
+                protocoleNégocié, request.options().consoleLevel());
         try {
             events.log(BuildEvent.LogEvent.LogLevel.INFO,
                     (sync ? "sync de " : "build de ") + request.projectRoot());
@@ -346,14 +346,18 @@ public final class BuildEngineServer {
 
     /**
      * Adaptateur événements d'exécuteur → trames du canal : conversion des
-     * diagnostics internes, rédaction des secrets (D-09), journal borné (P-7) et
-     * trace exportable (A-13).
+     * diagnostics internes, rédaction des secrets (D-09), journal borné (P-7),
+     * trace exportable (A-13) — et, depuis le protocole 4, COMPOSITION des lignes
+     * de la console par le moteur (D-21 : la coquille affiche, le moteur décide du
+     * format) et application du tri demandé ({@code consoleLevel}, l'argument
+     * l'équivalent des {@code -q/-i/-d} de Gradle).
      */
     private final class EvenementsVersTrames implements TaskExecutor.BuildEvents {
 
         private final String buildId;
         private final Path racineProjet;
         private final int protocole;
+        private final ConsoleDeBuild console;
         private final AtomicReference<String> premierEchec = new AtomicReference<>();
         private final JournalBorné journal = new JournalBorné(JournalBorné.CAPACITÉ_PAR_DÉFAUT);
         private final Map<String, BuildEvent.TaskStateEvent> étatsTâches =
@@ -361,10 +365,12 @@ public final class BuildEngineServer {
         private final Map<String, Long> diagnosticsParSévérité =
                 new java.util.concurrent.ConcurrentHashMap<>();
 
-        EvenementsVersTrames(String buildId, Path racineProjet, int protocole) {
+        EvenementsVersTrames(String buildId, Path racineProjet, int protocole,
+                             BuildEvent.LogEvent.LogLevel consoleLevel) {
             this.buildId = buildId;
             this.racineProjet = racineProjet;
             this.protocole = protocole;
+            this.console = new ConsoleDeBuild(consoleLevel);
         }
 
         @Override
@@ -384,14 +390,34 @@ public final class BuildEngineServer {
                     : event;
             étatsTâches.put(event.taskName(), émis);
             event(BuildEvent.TaskStateEvent.class, émis);
+            // Console du moteur (protocole 4, D-21) : la ligne d'issue part du MOTEUR,
+            // composée une seule fois — une coquille plus ancienne la compose encore
+            // elle-même depuis l'événement structuré (rien ne double).
+            String ligne = console.ligneTâche(émis);
+            if (ligne != null && protocole >= 4) {
+                consoleLigne(BuildEvent.LogEvent.LogLevel.LIFECYCLE, ligne);
+            }
         }
 
         @Override
         public void log(BuildEvent.LogEvent.LogLevel level, String message) {
             String nettoyé = jo.forge.engine.diag.SecretRedactor.rédiger(message);
             journal.ajouter(level + " " + nettoyé);
+            // L'argument de tri (consoleLevel) s'applique au canal — jamais au journal
+            // de trace, qui reste complet pour le post-mortem (scan Gradle). Avant le
+            // protocole 4, la coquille filtrait elle-même : son comportement d'alors
+            // reste le sien (le moteur n'a jamais filtré pour elle).
+            BuildEvent.LogEvent.LogLevel émis = level;
+            if (level == BuildEvent.LogEvent.LogLevel.LIFECYCLE && protocole < 4) {
+                // Filet : LIFECYCLE n'existe pas dans le vocabulaire d'une coquille
+                // ancienne — INFO est sa plus proche parente.
+                émis = BuildEvent.LogEvent.LogLevel.INFO;
+            }
+            if (protocole >= 4 && !console.visible(émis)) {
+                return;
+            }
             event(BuildEvent.LogEvent.class, new BuildEvent.LogEvent(buildId,
-                    System.currentTimeMillis(), level, nettoyé));
+                    System.currentTimeMillis(), émis, nettoyé));
         }
 
         @Override
@@ -404,6 +430,12 @@ public final class BuildEngineServer {
         public void téléchargement(BuildEvent.DownloadEvent événement) {
             if (protocole >= 2) {
                 event(BuildEvent.DownloadEvent.class, événement);
+                // Console du moteur (protocole 4) : la ligne « ↓ fichier (taille) »
+                // est composée par le moteur, la coquille affiche.
+                if (protocole >= 4 && événement.done()) {
+                    consoleLigne(BuildEvent.LogEvent.LogLevel.INFO,
+                            console.ligneTéléchargement(événement));
+                }
                 return;
             }
             // Dégradation protocole 1 : pas d'événement structuré de téléchargement —
@@ -440,11 +472,18 @@ public final class BuildEngineServer {
         @Override
         public void diagnostic(Diagnostic diagnostic) {
             diagnosticsParSévérité.merge(diagnostic.severity().name(), 1L, Long::sum);
-            event(BuildEvent.DiagnosticEvent.class, new BuildEvent.DiagnosticEvent(buildId,
+            BuildEvent.DiagnosticEvent émis = new BuildEvent.DiagnosticEvent(buildId,
                     System.currentTimeMillis(), diagnostic.severity(), diagnostic.file(),
                     diagnostic.line(), diagnostic.column(), diagnostic.code(),
                     jo.forge.engine.diag.SecretRedactor.rédiger(diagnostic.message()),
-                    diagnostic.tool()));
+                    diagnostic.tool());
+            event(BuildEvent.DiagnosticEvent.class, émis);
+            // Console du moteur (protocole 4) : la ligne humaine part du moteur ;
+            // l'événement structuré reste le canal de l'éditeur (saut à l'erreur).
+            if (protocole >= 4) {
+                consoleLigne(ConsoleDeBuild.niveauDiagnostic(diagnostic.severity()),
+                        console.ligneDiagnostic(émis));
+            }
         }
 
         @Override
@@ -468,7 +507,29 @@ public final class BuildEngineServer {
                 diagnostics.println("Trace de build non écrite (" + buildId + ") : "
                         + e.getMessage());
             }
+            // Console du moteur (protocole 4) : le verdict compose la DERNIÈRE ligne
+            // de la console, juste avant la trame de fin — le contrat « BuildFinished
+            // toujours dernier » tient : le verdict précède, il n'a pas de successeur.
+            if (protocole >= 4) {
+                consoleLigne(BuildEvent.LogEvent.LogLevel.LIFECYCLE,
+                        console.verdict(finished));
+            }
             event(BuildEvent.BuildFinished.class, finished);
+        }
+
+        /**
+         * Journalise puis émet une ligne composée par la console du moteur : le
+         * journal de trace reçoit TOUT (transcription complète, post-mortem) et le
+         * canal reçoit la ligne SEULEMENT si elle passe le tri demandé — le point
+         * unique où l'argument de console s'applique aux lignes composées.
+         */
+        private void consoleLigne(BuildEvent.LogEvent.LogLevel niveau, String ligne) {
+            journal.ajouter(niveau + " " + ligne);
+            if (!console.visible(niveau)) {
+                return; // Tri par argument (consoleLevel) : la ligne ne part pas.
+            }
+            event(BuildEvent.LogEvent.class, new BuildEvent.LogEvent(buildId,
+                    System.currentTimeMillis(), niveau, ligne));
         }
 
         @Override
