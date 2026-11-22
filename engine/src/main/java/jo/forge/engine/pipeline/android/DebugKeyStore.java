@@ -124,11 +124,28 @@ public final class DebugKeyStore {
             } catch (IOException pasAtomique) {
                 Files.move(temporaire, cible, StandardCopyOption.REPLACE_EXISTING);
             }
+            restreindreAuxPropriétaire(cible);
             return new Clé(paire.getPrivate(), certificat);
         } catch (IOException echec) {
             throw echec;
         } catch (Exception e) {
             throw new IOException("clé de débogage : " + e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Pose rw------- sur le conteneur de clé (constat B-6) : la clé vit dans le
+     * répertoire du PROJET — un projet zippé ou versionné emporte sa clé de
+     * signature ; autant ne pas l'exposer aux autres comptes de la machine.
+     * Sans système POSIX (Windows), le fichier reste soumis aux permissions du
+     * répertoire utilisateur.
+     */
+    private static void restreindreAuxPropriétaire(Path fichier) {
+        try {
+            Files.setPosixFilePermissions(fichier,
+                    java.nio.file.attribute.PosixFilePermissions.fromString("rw-------"));
+        } catch (IOException | UnsupportedOperationException pasPosix) {
+            // Système sans permissions POSIX : rien de plus à faire.
         }
     }
 

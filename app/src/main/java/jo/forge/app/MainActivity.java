@@ -214,6 +214,18 @@ public class MainActivity extends Activity {
                     .putString(CLÉ_VERBOSITÉ, verbosité.name()).apply();
             mettreÀJourBoutonVerbosité();
         });
+
+        // Constat M-1 : réparer au démarrage une installation interrompue (un moteur
+        // mis à l'écart par une réinstallation tuée entre deux renommages, jamais
+        // remplacé) AVANT que l'utilisateur ne touche aux boutons — l'ancien moteur
+        // reprend sa place et redevient utilisable sans aucune action.
+        exécuteur.submit(() -> {
+            EngineInstaller lecteur = new EngineInstaller(forgeHome(), null, null);
+            if (lecteur.rétablirSiInterrompue()) {
+                runOnUiThread(() -> afficherRésumé(
+                        getString(R.string.install_recovered_after_interrupt)));
+            }
+        });
     }
 
     /** Charge la verbosité mémorisée (défaut : essentiel). */
@@ -318,11 +330,21 @@ public class MainActivity extends Activity {
         exécuteur.submit(() -> {
             try {
                 CanalMoteur.ManifesteSigne lu = new CanalMoteur(
-                        ClesForge.CLÉ_PUBLIQUE_MANIFESTE).telecharger(url);
+                        ClesForge.CLÉ_PUBLIQUE_MANIFESTE,
+                        ClesForge.CLÉ_PUBLIQUE_MANIFESTE_SUIVANTE).telecharger(url);
                 if (lu.manifeste().minAppVersion() > versionCodeCoquille()) {
                     throw new IllegalStateException(getString(
                             R.string.install_error_shell_too_old,
                             lu.manifeste().minAppVersion(), versionCodeCoquille()));
+                }
+                // Porte anti-recul (constat M-2) : un manifeste signé mais ANCIEN
+                // — rejoué par un miroir périmé ou un canal compromis — est refusé
+                // AVANT tout téléchargement de composant.
+                String refusRecul = new EngineInstaller(forgeHome(), null, null)
+                        .refusAntiRecul(lu.manifeste());
+                if (refusRecul != null) {
+                    throw new IllegalStateException(getString(
+                            R.string.install_manifest_rollback_refused, refusRecul));
                 }
                 manifesteCanal = lu.manifeste();
                 composantsCanal = lu.manifeste().forAbi(abiPrincipale());

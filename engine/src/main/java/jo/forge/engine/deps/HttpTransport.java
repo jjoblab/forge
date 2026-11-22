@@ -119,7 +119,12 @@ public final class HttpTransport {
     public String téléchargerVersFichier(String url, Path destination, String urlSomme)
             throws IOException {
         vérifierAnnulation(url);
-        String sommeAttendue = urlSomme == null ? null : téléchargerSomme(urlSomme);
+        // Constat B-5 : la somme la plus FORTE publiée gagne — .sha256 d'abord
+        // (de plus en plus de dépôts le publient), .sha1 (Maven classique) ensuite.
+        // Vérifier sur la même origine protège de la corruption ; une somme plus
+        // longue protège en plus des collisions construites du SHA-1.
+        String somme256 = téléchargerSomme(url + ".sha256", 64);
+        String sommeAttendue = urlSomme == null ? null : téléchargerSomme(urlSomme, 40);
         String ressource = nomCourt(url);
         byte[] tampon = new byte[TAILLE_TAMPON];
         MessageDigest sha1 = digest("SHA-1");
@@ -160,7 +165,15 @@ public final class HttpTransport {
             Files.deleteIfExists(temporaire);
             throw echec;
         }
-        if (sommeAttendue != null) {
+        if (somme256 != null) {
+            String sommeCalculée = hex(sha256.digest());
+            if (!somme256.equalsIgnoreCase(sommeCalculée)) {
+                Files.deleteIfExists(temporaire);
+                throw new ResolverException("Intégrité refusée pour " + url
+                        + " : sha256 attendu " + somme256 + ", calculé "
+                        + sommeCalculée);
+            }
+        } else if (sommeAttendue != null) {
             String sommeCalculée = hex(sha1.digest());
             if (!sommeAttendue.equalsIgnoreCase(sommeCalculée)) {
                 Files.deleteIfExists(temporaire);
@@ -197,9 +210,12 @@ public final class HttpTransport {
     }
 
     /**
-     * Lit le fichier de somme (sha1), borné.
+     * Lit le fichier de somme publié à côté de la ressource, borné et validé :
+     * le texte doit être une empreinte hexadécimale de la longueur attendue (40
+     * pour SHA-1, 64 pour SHA-256) — une page d'erreur servie avec un code 200
+     * ne doit jamais passer pour une somme (constat B-5).
      */
-    private String téléchargerSomme(String urlSomme) {
+    private String téléchargerSomme(String urlSomme, int longueurAttendue) {
         try {
             HttpURLConnection connexion = ouvrir(urlSomme);
             if (connexion.getResponseCode() != HttpURLConnection.HTTP_OK) {
@@ -214,7 +230,12 @@ public final class HttpTransport {
                         .trim();
                 // Format Maven : "somme" ou "somme  nom-du-fichier".
                 int espace = texte.indexOf(' ');
-                return espace > 0 ? texte.substring(0, espace) : texte;
+                String somme = espace > 0 ? texte.substring(0, espace) : texte;
+                if (somme.length() != longueurAttendue
+                        || !somme.matches("[0-9a-fA-F]+")) {
+                    return null; // Pas une empreinte de l'algorithme attendu.
+                }
+                return somme;
             }
         } catch (IOException | RuntimeException e) {
             avertissements.accept("somme illisible pour " + urlSomme

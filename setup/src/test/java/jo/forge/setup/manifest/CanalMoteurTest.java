@@ -170,4 +170,36 @@ class CanalMoteurTest {
         assertEquals("https://exemple.fr/canal.sig",
                 CanalMoteur.urlSignature("https://exemple.fr/canal"));
     }
+
+    @Test
+    void signatureDeLaCléDeRotationAcceptée() throws Exception {
+        // Constat M-2 : pendant une rotation de clé, un manifeste signé par la clé
+        // SUIVANTE doit passer un canal qui connaît les DEUX — et rester refusé par
+        // une coquille qui ne connaît que la courante (la migration est progressive).
+        KeyPairGenerator générateur = KeyPairGenerator.getInstance("EC");
+        générateur.initialize(new ECGenParameterSpec("secp256r1"));
+        KeyPair suivante = générateur.generateKeyPair();
+        String cléSuivanteBase64 = Base64.getEncoder().encodeToString(
+                suivante.getPublic().getEncoded());
+
+        String corps = manifesteJson("0.2.0");
+        byte[] octets = corps.getBytes(StandardCharsets.UTF_8);
+        Signature signataireSuivant = Signature.getInstance("SHA256withECDSA");
+        signataireSuivant.initSign(suivante.getPrivate());
+        signataireSuivant.update(octets);
+        String signatureSuivante = Base64.getEncoder().encodeToString(
+                signataireSuivant.sign());
+        String url = servir(corps, signatureSuivante);
+
+        // Canal connaissant les deux clés : accepté.
+        CanalMoteur.ManifesteSigne lu = new CanalMoteur(clePubliqueBase64,
+                cléSuivanteBase64, Set.of("http")).telecharger(url);
+        assertEquals("0.2.0", lu.manifeste().engineVersion());
+
+        // Canal ne connaissant que la clé courante : refusé.
+        ManifestException echec = assertThrows(ManifestException.class,
+                () -> canalTest().telecharger(url));
+        assertTrue(echec.getMessage().contains("INVALIDE"),
+                "le refus doit citer la signature : " + echec.getMessage());
+    }
 }

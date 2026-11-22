@@ -39,6 +39,15 @@ public final class ManifestCodec {
         String engineVersion = chaine(objet, "engineVersion");
         int minAppVersion = entier(objet, "minAppVersion");
         String publishedAt = chaine(objet, "publishedAt");
+        // Séquence anti-recul (constat M-2) : optionnelle — les manifestes
+        // antérieurs au mécanisme (et ceux produits sans numéro) valent 0.
+        long séquence = 0;
+        Object séquenceBrute = objet.get("séquence");
+        if (séquenceBrute instanceof Number nombre) {
+            séquence = nombre.longValue();
+        } else if (séquenceBrute != null) {
+            throw new ManifestException("Champ séquence non numérique");
+        }
         Object brut = objet.get("components");
         if (!(brut instanceof List<?> liste) || liste.isEmpty()) {
             throw new ManifestException("components doit être un tableau non vide");
@@ -51,7 +60,7 @@ public final class ManifestCodec {
             composants.add(parseComponent(composant));
         }
         return new EngineManifest(manifestVersion, engineVersion,
-                minAppVersion, publishedAt, composants);
+                minAppVersion, publishedAt, composants, séquence);
     }
 
     /**
@@ -80,12 +89,19 @@ public final class ManifestCodec {
             }
             composants.add(objet);
         }
-        return Json.write(Map.of(
-                "manifestVersion", manifest.manifestVersion(),
-                "engineVersion", manifest.engineVersion(),
-                "minAppVersion", manifest.minAppVersion(),
-                "publishedAt", manifest.publishedAt(),
-                "components", composants));
+        Map<String, Object> racine = new java.util.LinkedHashMap<>();
+        racine.put("manifestVersion", manifest.manifestVersion());
+        racine.put("engineVersion", manifest.engineVersion());
+        racine.put("minAppVersion", manifest.minAppVersion());
+        racine.put("publishedAt", manifest.publishedAt());
+        racine.put("components", composants);
+        if (manifest.séquence() > 0) {
+            // Séquence anti-recul (constat M-2) : écrite seulement quand elle
+            // existe — les sorties des manifestes sans séquence restent octet
+            // pour octet celles d'avant (tests et coquilles anciennes).
+            racine.put("séquence", manifest.séquence());
+        }
+        return Json.write(racine);
     }
 
     /**

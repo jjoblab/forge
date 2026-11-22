@@ -81,9 +81,26 @@ public final class OutilManifeste {
         Files.writeString(sortiePrivée,
                 Base64.getEncoder().encodeToString(
                         paire.getPrivate().getEncoded()));
+        restreindreAuxPropriétaire(sortiePrivée);
         System.out.println("Paire de clés écrite (publique X.509, privée PKCS#8,"
                 + " toutes deux en base64). La clé PRIVÉE ne doit jamais être"
                 + " versionnée.");
+    }
+
+    /**
+     * Pose rw------- sur le fichier de clé privée (constat B-6) : le jeton CI qui
+     * signe les manifestes ne doit être lisible que de son propriétaire — réflexe
+     * peu coûteux là où le système de fichiers connaît les permissions POSIX
+     * (ailleurs, les permissions du répertoire s'appliquent).
+     */
+    private static void restreindreAuxPropriétaire(Path fichier) {
+        try {
+            Files.setPosixFilePermissions(fichier,
+                    java.nio.file.attribute.PosixFilePermissions
+                            .fromString("rw-------"));
+        } catch (IOException | UnsupportedOperationException pasPosix) {
+            // Système sans permissions POSIX : rien de plus à faire.
+        }
     }
 
     /**

@@ -155,6 +155,12 @@ public final class TaskExecutor {
         Phaser enCours = new Phaser(1); // Le thread orchestrateur compte pour un.
         AtomicInteger terminees = new AtomicInteger();
         AtomicInteger bloquables = new AtomicInteger(); // Sautées par blocage transitif.
+        // Constat B-1 : les tâches bloquées transitivement peuvent être atteintes par
+        // PLUSIEURS chemins d'échec (un losange dont les deux branches échouent) — sans
+        // garde, elles étaient comptées et notifiées une fois PAR chemin : événements
+        // SKIPPED en double, décompte final faux, progression au-delà du total et coût
+        // potentiellement exponentiel de la cascade sur les graphes denses.
+        Set<String> bloquées = java.util.concurrent.ConcurrentHashMap.newKeySet();
         CompteurIssues issues = new CompteurIssues();
 
         // Pulsation (D-17) : les tâches EN COURS d'exécution sont inscrites ici
@@ -199,10 +205,33 @@ public final class TaskExecutor {
         try {
             for (Task task : racines) {
                 soumettre(task, pool, enCours, restantes, dependants, terminees,
-                        bloquables, terminées, issues, tâchesEnCours);
+                        bloquables, terminées, bloquées, issues, tâchesEnCours);
             }
             // Attendre la fin de toutes les soumissions (et des cascades).
             enCours.arriveAndAwaitAdvance();
+            // Filet final (constat B-2) : toute tâche restée sans issue — la course
+            // « annulation posée entre le succès d'une dépendance et la soumission du
+            // dépendant » est la seule fenêtre connue — est dite SAUTÉE : aucune tâche
+            // ne reste « en attente » à jamais dans l'interface, et le décompte final
+            // couvre tout le graphe.
+            for (Task task : graph.allTasks()) {
+                if (terminées.contains(task.name())
+                        || !bloquées.add(task.name())) {
+                    continue;
+                }
+                bloquables.incrementAndGet();
+                issues.compter(BuildEvent.TaskState.SKIPPED);
+                try {
+                    events.taskState(new BuildEvent.TaskStateEvent(buildId,
+                            System.currentTimeMillis(), task.name(),
+                            BuildEvent.TaskState.SKIPPED, 0));
+                } catch (Throwable puitsEnPanne) {
+                    // Le puits est en panne : le comptage reste notre seule obligation.
+                }
+            }
+            if (bloquables.get() > 0) {
+                events.progress(graph.size(), terminees.get() + bloquables.get());
+            }
         } finally {
             battement.cancel(false);
             pulsateur.shutdownNow();
@@ -243,16 +272,17 @@ public final class TaskExecutor {
                            Map<String, Integer> restantes,
                            Map<String, List<String>> dependants,
                            AtomicInteger terminees, AtomicInteger bloquables,
-                           Set<String> terminées, CompteurIssues issues,
+                           Set<String> terminées, Set<String> bloquées,
+                           CompteurIssues issues,
                            Map<String, TâchePulsée> tâchesEnCours) {
         enCours.register();
         pool.submit(() -> {
             try {
                 executerUne(task, restantes, dependants, pool, enCours, terminees,
-                        bloquables, terminées, issues, tâchesEnCours);
+                        bloquables, terminées, bloquées, issues, tâchesEnCours);
             } catch (Throwable fuite) {
                 échecImprévu(task, fuite, restantes, dependants, pool, enCours,
-                        terminees, bloquables, terminées, issues, tâchesEnCours);
+                        terminees, bloquables, terminées, bloquées, issues, tâchesEnCours);
             } finally {
                 enCours.arriveAndDeregister();
             }
@@ -268,7 +298,8 @@ public final class TaskExecutor {
                               Map<String, List<String>> dependants, ExecutorService pool,
                               Phaser enCours, AtomicInteger terminees,
                               AtomicInteger bloquables, Set<String> terminées,
-                              CompteurIssues issues, Map<String, TâchePulsée> tâchesEnCours) {
+                              Set<String> bloquées, CompteurIssues issues,
+                              Map<String, TâchePulsée> tâchesEnCours) {
         String cause = fuite.getMessage() == null
                 ? fuite.getClass().getSimpleName() : fuite.getMessage();
         issues.compter(BuildEvent.TaskState.FAILED);
@@ -285,7 +316,7 @@ public final class TaskExecutor {
             // reste notre seule obligation.
         }
         terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                terminées, issues, tâchesEnCours, false);
+                terminées, bloquées, issues, tâchesEnCours, false);
     }
 
     /**
@@ -295,7 +326,8 @@ public final class TaskExecutor {
                              Map<String, List<String>> dependants, ExecutorService pool,
                              Phaser enCours, AtomicInteger terminees,
                              AtomicInteger bloquables, Set<String> terminées,
-                             CompteurIssues issues, Map<String, TâchePulsée> tâchesEnCours) {
+                             Set<String> bloquées, CompteurIssues issues,
+                             Map<String, TâchePulsée> tâchesEnCours) {
         String buildId = events.buildId();
         // Annulation posée avant le tour de cette tâche : saut silencieux.
         if (cancellation.isCancelled()) {
@@ -304,7 +336,7 @@ public final class TaskExecutor {
                     System.currentTimeMillis(), task.name(),
                     BuildEvent.TaskState.SKIPPED, 0));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, tâchesEnCours, false);
+                    terminées, bloquées, issues, tâchesEnCours, false);
             return;
         }
 
@@ -315,7 +347,7 @@ public final class TaskExecutor {
                     System.currentTimeMillis(), task.name(),
                     BuildEvent.TaskState.UP_TO_DATE, 0));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, tâchesEnCours, true);
+                    terminées, bloquées, issues, tâchesEnCours, true);
             return;
         }
 
@@ -346,7 +378,7 @@ public final class TaskExecutor {
                     System.currentTimeMillis(), task.name(), étatFinal,
                     System.currentTimeMillis() - debut));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, tâchesEnCours, true);
+                    terminées, bloquées, issues, tâchesEnCours, true);
         } catch (TaskCancelledException annulation) {
             issues.compter(BuildEvent.TaskState.FAILED);
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
@@ -355,7 +387,7 @@ public final class TaskExecutor {
             events.log(BuildEvent.LogEvent.LogLevel.INFO,
                     "Tâche " + task.name() + " annulée");
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, tâchesEnCours, false);
+                    terminées, bloquées, issues, tâchesEnCours, false);
         } catch (Exception echec) {
             String cause = echec.getMessage() == null
                     ? echec.getClass().getSimpleName() : echec.getMessage();
@@ -367,7 +399,7 @@ public final class TaskExecutor {
             events.log(BuildEvent.LogEvent.LogLevel.ERROR,
                     "Échec de " + task.name() + " : " + cause);
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, tâchesEnCours, false);
+                    terminées, bloquées, issues, tâchesEnCours, false);
         } catch (java.lang.Error erreurGrave) {
             // Un Error ne doit JAMAIS rompre le comptage silencieusement : la tâche
             // échoue proprement, la cause est journalisée ET diagnostiquée, le build
@@ -384,7 +416,7 @@ public final class TaskExecutor {
             events.log(BuildEvent.LogEvent.LogLevel.ERROR, message);
             events.diagnostic(Diagnostic.error(task.name(), message));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, tâchesEnCours, false);
+                    terminées, bloquées, issues, tâchesEnCours, false);
         } finally {
             tâchesEnCours.remove(task.name());
             cancellation.unregisterCurrent();
@@ -402,7 +434,8 @@ public final class TaskExecutor {
                           Map<String, List<String>> dependants, ExecutorService pool,
                           Phaser enCours, AtomicInteger terminees,
                           AtomicInteger bloquables, Set<String> terminées,
-                          CompteurIssues issues, Map<String, TâchePulsée> tâchesEnCours,
+                          Set<String> bloquées, CompteurIssues issues,
+                          Map<String, TâchePulsée> tâchesEnCours,
                           boolean reussie) {
         if (!terminées.add(task.name())) {
             return; // Déjà terminée (double passage d'un chemin d'erreur) : ignorer.
@@ -411,20 +444,40 @@ public final class TaskExecutor {
         events.progress(graph.size(), terminees.get() + bloquables.get());
         for (String dependant : dependants.getOrDefault(task.name(), List.of())) {
             if (!reussie) {
-                // Échec ou annulation : les dépendants sont bloqués transitivement.
-                bloquables.incrementAndGet();
-                issues.compter(BuildEvent.TaskState.SKIPPED);
-                events.taskState(new BuildEvent.TaskStateEvent(events.buildId(),
-                        System.currentTimeMillis(), dependant,
-                        BuildEvent.TaskState.SKIPPED, 0));
-                // Cascade : les dépendants du dépendant sont bloqués aussi.
-                terminerBloques(dependant, dependants, bloquables, issues);
+                // Échec ou annulation : les dépendants sont bloqués transitivement —
+                // UNE seule fois chacun, quel que soit le nombre de chemins d'échec
+                // qui les atteignent (garde du constat B-1).
+                if (bloquées.add(dependant)) {
+                    bloquables.incrementAndGet();
+                    issues.compter(BuildEvent.TaskState.SKIPPED);
+                    events.taskState(new BuildEvent.TaskStateEvent(events.buildId(),
+                            System.currentTimeMillis(), dependant,
+                            BuildEvent.TaskState.SKIPPED, 0));
+                    // Cascade : les dépendants du dépendant sont bloqués aussi.
+                    terminerBloques(dependant, dependants, bloquables, issues, bloquées);
+                }
                 continue;
             }
             int restant = restantes.merge(dependant, -1, Integer::sum);
-            if (restant == 0 && !cancellation.isCancelled()) {
-                soumettre(graph.task(dependant), pool, enCours, restantes, dependants,
-                        terminees, bloquables, terminées, issues, tâchesEnCours);
+            if (restant == 0) {
+                if (cancellation.isCancelled()) {
+                    // Constat B-2 : la tâche est prête mais l'annulation est posée —
+                    // ni soumise (correct) ni laissée muette (le défaut) : elle est
+                    // dite SAUTÉE, l'interface ne la garde pas « en attente » à jamais.
+                    if (bloquées.add(dependant)) {
+                        bloquables.incrementAndGet();
+                        issues.compter(BuildEvent.TaskState.SKIPPED);
+                        events.taskState(new BuildEvent.TaskStateEvent(
+                                events.buildId(), System.currentTimeMillis(),
+                                dependant, BuildEvent.TaskState.SKIPPED, 0));
+                        events.progress(graph.size(),
+                                terminees.get() + bloquables.get());
+                    }
+                } else {
+                    soumettre(graph.task(dependant), pool, enCours, restantes, dependants,
+                            terminees, bloquables, terminées, bloquées, issues,
+                            tâchesEnCours);
+                }
             }
         }
     }
@@ -433,14 +486,20 @@ public final class TaskExecutor {
      * Marque bloquées (transitivement) les tâches qui dépendent d'une tâche bloquée.
      */
     private void terminerBloques(String nom, Map<String, List<String>> dependants,
-                                 AtomicInteger bloquables, CompteurIssues issues) {
+                                 AtomicInteger bloquables, CompteurIssues issues,
+                                 Set<String> bloquées) {
         for (String dependant : dependants.getOrDefault(nom, List.of())) {
+            // Garde B-1 : chaque tâche bloquée est comptée et notifiée une seule fois,
+            // même si plusieurs branches échouées y convergent.
+            if (!bloquées.add(dependant)) {
+                continue;
+            }
             bloquables.incrementAndGet();
             issues.compter(BuildEvent.TaskState.SKIPPED);
             events.taskState(new BuildEvent.TaskStateEvent(events.buildId(),
                     System.currentTimeMillis(), dependant,
                     BuildEvent.TaskState.SKIPPED, 0));
-            terminerBloques(dependant, dependants, bloquables, issues);
+            terminerBloques(dependant, dependants, bloquables, issues, bloquées);
         }
     }
 

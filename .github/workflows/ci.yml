@@ -174,6 +174,11 @@ jobs:
         env:
           # Clé privée de signature (PKCS#8, base64) : JETON CI, jamais versionnée.
           FORGE_MANIFEST_KEY: ${{ secrets.FORGE_MANIFEST_KEY }}
+          # Séquence anti-recul du manifeste (constat M-2) : le numéro d'exécution
+          # GitHub est monotone — chaque publication signe un numéro STRICTEMENT
+          # supérieur au précédent, et les coquilles refusent tout manifeste plus
+          # ancien rejoué (miroir périmé, canal compromis).
+          FORGE_SEQUENCE_MANIFESTE: ${{ github.run_number }}
           # Le composant platform-34 (android.jar) est publié depuis v0.2.7 :
           # sans lui, aucune compilation ne résout java.lang.Object sur ART
           # (ECJ ne peut pas lire la plate-forme dex/oat de l'appareil).
@@ -204,7 +209,11 @@ jobs:
           python3 - <<'PY'
           import re
           source = open('app/src/main/java/jo/forge/app/ClesForge.java').read()
-          morceaux = re.findall(r'"([^"]+)"', source.split('CLÉ_PUBLIQUE_MANIFESTE')[1])
+          # Seule la déclaration de la clé COURANTE est lue : la constante de
+          # rotation (CLÉ_PUBLIQUE_MANIFESTE_SUIVANTE, vide par défaut) ne doit
+          # jamais se mélanger à l'extraction.
+          declaration = source.split('CLÉ_PUBLIQUE_MANIFESTE =')[1].split(';')[0]
+          morceaux = re.findall(r'"([^"]+)"', declaration)
           open('/tmp/cle-publique.b64', 'w').write(''.join(morceaux))
           PY
           ./gradlew --no-daemon :setup:jar :json:jar :api:jar -q

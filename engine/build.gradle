@@ -8,7 +8,7 @@ plugins {
 }
 
 group = 'jo.forge'
-version = '0.2.23'
+version = forgeVersion // source unique : gradle.properties (constat B-7)
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
@@ -103,6 +103,9 @@ tasks.named('test') {
     useJUnitPlatform()
     // Le dexeur (d8) tourne EN PROCESSUS dans certains tests : lui laisser la place.
     maxHeapSize = '2g'
+    // Version du projet, lue par CohérenceVersionTest (constat B-7) : la constante
+    // EngineVersion.CURRENT doit être bumpée en même temps que gradle.properties.
+    systemProperty 'forge.version.attendue', project.version
     // Les tests réseau opt-in (ex. ExempleApplicationAndroidRéseauTest) se
     // déclenchent depuis la ligne de commande : -Dforge.exempleRéseau=1.
     systemProperty 'forge.exempleRéseau', System.getProperty('forge.exempleRéseau', '')
@@ -162,7 +165,7 @@ tasks.named('processResources') { dependsOn 'tranchesLambdaJar' }
 // Publication (étape 12) : assemblage des composants du moteur et du manifeste.
 // ---------------------------------------------------------------------------
 
-def versionComposants = '0.2.23'
+def versionComposants = forgeVersion // source unique : gradle.properties (constat B-7)
 
 tasks.register('composants', JavaExec) {
     group = 'publication'
@@ -246,6 +249,13 @@ tasks.register('composants', JavaExec) {
     def versionAapt2 = System.getenv('FORGE_VERSION_AAPT2')
     if (versionAapt2) {
         arguments.addAll(['--version-aapt2', versionAapt2])
+    }
+    // Séquence anti-recul du manifeste (constat M-2) : numéro monotone signé avec
+    // le manifeste. La CI passe son numéro d'exécution ; sans lui, manifeste sans
+    // séquence (l'anti-recul des coquilles reste inerte, jamais bloquant).
+    def séquenceManifeste = System.getenv('FORGE_SEQUENCE_MANIFESTE')
+    if (séquenceManifeste) {
+        arguments.addAll(['--séquence', séquenceManifeste])
     }
     args = arguments.findAll { it != null }
     // L'ENSEMBLE Kotlin (compilateur + dépendances runtime de son POM) est résolu

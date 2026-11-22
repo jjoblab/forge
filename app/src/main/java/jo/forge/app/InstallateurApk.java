@@ -60,10 +60,35 @@ public final class InstallateurApk {
             }
             session.commit(PendingIntent.getActivity(contexte, CODE_CONFIRMATION,
                     confirmation, fanions).getIntentSender());
+        } catch (IOException échec) {
+            // Constat B-4 : une session ouverte qui échoue (ouverture, écriture,
+            // commit) doit être ABANDONNÉE — close() ne suffit pas, elle restait
+            // ouverte côté système et accumulait les sessions fantômes.
+            abandonner(installateur, identifiant);
+            throw échec;
+        } catch (RuntimeException échec) {
+            abandonner(installateur, identifiant);
+            throw échec;
         } finally {
             if (session != null) {
                 session.close();
             }
+        }
+    }
+
+    /**
+     * Abandonne une session d'installation en échec — au mieux : si le système l'a
+     * déjà fermée, l'échec d'origine prime (constat B-4). Jamais appelée après un
+     * commit réussi : abandonner une session commitée annulerait l'installation.
+     */
+    private static void abandonner(PackageInstaller installateur, int identifiant) {
+        if (identifiant < 0) {
+            return; // La session n'a jamais été créée.
+        }
+        try {
+            installateur.abandonSession(identifiant);
+        } catch (RuntimeException sessionDéjàMorte) {
+            // Rien à faire : l'échec d'origine est le message utile.
         }
     }
 }

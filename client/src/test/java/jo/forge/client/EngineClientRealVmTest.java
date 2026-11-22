@@ -12,11 +12,13 @@ import org.junit.jupiter.api.Timeout;
 
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -178,5 +180,74 @@ class EngineClientRealVmTest {
                         "0.1.0-test", evenement -> { }, () -> { }));
         assertTrue(erreur.getMessage() != null && !erreur.getMessage().isBlank(),
                 "l'échec doit porter un message");
+    }
+
+    /**
+     * Constat M-3 : une exception levée par le rappel d'événements de la coquille
+     * était lue comme une COUPURE du canal — toutes les requêtes en attente
+     * échouaient et un moteur sain était déclaré mort. Elle est désormais isolée :
+     * journalisée dans le journal du moteur, le canal et le build continuent.
+     */
+    @Test
+    @Timeout(60)
+    void fauteDuRappelNEffondrePasLeCanal() throws Exception {
+        List<BuildEvent> evenements = new CopyOnWriteArrayList<>();
+        CompletableFuture<BuildEvent.BuildFinished> fin = new CompletableFuture<>();
+        CompletableFuture<Boolean> mort = new CompletableFuture<>();
+        EngineClient client = EngineClient.launch(new JavaVmLauncher(), moteurFactice(),
+                "0.1.0-test",
+                evenement -> {
+                    // Capturé PUIS faute volontaire : la coquille plante en pleine
+                    // réception, à chaque événement.
+                    evenements.add(evenement);
+                    if (evenement instanceof BuildEvent.BuildFinished buildFin) {
+                        fin.complete(buildFin);
+                    }
+                    throw new IllegalStateException("faute volontaire du rappel");
+                },
+                () -> mort.complete(true));
+
+        client.startBuild(requete("build-ok")).get(10, TimeUnit.SECONDS);
+        BuildEvent.BuildFinished finBuild = fin.get(30, TimeUnit.SECONDS);
+        assertTrue(finBuild.success(), "le build factice doit réussir malgré la coquille");
+
+        // Le canal a survécu à toutes les fautes du rappel : la sonde passe.
+        long pong = client.ping().get(10, TimeUnit.SECONDS);
+        assertTrue(pong > 0, "le canal doit être intact après les fautes du rappel");
+        assertFalse(mort.isDone(), "un moteur sain ne doit pas être déclaré mort");
+
+        assertTrue(client.journalErreurs().stream()
+                        .anyMatch(l -> l.contains("Rappel d'événement en échec")),
+                "la faute du rappel doit être journalisée : "
+                        + client.journalErreurs());
+
+        client.shutdown().get(10, TimeUnit.SECONDS);
+        assertEquals(0, client.awaitExit(), "arrêt propre : le canal était intact");
+    }
+
+    /**
+     * Constat M-3 : après la mort du moteur, une requête échoue IMMÉDIATEMENT avec
+     * un message clair — elle ne s'inscrit plus pour une réponse qui ne viendra
+     * jamais.
+     */
+    @Test
+    @Timeout(60)
+    void requêteAprèsMortÉchoueImmédiatement() throws Exception {
+        CompletableFuture<Boolean> mort = new CompletableFuture<>();
+        EngineClient client = EngineClient.launch(new JavaVmLauncher(), moteurFactice(),
+                "0.1.0-test", evenement -> { }, () -> mort.complete(true));
+
+        client.kill();
+        assertTrue(mort.get(15, TimeUnit.SECONDS), "la mort du moteur doit être signalée");
+
+        long debut = System.currentTimeMillis();
+        ExecutionException échec = assertThrows(ExecutionException.class,
+                () -> client.ping().get(5, TimeUnit.SECONDS));
+        long durée = System.currentTimeMillis() - debut;
+        assertTrue(durée < 5_000,
+                "l'échec doit être immédiat, pas attendu (durée : " + durée + " ms)");
+        assertInstanceOf(EngineConnection.EngineConnectionException.class, échec.getCause());
+        assertTrue(échec.getCause().getMessage().contains("déjà fermé"),
+                "le message doit dire le canal fermé : " + échec.getCause().getMessage());
     }
 }

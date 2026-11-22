@@ -46,6 +46,22 @@ public final class EngineClient {
     /** Délai par défaut des requêtes en secondes. */
     private static final int DEFAULT_TIMEOUT_SECONDS = 15;
 
+    /** Délai des requêtes courtes (état, sonde, arrêt) en secondes. */
+    private static final int DÉLAI_COURT_S = 15;
+
+    /**
+     * Délai de l'accusé de DÉMARRAGE d'un build ou d'un sync (le moteur lit le
+     * modèle et dresse le graphe avant d'accuser — un appareil modeste peut être
+     * lent), en secondes.
+     */
+    private static final int DÉLAI_DÉMARRAGE_S = 60;
+
+    /**
+     * Délai de l'accusé d'ANNULATION : il n'arrive qu'une fois le build TOTALEMENT
+     * arrêté (exigence D-08) — un dexage en cours doit finir son seau, en secondes.
+     */
+    private static final int DÉLAI_ANNULATION_S = 180;
+
     private final EngineConnection connection;
     private final Hello hello;
 
@@ -110,10 +126,10 @@ public final class EngineClient {
         HelloHandshake handshake = awaitHello(connection, helloFrame);
         int chosen = chooseProtocol(handshake.hello());
         ClientHello clientHello = new ClientHello(shellVersion, chosen);
-        Frame acknowledgement = connection
+        Frame acknowledgement = borné(connection
                 .request(FrameType.CLIENT_HELLO, out -> MessageIO.writeClientHello(
-                        out, clientHello))
-                .orTimeout(DEFAULT_TIMEOUT_SECONDS, TimeUnit.SECONDS).join();
+                        out, clientHello)), DEFAULT_TIMEOUT_SECONDS,
+                "l'accusé de poignée de main").join();
         if (acknowledgement.type() == FrameType.PROTOCOL_ERROR) {
             connection.kill();
             throw new EngineConnection.EngineConnectionException(
@@ -162,8 +178,9 @@ public final class EngineClient {
      * @return le futur de l'état.
      */
     public CompletableFuture<Status> status() {
-        return connection.request(FrameType.STATUS_REQUEST, out -> { })
-                .thenApply(frame -> decode(frame, MessageIO::readStatus));
+        return borné(connection.request(FrameType.STATUS_REQUEST, out -> { })
+                        .thenApply(frame -> decode(frame, MessageIO::readStatus)),
+                DÉLAI_COURT_S, "status");
     }
 
     /**
@@ -172,8 +189,9 @@ public final class EngineClient {
      * @return le futur de l'horodatage moteur du pong.
      */
     public CompletableFuture<Long> ping() {
-        return connection.request(FrameType.PING, out -> { })
-                .thenApply(frame -> decode(frame, MessageIO::readPong).engineTimestamp());
+        return borné(connection.request(FrameType.PING, out -> { })
+                        .thenApply(frame -> decode(frame, MessageIO::readPong).engineTimestamp()),
+                DÉLAI_COURT_S, "ping");
     }
 
     /**
@@ -183,9 +201,10 @@ public final class EngineClient {
      * @return le futur de l'accusé de démarrage (identifiant acté par le moteur).
      */
     public CompletableFuture<BuildStarted> startBuild(BuildRequest request) {
-        return connection.request(FrameType.START_BUILD,
+        return borné(connection.request(FrameType.START_BUILD,
                         out -> MessageIO.writeBuildRequest(out, request))
-                .thenApply(frame -> decode(frame, MessageIO::readBuildStarted));
+                        .thenApply(frame -> decode(frame, MessageIO::readBuildStarted)),
+                DÉLAI_DÉMARRAGE_S, "le démarrage du build");
     }
 
     /**
@@ -208,18 +227,19 @@ public final class EngineClient {
                             + "le moteur à jour"));
             return refus;
         }
-        return connection.request(FrameType.SYNC_BUILD,
+        return borné(connection.request(FrameType.SYNC_BUILD,
                         out -> MessageIO.writeBuildRequest(out, request))
-                .thenApply(frame -> {
-                    if (frame.type() == FrameType.PROTOCOL_ERROR) {
-                        // Moteur plus ancien que le protocole 2 : refus propre, le
-                        // canal reste ouvert pour les builds ordinaires.
-                        throw new EngineConnection.EngineConnectionException(
-                                "Sync non supporté par ce moteur (protocole trop ancien)"
-                                        + " : " + decodeError(frame));
-                    }
-                    return decode(frame, MessageIO::readBuildStarted);
-                });
+                        .thenApply(frame -> {
+                            if (frame.type() == FrameType.PROTOCOL_ERROR) {
+                                // Moteur plus ancien que le protocole 2 : refus propre, le
+                                // canal reste ouvert pour les builds ordinaires.
+                                throw new EngineConnection.EngineConnectionException(
+                                        "Sync non supporté par ce moteur (protocole trop ancien)"
+                                                + " : " + decodeError(frame));
+                            }
+                            return decode(frame, MessageIO::readBuildStarted);
+                        }),
+                DÉLAI_DÉMARRAGE_S, "le sync");
     }
 
     /**
@@ -230,9 +250,10 @@ public final class EngineClient {
      * @return le futur de l'accusé d'annulation.
      */
     public CompletableFuture<Cancelled> cancel(String buildId) {
-        return connection.request(FrameType.CANCEL_BUILD,
+        return borné(connection.request(FrameType.CANCEL_BUILD,
                         out -> MessageIO.writeCancelRequest(out, new CancelRequest(buildId)))
-                .thenApply(frame -> decode(frame, MessageIO::readCancelled));
+                        .thenApply(frame -> decode(frame, MessageIO::readCancelled)),
+                DÉLAI_ANNULATION_S, "l'annulation");
     }
 
     /**
@@ -241,8 +262,9 @@ public final class EngineClient {
      * @return le futur complété quand l'arrêt est envoyé (la mort suit de près).
      */
     public CompletableFuture<Void> shutdown() {
-        return connection.request(FrameType.SHUTDOWN, out -> { })
-                .thenApply(frame -> null);
+        return borné(connection.request(FrameType.SHUTDOWN, out -> { })
+                        .thenApply(frame -> (Void) null),
+                DÉLAI_COURT_S, "l'arrêt");
     }
 
     /**
@@ -263,6 +285,30 @@ public final class EngineClient {
     }
 
     // ---- Aides -------------------------------------------------------------
+
+    /**
+     * Borné un futur de requête par un délai (constat M-3) : sans borne, une requête
+     * vers un moteur gelé par le système (ou écroulé en silence) restait en attente
+     * À JAMAIS — l'interface de la coquille montrait un build « en démarrage »
+     * sans fin. Le dépassement devient une erreur parlante, pas un silence.
+     */
+    private static <T> CompletableFuture<T> borné(CompletableFuture<T> futur, long délaiS,
+                                                   String requête) {
+        return futur.orTimeout(délaiS, TimeUnit.SECONDS).exceptionally(erreur -> {
+            Throwable cause = erreur instanceof CompletionException && erreur.getCause() != null
+                    ? erreur.getCause() : erreur;
+            if (cause instanceof TimeoutException) {
+                throw new EngineConnection.EngineConnectionException(
+                        "Le moteur n'a pas répondu à " + requête + " en " + délaiS
+                                + " s — gelé par le système ou écroulé en silence");
+            }
+            if (cause instanceof RuntimeException) {
+                throw (RuntimeException) cause;
+            }
+            throw new EngineConnection.EngineConnectionException(
+                    "Requête " + requête + " échouée : " + cause, cause);
+        });
+    }
 
     /**
      * Attend la trame HELLO spontanée du moteur.

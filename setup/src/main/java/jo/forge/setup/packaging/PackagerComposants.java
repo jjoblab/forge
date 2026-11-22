@@ -288,6 +288,11 @@ public final class PackagerComposants {
                 ? Files.readString(Path.of(obligatoire(options, "clé-privée"))) : null;
         // Base sémantique des versions dérivées (aapt2 : version amont du prébuilt).
         String baseAapt2 = options.getOrDefault("version-aapt2", List.of("1.0.0")).get(0);
+        // Séquence anti-recul (constat M-2) : numéro monotone signé avec le
+        // manifeste — la CI passe son numéro d'exécution ; sans lui, manifeste sans
+        // séquence (les coquilles antérieures l'ignorent, l'anti-recul est inerte).
+        long séquence = options.containsKey("séquence")
+                ? Long.parseLong(obligatoire(options, "séquence")) : 0L;
         // Hébergement pérenne des composants d'outils (release GitHub « outils ») :
         // null = URL de la version du moteur (comportement historique).
         String urlOutils = options.containsKey("url-outils")
@@ -424,11 +429,16 @@ public final class PackagerComposants {
         }
 
         EngineManifest manifeste = new EngineManifest(1, version, 1,
-                LocalDate.now().toString(), composants);
+                LocalDate.now().toString(), composants, séquence);
+        if (séquence <= 0 && cléPrivée != null) {
+            System.out.println("[avertissement] manifeste signé SANS séquence "
+                    + "anti-recul — passez --séquence (numéro monotone) pour que les "
+                    + "coquilles puissent refuser un manifeste ancien rejoué");
+        }
         Path fichierManifeste = sortie.resolve("manifest.json");
         Files.writeString(fichierManifeste, ManifestCodec.write(manifeste));
         System.out.println("Manifeste écrit : " + fichierManifeste + " ("
-                + composants.size() + " composants)");
+                + composants.size() + " composants, séquence " + séquence + ")");
 
         if (cléPrivée != null) {
             byte[] signature = signer(fichierManifeste, cléPrivée);

@@ -42,6 +42,11 @@ public final class CanalMoteur {
     private static final Set<String> HTTPS_SEUL = Set.of("https");
 
     private final String clePubliqueBase64;
+
+    /** Clé de rotation (constat M-2) : vide = aucune — sinon la signature peut venir
+     * d'elle AUSSI, le temps de migrer toute la flotte vers la clé courante. */
+    private final String cleSuivanteBase64;
+
     private final Set<String> schemas;
 
     /**
@@ -51,7 +56,20 @@ public final class CanalMoteur {
      * @param clePubliqueBase64 clé publique ECDSA P-256 (X.509, base64) épinglée.
      */
     public CanalMoteur(String clePubliqueBase64) {
-        this(clePubliqueBase64, HTTPS_SEUL);
+        this(clePubliqueBase64, "");
+    }
+
+    /**
+     * Crée le canal de production AVEC clé de rotation (constat M-2) : un manifeste
+     * signé par la clé COURANTE ou par la clé SUIVANTE est accepté — la cohabitation
+     * des deux rend possible le remplacement d'une clé compromise sans orphaner les
+     * coquilles déjà installées. La clé suivante vide désactive le mécanisme.
+     *
+     * @param clePubliqueBase64 clé publique épinglée (base64 X.509).
+     * @param cleSuivanteBase64 clé publique de rotation (base64 X.509, "" = aucune).
+     */
+    public CanalMoteur(String clePubliqueBase64, String cleSuivanteBase64) {
+        this(clePubliqueBase64, cleSuivanteBase64, HTTPS_SEUL);
     }
 
     /**
@@ -61,7 +79,20 @@ public final class CanalMoteur {
      * @param schemas           schémas d'URL acceptés (ex. {@code http} pour les tests).
      */
     public CanalMoteur(String clePubliqueBase64, Set<String> schemas) {
+        this(clePubliqueBase64, "", schemas);
+    }
+
+    /**
+     * Constructeur complet (clé de rotation + schémas explicites).
+     *
+     * @param clePubliqueBase64 clé publique épinglée (base64 X.509).
+     * @param cleSuivanteBase64 clé publique de rotation (base64 X.509, "" = aucune).
+     * @param schemas           schémas d'URL acceptés.
+     */
+    public CanalMoteur(String clePubliqueBase64, String cleSuivanteBase64,
+                       Set<String> schemas) {
         this.clePubliqueBase64 = clePubliqueBase64;
+        this.cleSuivanteBase64 = cleSuivanteBase64 == null ? "" : cleSuivanteBase64.trim();
         this.schemas = Set.copyOf(schemas);
     }
 
@@ -78,7 +109,14 @@ public final class CanalMoteur {
         byte[] octets = lire(urlManifeste, PLAFOND_MANIFESTE, "manifeste");
         String signature = new String(lire(urlSignature(urlManifeste), PLAFOND_SIGNATURE,
                 "signature"), StandardCharsets.UTF_8).trim();
-        if (!new ManifestVerifier(clePubliqueBase64).verify(octets, signature)) {
+        // Clé courante d'abord, clé de rotation ensuite (constat M-2) : un échec de
+        // la première n'est PAS une erreur — il est simplement temps d'essayer
+        // l'autre. Seule l'échec des DEUX signe le refus.
+        boolean authentique = new ManifestVerifier(clePubliqueBase64).verify(octets, signature);
+        if (!authentique && !cleSuivanteBase64.isEmpty()) {
+            authentique = new ManifestVerifier(cleSuivanteBase64).verify(octets, signature);
+        }
+        if (!authentique) {
             throw new ManifestException("Signature du manifeste INVALIDE pour "
                     + urlManifeste + " — canal compromis ou clé publique obsolète :"
                     + " refusez l'installation");

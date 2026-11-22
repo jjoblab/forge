@@ -11,9 +11,29 @@ import java.util.List;
  * @param minAppVersion   version minimale de la coquille capable d'installer ce moteur.
  * @param publishedAt     date de publication (ISO-8601, information).
  * @param components      composants, au moins un, identifiants uniques.
+ * @param séquence        numéro de séquence anti-recul (constat M-2) : monotone à
+ *                        travers les publications, signé comme le reste du
+ *                        manifeste ; 0 = manifeste sans séquence (antérieur au
+ *                        mécanisme, jamais refusé pour ça seul).
  */
 public record EngineManifest(int manifestVersion, String engineVersion, int minAppVersion,
-                             String publishedAt, List<ComponentManifest> components) {
+                             String publishedAt, List<ComponentManifest> components,
+                             long séquence) {
+
+    /**
+     * Construit un manifeste SANS séquence (compatibilité des appelants antérieurs
+     * au mécanisme anti-recul : la séquence vaut 0).
+     *
+     * @param manifestVersion version du format.
+     * @param engineVersion   version du moteur.
+     * @param minAppVersion   version minimale de la coquille.
+     * @param publishedAt     date de publication.
+     * @param components      composants.
+     */
+    public EngineManifest(int manifestVersion, String engineVersion, int minAppVersion,
+                          String publishedAt, List<ComponentManifest> components) {
+        this(manifestVersion, engineVersion, minAppVersion, publishedAt, components, 0L);
+    }
 
     /**
      * Valide le manifeste.
@@ -27,6 +47,9 @@ public record EngineManifest(int manifestVersion, String engineVersion, int minA
         }
         if (engineVersion == null || engineVersion.isBlank()) {
             throw new ManifestException("Version du moteur manquante");
+        }
+        if (séquence < 0) {
+            throw new ManifestException("Séquence de manifeste négative : " + séquence);
         }
         if (components == null || components.isEmpty()) {
             throw new ManifestException("Manifeste sans composant");

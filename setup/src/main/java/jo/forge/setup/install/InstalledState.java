@@ -23,12 +23,28 @@ import java.util.Map;
  * @param engineVersion version du moteur installé.
  * @param installedAt   date d'installation (ISO-8601, information).
  * @param components    composants installés, avec fichiers et sommes.
+ * @param dernièreSéquence séquence anti-recul (constat M-2) du manifeste installé :
+ *                        tout manifeste signé d'une séquence STRICTEMENT inférieure
+ *                        sera refusé ; 0 = état antérieur au mécanisme.
  */
 public record InstalledState(int formatVersion, String engineVersion, String installedAt,
-                             List<InstalledComponent> components) {
+                             List<InstalledComponent> components, long dernièreSéquence) {
 
     /** Version courante du format. */
     public static final int FORMAT_VERSION = 1;
+
+    /**
+     * Construit un état SANS séquence (états antérieurs au mécanisme anti-recul).
+     *
+     * @param formatVersion version du format.
+     * @param engineVersion version du moteur.
+     * @param installedAt   date d'installation.
+     * @param components    composants installés.
+     */
+    public InstalledState(int formatVersion, String engineVersion, String installedAt,
+                          List<InstalledComponent> components) {
+        this(formatVersion, engineVersion, installedAt, components, 0L);
+    }
 
     /**
      * Valide l'état.
@@ -41,6 +57,9 @@ public record InstalledState(int formatVersion, String engineVersion, String ins
         }
         if (engineVersion == null || engineVersion.isBlank()) {
             throw new InstallException("Version du moteur absente de l'état");
+        }
+        if (dernièreSéquence < 0) {
+            throw new InstallException("Séquence d'état négative : " + dernièreSéquence);
         }
         components = components == null ? List.of() : List.copyOf(components);
     }
@@ -76,6 +95,12 @@ public record InstalledState(int formatVersion, String engineVersion, String ins
         racine.put("engineVersion", engineVersion);
         racine.put("installedAt", installedAt);
         racine.put("components", composants);
+        if (dernièreSéquence > 0) {
+            // Séquence anti-recul (constat M-2) : écrite seulement quand elle
+            // existe — les états sans séquence restent conformes au format lu par
+            // les coquilles antérieures (les champs inconnus sont ignorés).
+            racine.put("dernièreSéquence", dernièreSéquence);
+        }
         return Json.write(racine);
     }
 
@@ -114,11 +139,15 @@ public record InstalledState(int formatVersion, String engineVersion, String ins
         List<InstalledComponent> composants = ((List<?>) liste).stream()
                 .map(element -> lireComponent((Map<?, ?>) element))
                 .toList();
+        // Séquence anti-recul (constat M-2) : optionnelle — absente des états
+        // antérieurs au mécanisme.
+        long séquence = objet.get("dernièreSéquence") instanceof Number nombre
+                ? nombre.longValue() : 0L;
         return new InstalledState(
                 ((Number) objet.get("formatVersion")).intValue(),
                 (String) objet.get("engineVersion"),
                 String.valueOf(objet.get("installedAt")),
-                composants);
+                composants, séquence);
     }
 
     @SuppressWarnings("unchecked")

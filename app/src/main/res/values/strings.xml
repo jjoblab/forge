@@ -36,12 +36,17 @@
     <string name="install_cancelled">Installation annulée — les octets déjà téléchargés
         sont conservés pour la reprise.</string>
     <string name="install_engine_error">Installation impossible : %1$s</string>
+    <string name="install_recovered_after_interrupt">Une installation interrompue a
+        été réparée au démarrage : le moteur précédent a repris sa place. Si un build
+        échouait à l’instant, relancez-le.</string>
     <string name="install_error_no_manifest">Chargez d\'abord le manifeste du canal.</string>
     <string name="install_error_shell_too_old">Ce moteur exige une coquille plus récente
         (version minimale %1$d, installée : %2$d) — mettez la coquille à jour.</string>
     <string name="install_error_build_running">Un build est en cours : annulez-le avant
         de toucher au moteur.</string>
     <string name="install_manifest_error">Canal refusé : %1$s</string>
+    <string name="install_manifest_rollback_refused">Manifeste refusé (anti-recul) :
+        %1$s</string>
     <string name="uninstall_confirm_title">Désinstaller le moteur ?</string>
     <string name="uninstall_confirm_message">Le moteur installé et ses composants
         seront supprimés du stockage privé. Les projets ne sont pas touchés.</string>

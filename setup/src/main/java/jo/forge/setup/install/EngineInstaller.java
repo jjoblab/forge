@@ -27,7 +27,11 @@ import java.util.UUID;
  * préparation invisible ({@code engines/.staging-&lt;uuid&gt;}), posé en lecture seule,
  * puis <em>renommé</em> en {@code engines/&lt;version&gt;} ; l'état
  * ({@code installed.json}) n'est basculé qu'en dernier, atomiquement. Un échec à
- * n'importe quel pas laisse l'état précédent intact et supprime la préparation.</p>
+ * n'importe quel pas laisse l'état précédent intact et supprime la préparation. La
+ * RÉINSTALLATION de la même version suit la même règle : l'ancien moteur est mis à
+ * l'écart ({@code .old-&lt;uuid&gt;}) et non détruit, rétabli si le nouveau n'arrive
+ * pas, et {@link #rétablirSiInterrompue()} répare au démarrage une installation
+ * tuée entre les deux.</p>
  *
  * <p><b>Économie de données mobiles</b> (v0.2.9) : les composants dont l'empreinte
  * de contenu est déjà dans le cache ({@code forge/cache/composants}) sont LIÉS
@@ -86,6 +90,95 @@ public final class EngineInstaller {
      */
     public InstalledState currentState() {
         return InstalledState.fromFile(home.installedState());
+    }
+
+    /**
+     * Répare les traces d'une installation interrompue (constat M-1), au démarrage de
+     * la coquille :
+     * <ul>
+     *   <li>l'état pointe un moteur ABSENT mais un {@code .old-<uuid>} existe — la
+     *       réinstallation a été tuée entre la mise à l'écart de l'ancien moteur et
+     *       l'arrivée du nouveau : l'ancien est RÉTABLI à sa place, le moteur redevient
+     *       utilisable sans aucune action de l'utilisateur ;</li>
+     *   <li>les {@code .staging-<uuid>} et {@code .old-<uuid>} restants (morts avant le
+     *       basculement d'état) sont purgés.</li>
+     * </ul>
+     *
+     * @return {@code true} si un moteur a été rétabli depuis sa mise à l'écart.
+     */
+    public boolean rétablirSiInterrompue() {
+        boolean rétabli = false;
+        InstalledState etat = currentState();
+        if (etat != null) {
+            Path destination = home.engineDir(etat.engineVersion());
+            if (!Files.exists(destination)) {
+                Path remplaçant = plusRécent(home.engines(), ".old-");
+                if (remplaçant != null) {
+                    try {
+                        Files.createDirectories(home.engines());
+                        Files.move(remplaçant, destination);
+                        destination.toFile().setWritable(false, false);
+                        rétabli = true;
+                    } catch (IOException irrécupérable) {
+                        // Le moteur reste absent : l'utilisateur sera guidé par le
+                        // bouton Réparer — les orphelins partent ci-dessous.
+                    }
+                }
+            }
+        }
+        purgerInterrompus(".staging-");
+        purgerInterrompus(".old-");
+        return rétabli;
+    }
+
+    /**
+     * Le répertoire caché le plus récent du préfixe donné dans engines/, ou null.
+     */
+    private Path plusRécent(Path engines, String préfixe) {
+        Path trouvé = null;
+        try (var candidats = Files.list(engines)) {
+            for (Path candidat : (Iterable<Path>) candidats::iterator) {
+                if (!candidat.getFileName().toString().startsWith(préfixe)) {
+                    continue;
+                }
+                if (trouvé == null) {
+                    trouvé = candidat;
+                } else {
+                    try {
+                        if (Files.getLastModifiedTime(candidat)
+                                .compareTo(Files.getLastModifiedTime(trouvé)) > 0) {
+                            trouvé = candidat;
+                        }
+                    } catch (IOException illisible) {
+                        // Garde l'ordre de parcours.
+                    }
+                }
+            }
+        } catch (IOException pasDeRépertoire) {
+            // engines/ absent : rien à nettoyer.
+        }
+        return trouvé;
+    }
+
+    /**
+     * Supprime les répertoires cachés du préfixe donné (préparations et mises à
+     * l'écart orphelines d'une installation morte avant le basculement d'état).
+     */
+    private void purgerInterrompus(String préfixe) {
+        Path engines = home.engines();
+        if (!Files.isDirectory(engines)) {
+            return;
+        }
+        try (var candidats = Files.list(engines)) {
+            for (Path candidat : (Iterable<Path>) candidats::iterator) {
+                if (candidat.getFileName().toString().startsWith(préfixe)) {
+                    retablirEcriture(candidat);
+                    Files2.supprimerRecursivement(candidat);
+                }
+            }
+        } catch (IOException ignoré) {
+            // Le démarrage ne doit jamais échouer pour un nettoyage.
+        }
     }
 
     /**
@@ -190,21 +283,44 @@ public final class EngineInstaller {
             poserLectureSeule(staging);
 
             Path destination = home.engineDir(manifest.engineVersion());
+            Path remplaçant = null;
             if (Files.exists(destination)) {
-                // Réinstallation : l'écriture est rétablie avant suppression.
+                // Constat M-1 : l'ancien moteur n'est plus DÉTRUIT avant l'arrivée du
+                // nouveau — un processus tué, un stockage plein ou un renommage
+                // refusé entre les deux laissait installed.json pointer sur un
+                // répertoire supprimé : plus de moteur utilisable, sans retour
+                // arrière. Il est mis à l'écart sous .old-<uuid> (la Javadoc de la
+                // classe redevient vraie pour la RÉINSTALLATION, pas seulement la
+                // mise à jour) et rétabli si le nouveau n'arrive pas.
+                remplaçant = home.engines().resolve(".old-" + UUID.randomUUID());
                 retablirEcriture(destination);
-                Files2.supprimerRecursivement(destination);
+                Files.move(destination, remplaçant);
             }
-            Files.move(staging, destination);
+            try {
+                Files.move(staging, destination);
+            } catch (IOException echecMove) {
+                if (remplaçant != null && !Files.exists(destination)) {
+                    // Retour arrière : l'ancien moteur reprend sa place — jamais de
+                    // trou entre les deux.
+                    Files.move(remplaçant, destination);
+                    destination.toFile().setWritable(false, false);
+                }
+                throw echecMove;
+            }
             // La racine du moteur installé devient elle aussi lecture seule.
             destination.toFile().setWritable(false, false);
 
             InstalledState nouvelEtat = new InstalledState(InstalledState.FORMAT_VERSION,
-                    manifest.engineVersion(), Instant.now().toString(), installes);
+                    manifest.engineVersion(), Instant.now().toString(), installes,
+                    manifest.séquence());
             ecrireEtat(nouvelEtat);
 
             // Succès : purge des archives téléchargées et de l'ancien moteur.
             purgerDownloads();
+            if (remplaçant != null) {
+                retablirEcriture(remplaçant);
+                Files2.supprimerRecursivement(remplaçant);
+            }
             if (precedent != null
                     && !precedent.engineVersion().equals(manifest.engineVersion())) {
                 Path ancien = home.engineDir(precedent.engineVersion());
@@ -313,6 +429,40 @@ public final class EngineInstaller {
             }
         }
         return true;
+    }
+
+    /**
+     * Porte anti-recul (constat M-2) : un manifeste signé légitimement mais ANCIEN —
+     * compte GitHub compromis, miroir périmé, CDN servant un manifeste replayé — ne
+     * doit pas pouvoir ramener un appareil vers un moteur révoqué. La séquence du
+     * manifeste est comparée à la DERNIÈRE séquence installée, mémorisée dans
+     * l'état : strictement inférieure = refus ; égale = réinstallation (réparation) ;
+     * supérieure = mise à jour. Un manifeste SANS séquence est refusé dès qu'une
+     * séquence est installée — sans elle, le recul est indéterminable (et
+     * l'installation réinitialiserait la mémoire anti-recul). Les états antérieurs
+     * au mécanisme (séquence 0) n'empêchent rien : la première installation
+     * séquencée pose le premier verrou. L'échappatoire volontaire reste la
+     * DÉSINSTALLATION, qui efface l'état et donc le verrou.
+     *
+     * @param manifeste manifeste signé proposé par le canal.
+     * @return {@code null} si l'installation peut suivre, sinon le message de refus.
+     */
+    public String refusAntiRecul(EngineManifest manifeste) {
+        InstalledState etat = currentState();
+        if (etat == null || etat.dernièreSéquence() <= 0) {
+            return null;
+        }
+        if (manifeste.séquence() <= 0) {
+            return "Manifeste sans séquence anti-recul alors que la séquence "
+                    + etat.dernièreSéquence() + " est installée — recul "
+                    + "indéterminable, refusé";
+        }
+        if (manifeste.séquence() < etat.dernièreSéquence()) {
+            return "Manifeste trop ancien (séquence " + manifeste.séquence()
+                    + " < " + etat.dernièreSéquence() + " déjà installée) — recul "
+                    + "refusé : canal compromis ou miroir périmé";
+        }
+        return null;
     }
 
     /**

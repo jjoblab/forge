@@ -79,4 +79,43 @@ class ArchiveExtractorTest {
         assertThrows(InstallException.class, () -> borne
                 .extract(archive, tempDir.resolve("cible")));
     }
+
+    @Test
+    void entréeBombeInterrompuePendantLaCopie() throws IOException {
+        // Constat B-3 : le plafond était contrôlé APRÈS l'écriture complète d'une
+        // entrée — une seule « bombe » très compressible écrivait bien au-delà du
+        // plafond sur le disque AVANT d'être détectée. Elle est désormais
+        // interrompue EN FLUX, au premier tampon de trop.
+        Path archive = zipSimple("bombe.bin", new byte[16 * 1024]);
+        ArchiveExtractor borne = new ArchiveExtractor(4 * 1024);
+        InstallException échec = assertThrows(InstallException.class,
+                () -> borne.extract(archive, tempDir.resolve("cible")));
+        assertTrue(échec.getMessage().contains("interrompue"),
+                "le refus doit dire l'interruption en flux : " + échec.getMessage());
+        Path partielle = tempDir.resolve("cible/bombe.bin");
+        assertTrue(Files.exists(partielle), "l'entrée a bel et bien commencé");
+        assertTrue(Files.size(partielle) < 16 * 1024,
+                "l'entrée fautive est interrompue, pas écrite en entier ("
+                        + Files.size(partielle) + " octets)");
+    }
+
+    @Test
+    void plafondDentréesRespecté() throws IOException {
+        // Constat B-3 : un million de micro-entrées est une bombe aussi — le
+        // nombre d'entrées est plafonné, pas seulement la taille totale.
+        Path archive = tempDir.resolve("beaucoup.zip");
+        try (ZipOutputStream sortie = new ZipOutputStream(
+                Files.newOutputStream(archive))) {
+            for (int i = 0; i < 3; i++) {
+                sortie.putNextEntry(new ZipEntry("f" + i));
+                sortie.write('x');
+                sortie.closeEntry();
+            }
+        }
+        ArchiveExtractor borne = new ArchiveExtractor(1024 * 1024, 2);
+        InstallException échec = assertThrows(InstallException.class,
+                () -> borne.extract(archive, tempDir.resolve("cible")));
+        assertTrue(échec.getMessage().contains("entrées"),
+                "le refus doit citer le plafond d'entrées : " + échec.getMessage());
+    }
 }

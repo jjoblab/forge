@@ -543,6 +543,105 @@ class EngineInstallerTest {
         assertEquals(0, installateur.tailleCache());
     }
 
+    /**
+     * Constat M-1 : une réinstallation tuée entre la mise à l'écart de l'ancien
+     * moteur ({@code .old-<uuid>}) et l'arrivée du nouveau laissait l'état pointer
+     * sur un répertoire ABSENT — plus de moteur, sans retour arrière. Le démarrage
+     * rétablit désormais l'ancien automatiquement.
+     */
+    @Test
+    void réinstallationInterrompueRéparéeAuDémarrage() throws IOException {
+        ComponentManifest coeur = composantLocal("engine-core", "0.1.0", List.of(),
+                "engine.jar");
+        EngineInstaller installateur = installateurLocal();
+        installateur.install(manifeste("0.1.0", List.of(coeur)),
+                "all", null, new CancellationToken());
+        Path moteur = home.engineDir("0.1.0");
+
+        // Simuler le meurtre : l'ancien moteur mis à l'écart, jamais remplacé.
+        Path écart = home.engines().resolve(".old-simulé");
+        Files.move(moteur, écart);
+        assertFalse(Files.exists(moteur), "précondition : le moteur est absent");
+
+        assertTrue(installateur.rétablirSiInterrompue(),
+                "l'ancien moteur doit être rétabli");
+        assertTrue(Files.exists(moteur), "le moteur est de retour à sa place");
+        assertTrue(installateur.verify().isEmpty(), "le moteur rétabli est sain");
+        assertFalse(Files.exists(écart), "la mise à l'écart est consommée");
+    }
+
+    /**
+     * Constat M-1 : les préparations ({@code .staging-*}) et mises à l'écart
+     * ({@code .old-*}) orphelines d'installations mortes avant le basculement
+     * d'état sont purgées au démarrage — et un moteur sain en place n'est jamais
+     * touché par ce nettoyage.
+     */
+    @Test
+    void interrompusOrphelinsPurgésAuDémarrage() throws IOException {
+        ComponentManifest coeur = composantLocal("engine-core", "0.1.0", List.of(),
+                "engine.jar");
+        EngineInstaller installateur = installateurLocal();
+        installateur.install(manifeste("0.1.0", List.of(coeur)),
+                "all", null, new CancellationToken());
+
+        Path staging = home.engines().resolve(".staging-orphelin");
+        Path vieux = home.engines().resolve(".old-orphelin");
+        Files.createDirectories(staging);
+        Files.createDirectories(vieux);
+        Files.writeString(staging.resolve("bidule"), "restes");
+
+        assertFalse(installateur.rétablirSiInterrompue(),
+                "un moteur en place n'a rien à rétablir");
+        assertFalse(Files.exists(staging), "le staging orphelin est purgé");
+        assertFalse(Files.exists(vieux), "le .old orphelin est purgé");
+        assertTrue(installateur.verify().isEmpty(), "le moteur en place est intact");
+    }
+
+    /**
+     * Constat M-2 : un manifeste signé mais ANCIEN — rejoué par un miroir périmé ou
+     * un canal compromis — est refusé dès qu'une séquence plus récente est installée.
+     * La réparation (même séquence) et la mise à jour (plus récente) passent ; un
+     * manifeste sans séquence est refusé quand le recul devient indéterminable.
+     */
+    @Test
+    void rejeuDUnManifesteAncienRefuséAntiRecul() throws IOException {
+        ComponentManifest coeur = composantLocal("engine-core", "0.1.0", List.of(),
+                "engine.jar");
+        EngineInstaller installateur = installateurLocal();
+
+        // État antérieur au mécanisme (séquence 0) : rien n'est refusé.
+        installateur.install(manifeste("0.1.0", List.of(coeur)),
+                "all", null, new CancellationToken());
+        assertNull(installateur.refusAntiRecul(
+                new EngineManifest(1, "0.2.0", 1, "date", List.of(coeur))),
+                "sans verrou posé, aucun refus");
+
+        // Installation séquencée : le verrou est mémorisé dans l'état.
+        installateur.install(new EngineManifest(1, "0.2.0", 1, "date",
+                List.of(coeur), 42), "all", null, new CancellationToken());
+        assertEquals(42, installateur.currentState().dernièreSéquence(),
+                "la séquence installée est mémorisée");
+
+        // Rejeu d'un manifeste plus ancien : refusé.
+        assertNotNull(installateur.refusAntiRecul(new EngineManifest(1, "0.3.0", 1,
+                "date", List.of(coeur), 41)), "le recul est refusé");
+        // Manifeste sans séquence : refusé aussi (recul indéterminable).
+        assertNotNull(installateur.refusAntiRecul(
+                new EngineManifest(1, "0.3.0", 1, "date", List.of(coeur))),
+                "sans séquence, le recul est indéterminable : refusé");
+        // Réinstallation de la MÊME séquence (réparation) : acceptée.
+        assertNull(installateur.refusAntiRecul(new EngineManifest(1, "0.2.0", 1,
+                "date", List.of(coeur), 42)), "la réparation passe");
+        // Mise à jour plus récente : acceptée.
+        assertNull(installateur.refusAntiRecul(new EngineManifest(1, "0.3.0", 1,
+                "date", List.of(coeur), 43)), "la mise à jour passe");
+
+        // L'échappatoire volontaire : la désinstallation efface l'état ET le verrou.
+        installateur.uninstall();
+        assertNull(installateur.refusAntiRecul(new EngineManifest(1, "0.1.0", 1,
+                "date", List.of(coeur))), "après désinstallation, plus de verrou");
+    }
+
     private void ecrire(HttpExchange exchange, byte[] contenu, long debut, long fin,
                         int code) throws IOException {
         exchange.getResponseHeaders().set("Accept-Ranges", "bytes");

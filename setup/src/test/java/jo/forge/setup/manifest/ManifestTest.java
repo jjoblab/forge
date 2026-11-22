@@ -76,6 +76,26 @@ class ManifestTest {
     }
 
     @Test
+    void séquenceAntiReculVoyageEtResteAbsenteParDéfaut() {
+        // Constat M-2 : la séquence est signée comme le reste du manifeste et
+        // voyage à l'identique ; un manifeste SANS séquence reste octet pour octet
+        // celui d'avant (coquilles anciennes et tests intacts).
+        ComponentManifest composant = composant("engine-core");
+        EngineManifest sans = new EngineManifest(1, "0.1.0", 1, "date",
+                List.of(composant));
+        assertFalse(ManifestCodec.write(sans).contains("séquence"),
+                "sans séquence, le JSON ne change pas");
+        assertEquals(0, ManifestCodec.parse(ManifestCodec.write(sans)).séquence());
+
+        EngineManifest avec = new EngineManifest(1, "0.1.0", 1, "date",
+                List.of(composant), 42);
+        String json = ManifestCodec.write(avec);
+        assertTrue(json.contains("séquence"), "la séquence est écrite : " + json);
+        assertEquals(42, ManifestCodec.parse(json).séquence(),
+                "la séquence survit au round-trip");
+    }
+
+    @Test
     void filtreParAbi() {
         ComponentManifest pourArm = new ComponentManifest("aapt2-arm64-v8a", "34.0.0", 1,
                 "c".repeat(64), List.of("https://exemple.fr/a.zip"),

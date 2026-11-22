@@ -15,6 +15,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -58,6 +59,9 @@ public final class EngineConnection {
             JournalMoteur.CAPACITÉ_PAR_DÉFAUT);
     private final AtomicReference<Integer> codeSortie = new AtomicReference<>();
     private volatile boolean closed;
+
+    /** Mort du canal publiée (garde d'unicité) — les requêtes suivantes échouent vite. */
+    private final AtomicBoolean morte = new AtomicBoolean();
 
     /**
      * Crée la connexion au-dessus d'un processus moteur déjà lancé.
@@ -122,6 +126,11 @@ public final class EngineConnection {
     /**
      * Envoie une requête et retourne son accusé futur.
      *
+     * <p>Constat M-3 : après la mort du canal, la requête échoue IMMÉDIATEMENT —
+     * elle ne s'inscrit plus pour une réponse qui ne viendra jamais (un appel
+     * enregistré après le nettoyage des requêtes en attente attendait indéfiniment
+     * si l'écriture réussissait dans le tampon du tube).</p>
+     *
      * @param type    type de la trame requête.
      * @param payload encodeur de la charge utile.
      * @return le futur complété par la réponse de même identifiant de corrélation.
@@ -130,7 +139,19 @@ public final class EngineConnection {
                                             FrameWriter.PayloadWriter payload) {
         long id = CORRELATION.getAndIncrement();
         CompletableFuture<Frame> future = new CompletableFuture<>();
+        if (morte.get()) {
+            future.completeExceptionally(new EngineConnectionException(
+                    "Canal du moteur déjà fermé : requête refusée"));
+            return future;
+        }
         pending.put(id, future);
+        // Une requête qui échoue d'elle-même (délai côté appelant) libère son entrée :
+        // la réponse tardive, si elle vient, ne trouvera qu'un futur déjà complété.
+        future.whenComplete((réponse, erreur) -> {
+            if (erreur != null) {
+                pending.remove(id);
+            }
+        });
         try {
             writer.write(type, id, payload);
         } catch (IOException ioError) {
@@ -138,6 +159,14 @@ public final class EngineConnection {
             future.completeExceptionally(
                     new EngineConnectionException("Écriture impossible : " + ioError.getMessage(),
                             ioError));
+            return future;
+        }
+        // Course : la mort a pu survenir entre la garde initiale et l'inscription —
+        // les requêtes en attente viennent d'être toutes échouées, la nôtre y échappe.
+        if (morte.get()) {
+            pending.remove(id);
+            future.completeExceptionally(new EngineConnectionException(
+                    "Canal du moteur fermé pendant l'envoi : requête refusée"));
         }
         return future;
     }
@@ -237,7 +266,7 @@ public final class EngineConnection {
             handleDeath(null);
         } catch (Exception channelError) {
             // Canal coupé au milieu d'une trame ou erreur de protocole : moteur écroulé.
-            handleDeath(channelodeMessage(channelError));
+            handleDeath(messageDErreurCanal(channelError));
         }
     }
 
@@ -249,7 +278,7 @@ public final class EngineConnection {
             java.io.DataInputStream in =
                     new java.io.DataInputStream(new java.io.ByteArrayInputStream(
                             frame.payload()));
-            eventListener.accept(jo.forge.api.MessageIO.readBuildEvent(in));
+            remettre(jo.forge.api.MessageIO.readBuildEvent(in));
             return;
         }
         CompletableFuture<Frame> future = pending.remove(frame.correlationId());
@@ -259,20 +288,59 @@ public final class EngineConnection {
         }
         // Trame spontanée hors requête : poignée de main, erreur interne non corrélatée.
         if (spontaneousHandler != null) {
-            spontaneousHandler.accept(frame);
+            try {
+                spontaneousHandler.accept(frame);
+            } catch (RuntimeException erreurCoquille) {
+                // Constat M-3 : une faute du code de la coquille ne doit JAMAIS être
+                // lue comme une coupure du canal — le moteur, lui, est sain.
+                journalErreurs.ajouter("Rappel de trame spontanée en échec (canal intact) : "
+                        + description(erreurCoquille));
+            }
         }
     }
 
     /**
-     * Signale la mort du moteur : complète les requêtes en attente et prévient une fois.
+     * Remet un événement de build au rappel de la coquille — ISOLÉMENT (constat
+     * M-3) : une exception du rappel était attrapée par la boucle de lecture comme
+     * une coupure du canal, échouait toutes les requêtes en attente et déclarait
+     * morte un moteur parfaitement sain (le build en cours était perdu avec lui).
+     * Elle est désormais journalisée dans le journal du moteur et le canal continue.
+     */
+    private void remettre(BuildEvent événement) {
+        try {
+            eventListener.accept(événement);
+        } catch (RuntimeException erreurCoquille) {
+            journalErreurs.ajouter("Rappel d'événement en échec (canal intact) : "
+                    + description(erreurCoquille));
+        }
+    }
+
+    /** Description courte d'une faute du rappel (message ou classe). */
+    private static String description(RuntimeException erreur) {
+        return erreur.getMessage() == null
+                ? erreur.getClass().getSimpleName() : erreur.getMessage();
+    }
+
+    /**
+     * Signale la mort du moteur — UNE seule fois : complète les requêtes en attente,
+     * marque le canal mort (les requêtes suivantes échouent vite, constat M-3) et
+     * prévient le rappel. Le rappel lui-même est isolé : une faute dans le code de
+     * la coquille ne doit pas masquer la mort réelle du moteur.
      */
     private void handleDeath(String reason) {
+        if (!morte.compareAndSet(false, true)) {
+            return; // Déjà publiée : la mort n'est annoncée qu'une fois.
+        }
         EngineConnectionException death = new EngineConnectionException(
                 reason == null ? "Le moteur a fermé le canal" : "Canal du moteur coupé : " + reason);
         pending.values().forEach(future -> future.completeExceptionally(death));
         pending.clear();
         if (onDead != null) {
-            onDead.run();
+            try {
+                onDead.run();
+            } catch (RuntimeException erreurCoquille) {
+                journalErreurs.ajouter("Rappel de mort en échec : " + description(erreurCoquille));
+            }
         }
     }
 
@@ -310,7 +378,7 @@ public final class EngineConnection {
         }
     }
 
-    private static String channelodeMessage(Exception error) {
+    private static String messageDErreurCanal(Exception error) {
         return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
     }
 

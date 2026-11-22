@@ -39,6 +39,7 @@ class TaskExecutorTest {
                 new java.util.concurrent.CopyOnWriteArrayList<>();
         final AtomicInteger total = new AtomicInteger();
         final AtomicInteger done = new AtomicInteger();
+        final AtomicInteger maxDone = new AtomicInteger();
         final List<String> pulsations = new java.util.concurrent.CopyOnWriteArrayList<>();
         volatile BuildEvent.BuildFinished fin;
         volatile String premierEchec;
@@ -66,6 +67,7 @@ class TaskExecutorTest {
         public void progress(int totalTasks, int doneTasks) {
             total.set(totalTasks);
             done.set(doneTasks);
+            maxDone.accumulateAndGet(doneTasks, Math::max);
         }
 
         @Override
@@ -483,6 +485,105 @@ class TaskExecutorTest {
                 "le résumé compte les échouées : " + journal.fin.message());
         assertTrue(journal.fin.message().contains("1 sautée"),
                 "les bloquées sont dites sautées : " + journal.fin.message());
+    }
+
+    /**
+     * Constat B-1 : un losange dont les DEUX branches échouent ne doit compter et
+     * notifier chaque tâche bloquée qu'UNE seule fois — avant la garde, « c » (et sa
+     * descendance « d ») recevait un événement SKIPPED PAR branche échouée : le
+     * décompte final doublait les sautées et la progression dépassait le total.
+     */
+    @Test
+    @Timeout(30)
+    void losangeEnÉchecChaqueTâcheBloquéeUneSeuleFois() {
+        Journal journal = new Journal("b-losange");
+        List<Task> taches = List.of(
+                new TacheTest("a", List.of(), () -> {
+                    throw new IllegalStateException("boom a");
+                }),
+                new TacheTest("b", List.of(), () -> {
+                    throw new IllegalStateException("boom b");
+                }),
+                new TacheTest("c", List.of("a", "b"), () -> { }),
+                new TacheTest("d", List.of("c"), () -> { }));
+
+        TaskExecutor.BuildResult résultat = new TaskExecutor(TaskGraph.of(taches),
+                journal, new CancellationFlag(), UpToDateOracle.ALWAYS_RUN, 2).execute();
+
+        assertFalse(résultat.success());
+        assertEquals(BuildEvent.TaskState.FAILED, journal.etatDe("a").state());
+        assertEquals(BuildEvent.TaskState.FAILED, journal.etatDe("b").state());
+        assertEquals(BuildEvent.TaskState.SKIPPED, journal.etatDe("c").state(),
+                "la convergente du losange est bloquée");
+        assertEquals(BuildEvent.TaskState.SKIPPED, journal.etatDe("d").state(),
+                "le blocage est transitif");
+        assertEquals(1, journal.etats.stream()
+                        .filter(e -> e.taskName().equals("c")).count(),
+                "« c » notifiée une seule fois, pas une fois par branche échouée");
+        assertEquals(1, journal.etats.stream()
+                        .filter(e -> e.taskName().equals("d")).count(),
+                "« d » notifiée une seule fois");
+        assertEquals(4, journal.done.get(),
+                "le décompte final couvre le graphe sans le dépasser");
+        assertTrue(journal.maxDone.get() <= 4,
+                "la progression ne dépasse jamais le total (max vu : "
+                        + journal.maxDone.get() + ")");
+        assertTrue(journal.fin.message().contains("2 sautées"),
+                "le résumé compte les sautées une fois chacune : "
+                        + journal.fin.message());
+    }
+
+    /**
+     * Constat B-2 : une tâche devenue prête APRÈS l'annulation n'était ni soumise
+     * ni notifiée — l'interface la gardait « en attente » à jamais. Ici « racine »
+     * est déclarée à jour par un oracle qui conclut APRÈS l'annulation : « prête »
+     * doit recevoir SAUTÉE, pas le silence.
+     */
+    @Test
+    @Timeout(30)
+    void annulationTâchePrêteDiteSautéePasMuette() throws Exception {
+        CancellationFlag jeton = new CancellationFlag();
+        CountDownLatch oracleOccupé = new CountDownLatch(1);
+        CountDownLatch libérer = new CountDownLatch(1);
+        UpToDateOracle oraclePatient = new UpToDateOracle() {
+            @Override
+            public boolean isUpToDate(Task task) {
+                if ("racine".equals(task.name())) {
+                    oracleOccupé.countDown();
+                    try {
+                        libérer.await(10, TimeUnit.SECONDS);
+                    } catch (InterruptedException e) {
+                        Thread.currentThread().interrupt();
+                    }
+                }
+                return true;
+            }
+
+            @Override
+            public void recordSuccess(Task task) {
+                // Rien n'est exécuté : tout est déclaré à jour.
+            }
+        };
+        Journal journal = new Journal("b-annul-prête");
+        List<Task> taches = List.of(
+                new TacheTest("racine", List.of(), () -> { }),
+                new TacheTest("prête", List.of("racine"), () -> { }));
+
+        Thread build = new Thread(() -> new TaskExecutor(TaskGraph.of(taches),
+                journal, jeton, oraclePatient, 1).execute());
+        build.start();
+        assertTrue(oracleOccupé.await(10, TimeUnit.SECONDS),
+                "l'oracle de « racine » doit être entré");
+        jeton.cancel();
+        libérer.countDown();
+        build.join(20_000);
+
+        assertTrue(journal.fin != null && !journal.fin.success(),
+                "un build annulé échoue");
+        assertEquals(BuildEvent.TaskState.UP_TO_DATE, journal.etatDe("racine").state());
+        assertEquals(BuildEvent.TaskState.SKIPPED, journal.etatDe("prête").state(),
+                "la tâche prête après annulation reçoit une issue, pas le silence");
+        assertEquals(2, journal.done.get(), "tout le graphe a une issue");
     }
 
     /** Une tâche qui marque son contexte « relu du cache ». */
