@@ -13,6 +13,7 @@ public sealed interface BuildEvent permits
         BuildEvent.TaskStateEvent,
         BuildEvent.ProgressEvent,
         BuildEvent.DownloadEvent,
+        BuildEvent.HeartbeatEvent,
         BuildEvent.BuildFinished {
 
     /**
@@ -218,6 +219,29 @@ public sealed interface BuildEvent permits
      */
     record DownloadEvent(String buildId, long timestamp, String resource,
                          long bytesDownloaded, long bytesTotal, boolean done)
+            implements BuildEvent {
+    }
+
+    /**
+     * Pulsation d'une tâche longue (protocole 3) : la tâche est VIVANTE et son
+     * exécution dure — le silence n'est plus interprétable comme un plantage.
+     *
+     * <p>Émis par l'exécuteur au plus toutes les 30 secondes pour CHAQUE tâche en
+     * cours d'exécution (jamais pour les tâches à jour ou sautées) : temps écoulé
+     * depuis le début de la tâche, et dernier message de progression posé par la
+     * tâche elle-même (ex. {@code « dexage : 12/41 bibliothèques »} — vide si la
+     * tâche n'en expose pas). Une coquille protocole 3 l'affiche en ligne vivante ;
+     * une coquille plus ancienne ne le reçoit pas (dégradation : rien — le silence
+     * était la norme avant).</p>
+     *
+     * @param buildId   identifiant du build.
+     * @param timestamp horodatage côté moteur.
+     * @param taskName  nom de la tâche en cours.
+     * @param message   dernier message de progression de la tâche (peut être vide).
+     * @param elapsedMs temps écoulé depuis le début de la tâche, en millisecondes.
+     */
+    record HeartbeatEvent(String buildId, long timestamp, String taskName,
+                          String message, long elapsedMs)
             implements BuildEvent {
     }
 

@@ -108,12 +108,15 @@ public final class ResolutionResultCache {
     /**
      * Lit le résultat mémorisé d'un module pour une empreinte donnée.
      *
-     * @param module    nom du module (clé du fichier).
-     * @param empreinte empreinte des entrées actuelles.
+     * @param module    nom du module (partie de la clé du fichier).
+     * @param empreinte empreinte des entrées actuelles (l'autre partie — le cache
+     *                  étant partagé entre projets depuis D-18, deux projets au
+     *                  même nom de module et à des entrées différentes doivent
+     *                  coexister sans s'écraser).
      * @return le résultat, ou vide si absent/périmé/illisible.
      */
     public Optional<Mémoire> lire(String module, String empreinte) {
-        Path fichier = fichierDe(module);
+        Path fichier = fichierDe(module, empreinte);
         if (!Files.isRegularFile(fichier)) {
             return Optional.empty();
         }
@@ -153,13 +156,14 @@ public final class ResolutionResultCache {
         racine.put("runtime", jsonDe(runtime));
         try {
             Files.createDirectories(répertoire);
-            Path temporaire = répertoire.resolve(fichierDe(module).getFileName() + ".part");
+            Path cible = fichierDe(module, empreinte);
+            Path temporaire = répertoire.resolve(cible.getFileName() + ".part");
             Files.writeString(temporaire, Json.write(racine), StandardCharsets.UTF_8);
             try {
-                Files.move(temporaire, fichierDe(module), StandardCopyOption.ATOMIC_MOVE,
+                Files.move(temporaire, cible, StandardCopyOption.ATOMIC_MOVE,
                         StandardCopyOption.REPLACE_EXISTING);
             } catch (IOException pasAtomique) {
-                Files.move(temporaire, fichierDe(module),
+                Files.move(temporaire, cible,
                         StandardCopyOption.REPLACE_EXISTING);
             }
         } catch (IOException échecÉcriture) {
@@ -211,14 +215,18 @@ public final class ResolutionResultCache {
         return valeur == null ? null : valeur.toString();
     }
 
-    /** Fichier d'un module : encodage hexadécimal injectif du nom (constat C-3). */
-    private Path fichierDe(String module) {
+    /** Fichier d'une résolution : hexadécimal injectif du nom de module (constat
+     * C-3), PRÉFIXÉ par l'empreinte des entrées — le cache étant partagé entre
+     * projets (D-18), deux projets au même nom de module et à des entrées
+     * différentes coexistent au lieu de s'écraser à chaque build. */
+    private Path fichierDe(String module, String empreinte) {
         StringBuilder hex = new StringBuilder();
         for (byte octet : module.getBytes(StandardCharsets.UTF_8)) {
             hex.append(Character.forDigit((octet >> 4) & 0xF, 16));
             hex.append(Character.forDigit(octet & 0xF, 16));
         }
-        return répertoire.resolve(hex + ".json");
+        return répertoire.resolve(empreinte.substring(0,
+                Math.min(12, empreinte.length())) + "-" + hex + ".json");
     }
 
     private static byte[] digest(String texte) {

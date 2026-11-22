@@ -430,6 +430,83 @@ aujourd'hui la résolution des dépendances de chaque module (modèle déjà lu 
 - **Après un sync**, un build voit la résolution `UP_TO_DATE` : les empreintes (D-12) font la
   jointure, aucune invalidation supplémentaire n'est nécessaire.
 
+### D-16 — Dexage par bibliothèque, fusion par lots (v0.2.22)
+
+Constat appareil du 2026-11-21 (rapports `v0.2.21`, exemple `application-compose`) : le build
+meurt par **signal 9** (code 137) après `compileJava` — c'est la tâche `:dex` : une invocation
+d8 monolithique sur ~45 jars (~30 Mo de classes, fermeture Compose) dans un tas de 1 024 Mo
+sur ART, des minutes de silence total, puis le tueur de processus d'Android 12+ (D-02) frappe
+le processus enfant gourmand.
+
+- **Seaux par bibliothèque** (modèle du `DexingTransform` d'AGP et du moteur de référence,
+  `SharedLibraryDexer`) : chaque jar est dexé SÉPARÉMENT, en mode intermédiaire (un `.dex`
+  par classe), dans un seau `<cache>/minApi<N>-v<format>/<sha256-24>/` scellé par une
+  sentinelle `.seau-complet`. Le pic mémoire de CHAQUE invocation d8 est borné par la plus
+  grosse bibliothèque, plus par la fermeture entière.
+- **Résilience aux morts brutales** : un seau scellé survit à un signal 9 — le build suivant
+  reprend les seaux terminés et ne re-dexe que les manquants (le seau partiel sans sentinelle
+  est reconstruit proprement). Un build tué à 80 % a déjà fait 80 % du travail.
+- **Exactitude vérifiée** : chaque classe dexable du jar doit avoir son `.dex` dans le seau —
+  un dexeur peut « réussir » en silenciant des classes (leçon du moteur de référence) ;
+  manquant = échec nommé, seau détruit.
+- **Clés de seau** : hash du CONTENU du jar assaini (sans `module-info.class`, copie
+  déterministe) ; `minApi` et format au chemin parent. Dès `minApi 26`, clé de contenu seul
+  (pas de désucrage — parité `DESUGAR_FREE_MIN_API`) ; sous 26, le désucrage dépend de
+  l'ensemble : l'empreinte de l'univers des jars (noms + tailles, immuabilité Maven) entre
+  dans la clé.
+- **Fusion par lots** : d8 est son propre fusionneur (modèle AGP `mergeDex`) — les `.dex`
+  par classe sont regroupés en lots ≤ 6 000 classes, chaque lot fusionné en dex indexé
+  indépendant (`classes.dex`, `classes2.dex`… multidex natif dès minSdk 21 ; sous 21, un
+  seul lot comme avant, limite 64 k méthodes). Le parcours des seaux est RÉCURSIF : d8 écrit
+  chaque `.dex` au chemin de sa classe (`demo/app/MainActivity.dex`). Les synthétiques
+  globaux (désucrage) sont rejoués au premier lot. `packageApk` embarque TOUS les
+  `classes*.dex` (triés).
+- **Progression pulsée** : chaque bibliothèque et chaque lot de fusion posent leur message
+  de progression (D-17) — « dexage : 12/41 — ui-android-1.7.1.aar ».
+
+### D-17 — Pulsation des tâches longues (v0.2.22)
+
+Le même constat : « un long silence de plusieurs minutes se lit comme un plantage ». La
+progression des téléchargements (D-14) ne couvrait pas les tâches CPU (compilations, dexage).
+
+- **Événement `HeartbeatEvent` (protocole 3, additif)** : l'exécuteur tient la liste des
+  tâches EN COURS (contexte + début) et un chien de garde émet, au plus toutes les 30 s, une
+  pulsation par tâche : nom, DERNIER message de progression posé par la tâche
+  (`TaskContext.progression(String)` — dernier appel gagnant), temps écoulé. Jamais émise
+  pour une tâche à jour ou sautée (elle ne s'exécute pas). Dégradation protocole < 3 :
+  RIEN (le silence d'avant restait la norme pour ces coquilles — un journal récurrent
+  aurait été du bruit nouveau).
+- **Coquille** : la pulsation vit dans la LIGNE VIVANTE du résumé (« app:dex — dexage :
+  12/41 (1 min 30 s) »), jamais dans le journal (elle se répète).
+- **Correctif connexe** (rapport 3 du 2026-11-21) : la verbosité du journal vivait en
+  mémoire de l'activité — un redémarrage de la coquille la remettait à « essentiel » et
+  l'utilisateur lisait la disparition des lignes de téléchargement comme une régression.
+  Elle est désormais persistée (préférences partagées).
+
+### D-18 — Caches de build partagés entre projets (v0.2.22)
+
+Le rapport 3 du 2026-11-21 a montré la faiblesse structurelle : réplique Maven, résultats de
+résolution et seaux de dex vivaient DANS le projet (`.forge/`) — une réimportation
+d'exemple (qui supprime le répertoire projet) perdait TOUT : re-téléchargement intégral,
+re-marche du graphe, re-dexage complet. Le modèle de référence et le `~/.gradle/caches` :
+les caches vivent au niveau du MOTEUR.
+
+- **Emplacement** : `<forgeHome>/cache/` — dérivé du répertoire moteur
+  (`<forgeHome>/engines/<version>` → parent du parent → `cache`), frère du cache de
+  composants de l'installateur (partagé entre versions du moteur). Réplique Maven sous
+  `cache/maven/`, résultats de résolution sous `cache/résolutions/`, seaux de dex sous
+  `cache/dex/`. Sans moteur installé (développement, tests) : comportement d'avant,
+  `.forge/` du projet.
+- **Sûreté du partage** : la clé du cache de résolution (racines + dépôts + cible +
+  médiation, D-13) est indépendante du projet PAR CONSTRUCTION ; la réplique est adressée
+  par coordonnées (immuabilité Maven). Le fichier de résolution gagne le préfixe
+  d'empreinte : deux projets au même nom de module et à des entrées différentes
+  coexistent au lieu de s'écraser.
+- **Effet** : réimporter un exemple (ou changer de projet) ne perd plus rien — la résolution
+  est relue `FROM_CACHE` sans une requête réseau, les seaux de dex sont repris tels quels.
+- **Ce qui reste PAR projet** : les empreintes de tâches (`.forge/state/`) et les traces
+  (`.forge/traces/`) — elles décrivent l'état DU projet, comme le `.gradle/` d'un projet.
+
 ## 4. Installateur (détail)
 
 Séquence du premier lancement (chaque exigence du cahier des charges y est visible) :

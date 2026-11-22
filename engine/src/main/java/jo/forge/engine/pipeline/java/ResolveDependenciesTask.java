@@ -48,6 +48,7 @@ public final class ResolveDependenciesTask implements Task {
     private final List<DependencyResolver.RootDependency> racines;
     private final List<String> dépôts;
     private final boolean horsLigne;
+    private final Path cachePartagé;
 
     /**
      * Crée la tâche.
@@ -61,11 +62,36 @@ public final class ResolveDependenciesTask implements Task {
     public ResolveDependenciesTask(ForgeModule module, ProjectLayout layout,
                                    List<DependencyResolver.RootDependency> racines,
                                    List<String> dépôts, boolean horsLigne) {
+        this(module, layout, racines, dépôts, horsLigne, null);
+    }
+
+    /**
+     * Crée la tâche avec cache partagé entre projets (décision D-18) : la réplique
+     * Maven et les résultats de résolution vivent sous
+     * {@code cachePartagé/maven} et {@code cachePartagés/résolutions} (racine
+     * {@code <forgeHome>/cache} du moteur) — une réimportation de projet ne les
+     * perd plus, et deux projets aux dépendances communes se partagent tout. La clé
+     * du cache de résolution (racines + dépôts + cible + médiation) est déjà
+     * indépendante du projet : le partage est sûr par construction.
+     *
+     * @param module     module concerné.
+     * @param layout     disposition du projet.
+     * @param racines    dépendances à résoudre (directes + exportées par les frères).
+     * @param dépôts     dépôts Maven du projet (URLs).
+     * @param horsLigne  mode hors ligne (cache seul).
+     * @param cachePartagé racine des caches partagés (null : cache du projet,
+     *                     comportement d'avant — développement et tests).
+     */
+    public ResolveDependenciesTask(ForgeModule module, ProjectLayout layout,
+                                   List<DependencyResolver.RootDependency> racines,
+                                   List<String> dépôts, boolean horsLigne,
+                                   Path cachePartagé) {
         this.module = module;
         this.layout = layout;
         this.racines = List.copyOf(racines);
         this.dépôts = List.copyOf(dépôts);
         this.horsLigne = horsLigne;
+        this.cachePartagé = cachePartagé;
     }
 
     @Override
@@ -100,16 +126,24 @@ public final class ResolveDependenciesTask implements Task {
         AtomicLong téléchargées = new AtomicLong();
         ProgressionTéléchargement progression = progressionVersÉvénements(context,
                 téléchargées);
+        // D-18 : réplique et résultats sous le cache partagé du moteur quand il
+        // existe (survit à une réimportation du projet), sinon dans le projet
+        // (comportement d'avant — développement et tests).
+        Path racineDéps = cachePartagé != null
+                ? cachePartagé.resolve("maven")
+                : layout.root().resolve(".forge").resolve("deps");
+        Path racineRésolutions = cachePartagé != null
+                ? cachePartagé.resolve("résolutions")
+                : layout.root().resolve(".forge").resolve("résolutions");
         DependencyResolver résolveur = new DependencyResolver(dépôts,
-                new ResolverCache(layout.root().resolve(".forge").resolve("deps")),
+                new ResolverCache(racineDéps),
                 horsLigne,
                 avertissement -> context.logger().warn(avertissement),
                 module.type() == jo.forge.engine.model.ModuleType.APPLICATION
                         || module.type() == jo.forge.engine.model.ModuleType.ANDROID_LIBRARY,
                 module.android().map(jo.forge.engine.model.AndroidFacet::targetSdk)
                         .orElse(-1),
-                new ResolutionResultCache(layout.root().resolve(".forge")
-                        .resolve("résolutions")),
+                new ResolutionResultCache(racineRésolutions),
                 context.cancellation()::isCancelled,
                 progression);
         context.checkCancelled();

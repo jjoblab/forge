@@ -9,9 +9,11 @@ import jo.forge.engine.tasks.TaskIO;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -22,8 +24,9 @@ import java.util.zip.ZipOutputStream;
 
 /**
  * Tâche {@code <module>:packageApk} : assemble l'APK non signé — les entrées de l'APK
- * de base issues d'aapt2 (ressources, manifeste, assets) plus le {@code classes.dex}
- * produit par d8.
+ * de base issues d'aapt2 (ressources, manifeste, assets) plus les
+ * {@code classes*.dex} produits par d8 (un seul, ou plusieurs en multidex natif
+ * dès minSdk 21 — fusion par lots de la décision D-16).
  *
  * <p>Déterminisme et sûreté : entrées recopiées triées par nom, horodatage fixe
  * (époque DOS), dex compressé (DEFLATED), écriture temporaire + renommage atomique.
@@ -33,7 +36,7 @@ import java.util.zip.ZipOutputStream;
 public final class PackageApkTask implements Task {
 
     /** Version du code de cette tâche. */
-    static final String TASK_VERSION = "1";
+    static final String TASK_VERSION = "2";
 
     /** Horodatage fixe de toutes les entrées (1980-01-01, époque DOS). */
     private static final long HORODATAGE_FIXE = 315532800000L;
@@ -71,7 +74,7 @@ public final class PackageApkTask implements Task {
 
     @Override
     public TaskIO io() {
-        return new TaskIO(List.of(ressources.apkBase(), dex.répertoireDex().resolve("classes.dex")),
+        return new TaskIO(List.of(ressources.apkBase(), dex.répertoireDex()),
                 List.of(),
                 Map.of("module", module.name()),
                 List.of(apkNonSigné()), TASK_VERSION);
@@ -83,16 +86,31 @@ public final class PackageApkTask implements Task {
         Path sortie = apkNonSigné();
         Files.createDirectories(sortie.getParent());
         Path temporaire = sortie.resolveSibling(sortie.getFileName() + ".part");
+        // Tous les classes*.dex du répertoire de dex (multidex natif dès minSdk 21 :
+        // la fusion D-16 produit classes.dex, classes2.dex…), triés pour le
+        // déterminisme — classes.dex avant classes2.dex, etc.
+        List<Path> fichiersDex = new ArrayList<>();
+        try (DirectoryStream<Path> parcours = Files.newDirectoryStream(
+                dex.répertoireDex(), "classes*.dex")) {
+            parcours.forEach(fichiersDex::add);
+        }
+        fichiersDex.sort(Comparator.comparing(Path::getFileName));
+        if (fichiersDex.isEmpty()) {
+            throw new IOException("aucun classes.dex dans " + dex.répertoireDex()
+                    + " — la tâche de dex a-t-elle réussi ?");
+        }
         try (ZipOutputStream zip = new ZipOutputStream(
                 Files.newOutputStream(temporaire))) {
             // Toutes les entrées de l'APK de base, triées (déterminisme), noms sûrs.
             for (Map.Entry<String, byte[]> entrée : entréesBase().entrySet()) {
                 écrire(zip, entrée.getKey(), entrée.getValue(), déflate(entrée.getKey()));
             }
-            // Le dex, compressé (alignement géré par la signature v2).
-            try (InputStream entréeDex = Files.newInputStream(
-                    dex.répertoireDex().resolve("classes.dex"))) {
-                écrire(zip, "classes.dex", entréeDex.readAllBytes(), true);
+            // Les dex, compressés (alignement géré par la signature v2).
+            for (Path fichierDex : fichiersDex) {
+                try (InputStream entréeDex = Files.newInputStream(fichierDex)) {
+                    écrire(zip, fichierDex.getFileName().toString(),
+                            entréeDex.readAllBytes(), true);
+                }
             }
         }
         try {

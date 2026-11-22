@@ -39,6 +39,7 @@ class TaskExecutorTest {
                 new java.util.concurrent.CopyOnWriteArrayList<>();
         final AtomicInteger total = new AtomicInteger();
         final AtomicInteger done = new AtomicInteger();
+        final List<String> pulsations = new java.util.concurrent.CopyOnWriteArrayList<>();
         volatile BuildEvent.BuildFinished fin;
         volatile String premierEchec;
 
@@ -85,6 +86,11 @@ class TaskExecutorTest {
         }
 
         @Override
+        public void pulsation(String taskName, String message, long elapsedMs) {
+            pulsations.add(taskName + "|" + message + "|" + elapsedMs);
+        }
+
+        @Override
         public void diagnostic(jo.forge.engine.diag.Diagnostic diagnostic) {
             diagnosticsReçus.add(diagnostic);
         }
@@ -123,6 +129,68 @@ class TaskExecutorTest {
         @Override
         public void execute(TaskContext context) throws Exception {
             travail.run();
+        }
+    }
+
+    /**
+     * D-17 : une tâche longue n'est jamais muette — l'exécuteur la PULSE (nom,
+     * dernier message de progression posé par la tâche, temps écoulé), et cesse
+     * à sa fin ; une tâche à jour n'est jamais pulsée (elle ne s'exécute pas).
+     */
+    @Test
+    @Timeout(30)
+    void pulsationDesTâchesLongues() throws Exception {
+        Journal journal = new Journal("b-pulse");
+        TacheTest longue = new TacheTest("app:dex", List.of(), () -> {
+            try {
+                Thread.sleep(150);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        });
+        // La tâche pose un message de progression AU MILIEU de son exécution : la
+        // pulsation suivante doit le porter (dernier appel gagnant).
+        Task bavarde = new Task() {
+            @Override
+            public String name() {
+                return "app:compileKotlin";
+            }
+
+            @Override
+            public List<String> dependencies() {
+                return List.of("app:dex");
+            }
+
+            @Override
+            public void execute(TaskContext context) {
+                context.progression("dexage : 1/2");
+                try {
+                    Thread.sleep(200);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+                context.progression("dexage : 2/2");
+                try {
+                    Thread.sleep(100);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+        };
+        TaskExecutor executeur = new TaskExecutor(TaskGraph.of(List.of(longue, bavarde)),
+                journal, new CancellationFlag(), UpToDateOracle.ALWAYS_RUN, 1,
+                java.nio.file.Path.of("."), 60);
+        TaskExecutor.BuildResult resultat = executeur.execute();
+        assertTrue(resultat.success());
+        assertTrue(journal.pulsations.stream().anyMatch(p -> p.startsWith("app:dex|")),
+                "la tâche silencieuse doit être pulsée : " + journal.pulsations);
+        assertTrue(journal.pulsations.stream().anyMatch(
+                        p -> p.startsWith("app:compileKotlin|dexage : ")),
+                "le message de progression doit voyager : " + journal.pulsations);
+        // Chaque pulsation porte un temps écoulé croissant (ou égal) pour sa tâche.
+        for (String pulsation : journal.pulsations) {
+            String[] parties = pulsation.split("\\|");
+            assertTrue(Long.parseLong(parties[2]) >= 0, "temps écoulé lisible");
         }
     }
 

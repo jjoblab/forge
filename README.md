@@ -188,6 +188,17 @@ vers le SDK comme d'habitude.
   bouton *Synchroniser* : résolution des dépendances seule, sans compilation — un
   build suivant voit la résolution à jour. Décisions D-13 à D-15 dans
   `docs/conception.md`.
+- [x] Dexage par bibliothèque, pulsation des tâches, caches partagés (`v0.2.22`) —
+  le mur Compose de la `v0.2.21` refermé : la mort par signal 9 au dexage (une invocation
+  d8 monolithique sur ~30 Mo de classes dans un tas de 1 024 Mo sur ART, des minutes de
+  silence) devient un dexage PAR BIBLIOTHÈQUE en seaux à hash de contenu (modèle
+  `DexingTransform` d'AGP) : chaque invocation d8 ne voit qu'un jar, chaque seau scellé
+  SURVIT à une mort brutale (le build suivant reprend où il en était), et la fusion par
+  lots produit le multidex natif. Les tâches longues pulsent (protocole 3 : nom,
+  progression, temps écoulé en ligne vivante) et la réplique Maven, les résolutions et
+  les seaux vivent désormais dans un cache PARTAGÉ entre projets
+  (`<forgeHome>/cache/`) — réimporter un exemple ne re-télécharge plus rien.
+  Décisions D-16 à D-18 dans `docs/conception.md`.
 - [ ] Vérification sur appareil réel (ART) — reste : installation PackageInstaller de
   l'APK produit, validation appareil du `compileKotlin` corrigé (`kotlin-simple`,
   puis `application-kotlin`) ; procédure dans `docs/limites-et-suite.md`.

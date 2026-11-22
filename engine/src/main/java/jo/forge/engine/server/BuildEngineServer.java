@@ -222,6 +222,23 @@ public final class BuildEngineServer {
     }
 
     /**
+     * Racine des caches de build partagés entre projets et entre versions du moteur
+     * (décision D-18) : {@code <forgeHome>/cache}, dérivée du répertoire moteur
+     * ({@code <forgeHome>/engines/<version>} → parent du parent → {@code cache}) —
+     * la réplique Maven, les résultats de résolution et les seaux de dex y vivent,
+     * une réimportation de projet ne les perd plus (le modèle du {@code ~/.gradle/caches}
+     * et du cache partagé du moteur de référence). Nulle en développement (pas de
+     * moteur installé) : chaque projet retombe sur son propre {@code .forge/}.
+     */
+    private java.nio.file.Path cachesPartagés() {
+        if (engineHome == null || engineHome.getParent() == null
+                || engineHome.getParent().getParent() == null) {
+            return null;
+        }
+        return engineHome.getParent().getParent().resolve("cache");
+    }
+
+    /**
      * Déroule un build complet : modèle, tâches, graphe, exécution — tout échec
      * devient un {@code BuildFinished} propre.
      */
@@ -237,7 +254,8 @@ public final class BuildEngineServer {
 
             ForgeModel model = ModelCodec.read(root);
             List<jo.forge.engine.tasks.Task> tasks = JavaPipeline.tasksFor(model, root,
-                    request.options().offline(), request.options().abi(), engineHome);
+                    request.options().offline(), request.options().abi(), engineHome,
+                    cachesPartagés());
             if (sync) {
                 tasks = tasks.stream()
                         .filter(tâche -> tâche.name().endsWith(":resolveDependencies"))
@@ -396,6 +414,19 @@ public final class BuildEngineServer {
                         "téléchargé : " + événement.resource() + " ("
                                 + événement.bytesDownloaded() / 1024 + " Kio)");
             }
+        }
+
+        @Override
+        public void pulsation(String taskName, String message, long elapsedMs) {
+            if (protocole >= 3) {
+                event(BuildEvent.HeartbeatEvent.class, new BuildEvent.HeartbeatEvent(
+                        buildId, System.currentTimeMillis(), taskName, message,
+                        elapsedMs));
+            }
+            // Dégradation protocole < 3 : RIEN — la pulsation n'existait pas pour
+            // ces coquilles, un journal récurrent serait du bruit nouveau (le
+            // silence d'avant restait leur norme ; les coquilles 3+ ont la ligne
+            // vivante).
         }
 
         /** Journalise ET émet une entrée de journal (réduction des secrets appliquée). */

@@ -131,19 +131,107 @@ class ResolveDependenciesTaskTest {
     }
 
     /**
+     * D-18 — caches partagés entre projets : la réplique Maven et les résultats de
+     * résolution vivent sous la racine partagée du moteur, pas dans le projet. Un
+     * DEUXIÈME projet (empreintes neuves, dépôt ARRÊTÉ — plus aucun réseau) doit
+     * résoudre DEPUIS LE CACHE PARTAGÉ (état FROM_CACHE, aucune requête) et
+     * compiler contre l'artefact servi par la réplique commune. Une réimportation
+     * de projet (qui efface son .forge) ne perd plus rien.
+     */
+    @Test
+    void cachePartagéEntreProjetsSurvitAuRéseauCoupé() throws Exception {
+        jo.forge.engine.testutil.DépôtLocal dépôt =
+                jo.forge.engine.testutil.DépôtLocal.démarrer();
+        try {
+            dépôt.publierPom(new jo.forge.engine.deps.Coordinate(
+                            "demo", "outil", "1.0"),
+                    "<project><groupId>demo</groupId><artifactId>outil</artifactId>"
+                            + "<version>1.0</version></project>");
+            dépôt.publierJar(new jo.forge.engine.deps.Coordinate(
+                    "demo", "outil", "1.0"), jarAvecClasseOutil());
+            String forgeJson = """
+                    { "modelVersion": 1,
+                      "repositories": ["%s"],
+                      "modules": [ { "name": "app", "type": "java-library",
+                        "dependencies": [ { "maven": "demo:outil:1.0" } ] } ] }
+                    """.formatted(dépôt.url());
+            Projets.fichier(temporaire, "projet1/forge.json", forgeJson);
+            Projets.fichier(temporaire, "projet1/app/src/main/java/demo/app/Un.java", """
+                    package demo.app;
+
+                    import demo.outil.Outil;
+
+                    public final class Un {
+                        public static String bonjour() { return Outil.saluer(); }
+                    }
+                    """);
+            Path partagé = temporaire.resolve("cache-du-moteur");
+
+            // Premier projet : résolution complète (téléchargement vers la
+            // réplique PARTAGÉE, jamais dans le projet).
+            Enregistreur premier = new Enregistreur();
+            assertTrue(exécuter(temporaire.resolve("projet1"), premier, partagé).success(),
+                    "le premier build doit réussir : " + premier.journalErreur);
+            assertTrue(Files.isRegularFile(partagé.resolve(
+                            "maven/demo/outil/1.0/outil-1.0.jar")),
+                    "la réplique vit sous le cache partagé");
+            assertTrue(!Files.exists(temporaire.resolve("projet1/.forge/deps")),
+                    "plus de réplique dans le projet (D-18)");
+
+            // Le réseau tombe : le dépôt s'arrête. Le deuxième projet, aux
+            // empreintes neuves, doit résoudre SANS réseau (FROM_CACHE) et
+            // compiler contre la réplique partagée.
+            dépôt.close();
+            Projets.fichier(temporaire, "projet2/forge.json", forgeJson);
+            Projets.fichier(temporaire, "projet2/app/src/main/java/demo/app/Deux.java", """
+                    package demo.app;
+
+                    import demo.outil.Outil;
+
+                    public final class Deux {
+                        public static String bonjour() { return Outil.saluer() + " 2"; }
+                    }
+                    """);
+            Enregistreur second = new Enregistreur();
+            assertTrue(exécuter(temporaire.resolve("projet2"), second, partagé).success(),
+                    "le deuxième projet doit résoudre sans réseau : "
+                            + second.journalErreur);
+            assertTrue(second.tâchesParÉtat(
+                            jo.forge.api.BuildEvent.TaskState.FROM_CACHE)
+                            .contains("app:resolveDependencies"),
+                    "la résolution du second projet doit être relue du cache partagé");
+            assertTrue(Files.isRegularFile(temporaire.resolve(
+                            "projet2/build/app/classes/demo/app/Deux.class")),
+                    "la compilation du second projet utilise la réplique partagée");
+        } finally {
+            dépôt.close();
+        }
+    }
+
+    /**
      * Exécute un build complet avec empreintes persistantes.
      */
     private TaskExecutor.BuildResult exécuter(Enregistreur événements)
             throws IOException {
-        ForgeModel modèle = ModelCodec.read(temporaire);
-        List<Task> tâches = JavaPipeline.tasksFor(modèle, temporaire, false);
+        return exécuter(temporaire, événements, null);
+    }
+
+    /**
+     * Exécute un build complet avec empreintes persistantes, sur une racine et un
+     * cache partagé (D-18) donnés.
+     */
+    private TaskExecutor.BuildResult exécuter(Path racine, Enregistreur événements,
+            Path cachePartagé) throws IOException {
+        ForgeModel modèle = ModelCodec.read(racine);
+        List<Task> tâches = JavaPipeline.tasksFor(modèle, racine, false,
+                "arm64-v8a", null, cachePartagé);
         TaskGraph graphe = TaskGraph.of(tâches);
-        ProjectLayout disposition = new ProjectLayout(temporaire);
+        ProjectLayout disposition = new ProjectLayout(racine);
         FingerprintStore magasin = new FingerprintStore(disposition.stateDir(),
-                temporaire, avertissement -> { });
+                racine, avertissement -> { });
         return new TaskExecutor(graphe, événements,
                 new jo.forge.engine.tasks.CancellationFlag(), magasin, 2,
-                temporaire).execute();
+                racine).execute();
     }
 
     /**

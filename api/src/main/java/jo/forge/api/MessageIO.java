@@ -32,6 +32,7 @@ public final class MessageIO {
     private static final int KIND_PROGRESS = 4;
     private static final int KIND_FINISHED = 5;
     private static final int KIND_DOWNLOAD = 6;
+    private static final int KIND_HEARTBEAT = 7;
 
     private MessageIO() {
         // Utilitaire statique : pas d'instanciation.
@@ -359,6 +360,12 @@ public final class MessageIO {
             out.writeLong(download.bytesDownloaded());
             out.writeLong(download.bytesTotal());
             out.writeBoolean(download.done());
+        } else if (event instanceof BuildEvent.HeartbeatEvent pulsation) {
+            out.writeByte(KIND_HEARTBEAT);
+            out.writeLong(pulsation.timestamp());
+            writeString(out, pulsation.taskName());
+            writeString(out, pulsation.message());
+            out.writeLong(pulsation.elapsedMs());
         } else if (event instanceof BuildEvent.BuildFinished finished) {
             out.writeByte(KIND_FINISHED);
             out.writeLong(finished.timestamp());
@@ -400,6 +407,9 @@ public final class MessageIO {
             case KIND_DOWNLOAD:
                 return new BuildEvent.DownloadEvent(buildId, timestamp, readString(in),
                         in.readLong(), in.readLong(), in.readBoolean());
+            case KIND_HEARTBEAT:
+                return new BuildEvent.HeartbeatEvent(buildId, timestamp, readString(in),
+                        readString(in), in.readLong());
             case KIND_FINISHED:
                 return new BuildEvent.BuildFinished(buildId, timestamp, in.readBoolean(),
                         readString(in), in.readLong(), readString(in));

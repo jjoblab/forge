@@ -26,8 +26,15 @@ public final class ProtocolVersions {
      * {@code SYNC_BUILD}. Le moteur NE PULSE ces nouveautés que vers une coquille
      * ayant négocié la version 2 ; une coquille version 1 reçoit les dégradations
      * équivalentes (journal INFO, {@code SUCCEEDED}, refus propre de la trame).</p>
+     *
+     * <p>Version 3 (additive) : événement de pulsation
+     * ({@code BuildEvent.HeartbeatEvent}) — une tâche longue est vivante et visible
+     * (nom, dernier message de progression, temps écoulé), le silence n'est plus
+     * interprétable comme un plantage. Le moteur n'émet la pulsation QUE vers une
+     * coquille ayant négocié la version 3 ; une coquille plus ancienne ne la reçoit
+     * pas (le silence d'avant restait la norme pour elle).</p>
      */
-    public static final int PROTOCOL_MAX = 2;
+    public static final int PROTOCOL_MAX = 3;
 
     private ProtocolVersions() {
         // Constantes uniquement : pas d'instanciation.

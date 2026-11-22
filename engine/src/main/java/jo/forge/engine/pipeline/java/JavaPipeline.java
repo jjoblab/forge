@@ -101,7 +101,31 @@ public final class JavaPipeline {
      */
     public static List<Task> tasksFor(ForgeModel model, Path projectRoot,
                                       boolean horsLigne, String abi, Path engineHome) {
-        return tasksFor(model, projectRoot, horsLigne, abi, engineHome,
+        return tasksFor(model, projectRoot, horsLigne, abi, engineHome, null,
+                EcjCompiler.surArt());
+    }
+
+    /**
+     * Construit les tâches de tous les modules du projet, avec caches partagés
+     * (décision D-18) : la réplique Maven, les résultats de résolution et les seaux
+     * de dex vivent sous {@code cachesPartagés} (racine {@code <forgeHome>/cache}
+     * du moteur) quand elle existe — ils survivent à une réimportation de projet.
+     *
+     * @param model         modèle validé.
+     * @param projectRoot   racine du projet.
+     * @param horsLigne     mode hors ligne : la résolution n'utilise que le cache.
+     * @param abi           ABI de l'appareil (ex. {@code arm64-v8a}).
+     * @param engineHome    répertoire du moteur installé (outils Android embarqués :
+     *                   aapt2 par ABI, android.jar par API), ou {@code null} sur
+     *                   machine de développement (SDK local).
+     * @param cachesPartagés racine des caches partagés du moteur (null : chaque
+     *                   projet utilise son propre {@code .forge/}).
+     * @return les tâches, dans un ordre quelconque (le graphe les ordonne).
+     */
+    public static List<Task> tasksFor(ForgeModel model, Path projectRoot,
+                                      boolean horsLigne, String abi, Path engineHome,
+                                      Path cachesPartagés) {
+        return tasksFor(model, projectRoot, horsLigne, abi, engineHome, cachesPartagés,
                 EcjCompiler.surArt());
     }
 
@@ -123,6 +147,28 @@ public final class JavaPipeline {
     static List<Task> tasksFor(ForgeModel model, Path projectRoot,
                                boolean horsLigne, String abi, Path engineHome,
                                boolean surArt) {
+        return tasksFor(model, projectRoot, horsLigne, abi, engineHome, null, surArt);
+    }
+
+    /**
+     * Construit les tâches de tous les modules du projet, forme complète avec
+     * détection ART injectée (tests : la plate-forme des bibliothèques Java
+     * n'est câblée que sur ART) et caches partagés (D-18).
+     *
+     * @param model         modèle validé.
+     * @param projectRoot   racine du projet.
+     * @param horsLigne     mode hors ligne : la résolution n'utilise que le cache.
+     * @param abi           ABI de l'appareil (ex. {@code arm64-v8a}).
+     * @param engineHome    répertoire du moteur installé (outils Android embarqués :
+     *                   aapt2 par ABI, android.jar par API), ou {@code null} sur
+     *                   machine de développement (SDK local).
+     * @param cachesPartagés racine des caches partagés (null : cache projet).
+     * @param surArt        le moteur tourne sur l'ART d'un appareil.
+     * @return les tâches, dans un ordre quelconque (le graphe les ordonne).
+     */
+    static List<Task> tasksFor(ForgeModel model, Path projectRoot,
+                               boolean horsLigne, String abi, Path engineHome,
+                               Path cachesPartagés, boolean surArt) {
         Map<String, ForgeModule> parNom = model.modules().stream()
                 .collect(Collectors.toMap(ForgeModule::name, Function.identity()));
 
@@ -143,7 +189,8 @@ public final class JavaPipeline {
         for (ForgeModule module : model.modules()) {
             if (module.type() != ModuleType.JAVA_LIBRARY) {
                 tasks.addAll(jo.forge.engine.pipeline.android.AndroidPipeline
-                        .tâchesDe(module, model, projectRoot, horsLigne, abi, engineHome));
+                        .tâchesDe(module, model, projectRoot, horsLigne, abi, engineHome,
+                                cachesPartagés));
                 continue;
             }
             ProjectLayout layout = new ProjectLayout(projectRoot);
@@ -161,7 +208,7 @@ public final class JavaPipeline {
 
             ResolveDependenciesTask resolve = new ResolveDependenciesTask(module, layout,
                     ResolveDependenciesTask.racinesDe(parNom, module),
-                    model.repositories(), horsLigne);
+                    model.repositories(), horsLigne, cachesPartagés);
             tasks.add(resolve);
             if (module.estKotlin()) {
                 // Module Kotlin (v0.2.9) : le Kotlin compile d'abord — en

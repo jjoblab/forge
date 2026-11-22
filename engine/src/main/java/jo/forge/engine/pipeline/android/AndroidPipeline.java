@@ -63,6 +63,27 @@ public final class AndroidPipeline {
     public static List<Task> tâchesDe(ForgeModule module, ForgeModel model,
                                       Path projectRoot, boolean horsLigne, String abi,
                                       Path engineHome) {
+        return tâchesDe(module, model, projectRoot, horsLigne, abi, engineHome, null);
+    }
+
+    /**
+     * Construit les tâches Android d'un module, avec caches partagés (décision
+     * D-18 : réplique Maven, résultats de résolution et seaux de dex hors du
+     * projet — une réimportation ne les perd plus).
+     *
+     * @param module    module {@code application} ou {@code android-library}.
+     * @param model     modèle complet (pour les dépendances).
+     * @param projectRoot racine du projet.
+     * @param horsLigne mode hors ligne pour la résolution.
+     * @param abi       ABI de l'appareil (résolution du binaire aapt2).
+     * @param engineHome répertoire du moteur installé (outils Android embarqués),
+     *                   ou {@code null} (machine de développement : SDK local).
+     * @param cachesPartagés racine des caches partagés (null : cache projet).
+     * @return les tâches du module (le graphe les ordonne).
+     */
+    public static List<Task> tâchesDe(ForgeModule module, ForgeModel model,
+                                      Path projectRoot, boolean horsLigne, String abi,
+                                      Path engineHome, Path cachesPartagés) {
         Map<String, ForgeModule> parNom = model.modules().stream()
                 .collect(Collectors.toMap(ForgeModule::name, Function.identity()));
         ProjectLayout layout = new ProjectLayout(projectRoot);
@@ -70,7 +91,7 @@ public final class AndroidPipeline {
 
         ResolveDependenciesTask resolve = new ResolveDependenciesTask(module, layout,
                 racinesAvecGénération(parNom, module),
-                model.repositories(), horsLigne);
+                model.repositories(), horsLigne, cachesPartagés);
         tâches.add(resolve);
 
         List<String> dépendancesCompilation = new ArrayList<>();
@@ -183,7 +204,8 @@ public final class AndroidPipeline {
                 List.of(androidJar), resolve.cheminClasspath()));
 
         DexTask dex = new DexTask(module, layout, classesDépendances,
-                resolve.cheminClasspath(), androidJar);
+                resolve.cheminClasspath(), androidJar,
+                cachesPartagés != null ? cachesPartagés.resolve("dex") : null);
         tâches.add(dex);
 
         PackageApkTask empaquetage = new PackageApkTask(module, layout, ressources, dex);

@@ -94,4 +94,25 @@ public interface TaskContext {
      */
     default void marquerDepuisCache() {
     }
+
+    /**
+     * Pose le dernier message de progression de la tâche — il nourrit la pulsation
+     * de l'exécuteur (décision D-17) : une tâche longue qui progresse par étapes
+     * mesurables (ex. « dexage : 12/41 bibliothèques ») ne laisse plus un silence
+     * opaque entre deux lignes de journal. Dernier appel gagnant ; chaîne vide pour
+     * effacer. Implémentation par défaut : ignoré (contextes de test hors exécuteur).
+     *
+     * @param message le message de progression (jamais null).
+     */
+    default void progression(String message) {
+    }
+
+    /**
+     * Le dernier message de progression posé par la tâche (chaîne vide si aucun).
+     *
+     * @return le message (jamais null).
+     */
+    default String messageProgression() {
+        return "";
+    }
 }

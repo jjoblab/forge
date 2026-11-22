@@ -83,13 +83,39 @@ public final class TaskExecutor {
     public TaskExecutor(TaskGraph graph, BuildEvents events, CancellationFlag cancellation,
                         UpToDateOracle oracle, int parallelism,
                         java.nio.file.Path projectRoot) {
+        this(graph, events, cancellation, oracle, parallelism, projectRoot,
+                PÉRIODE_PULSATION_MS);
+    }
+
+    /**
+     * Crée l'exécuteur avec période de pulsation explicite (tests : une période
+     * courte rend la pulsation observable sans attendre 30 s).
+     *
+     * @param graph             graphe validé à exécuter.
+     * @param events            puits d'événements du build.
+     * @param cancellation      jeton d'annulation partagé.
+     * @param oracle            oracle d'up-to-date (empreintes).
+     * @param parallelism       parallélisme demandé (plafonné, minimum 1).
+     * @param projectRoot       racine du projet construit.
+     * @param périodePulsationMs période de la pulsation des tâches longues (D-17).
+     */
+    TaskExecutor(TaskGraph graph, BuildEvents events, CancellationFlag cancellation,
+                 UpToDateOracle oracle, int parallelism,
+                 java.nio.file.Path projectRoot, long périodePulsationMs) {
         this.graph = graph;
         this.events = events;
         this.cancellation = cancellation;
         this.oracle = oracle == null ? UpToDateOracle.ALWAYS_RUN : oracle;
         this.parallelism = Math.max(1, Math.min(parallelism, MAX_HARD_PARALLELISM));
         this.projectRoot = java.util.Objects.requireNonNull(projectRoot, "projectRoot");
+        this.périodePulsationMs = Math.max(1, périodePulsationMs);
     }
+
+    /** Période de la pulsation des tâches longues (décision D-17), en millisecondes. */
+    static final long PÉRIODE_PULSATION_MS = 30_000;
+
+    /** Période effective de la pulsation (30 s, raccourcie par les tests). */
+    private final long périodePulsationMs;
 
     /**
      * Exécute le graphe entier et produit le résultat du build.
@@ -131,6 +157,38 @@ public final class TaskExecutor {
         AtomicInteger bloquables = new AtomicInteger(); // Sautées par blocage transitif.
         CompteurIssues issues = new CompteurIssues();
 
+        // Pulsation (D-17) : les tâches EN COURS d'exécution sont inscrites ici
+        // (nom → contexte + début) ; le chien de garde ci-dessous émet, au plus toutes
+        // les 30 s, une pulsation par tâche inscrite — une tâche longue n'est jamais
+        // muette, et son dernier message de progression voyage avec.
+        Map<String, TâchePulsée> tâchesEnCours =
+                new java.util.concurrent.ConcurrentHashMap<>();
+        java.util.concurrent.ScheduledExecutorService pulsateur =
+                java.util.concurrent.Executors.newSingleThreadScheduledExecutor(
+                        runnable -> {
+                            Thread thread = new Thread(runnable, "forge-pulsation");
+                            thread.setDaemon(true);
+                            return thread;
+                        });
+        java.util.concurrent.ScheduledFuture<?> battement = pulsateur.scheduleAtFixedRate(
+                () -> {
+                    long maintenant = System.currentTimeMillis();
+                    for (Map.Entry<String, TâchePulsée> inscription
+                            : tâchesEnCours.entrySet()) {
+                        TâchePulsée pulsée = inscription.getValue();
+                        try {
+                            events.pulsation(inscription.getKey(),
+                                    pulsée.contexte().messageProgression(),
+                                    maintenant - pulsée.début());
+                        } catch (Throwable puitsEnPanne) {
+                            // Le puits d'événements est en panne : la pulsation est un
+                            // confort, jamais une obligation — le build continue.
+                        }
+                    }
+                },
+                périodePulsationMs, périodePulsationMs,
+                java.util.concurrent.TimeUnit.MILLISECONDS);
+
         // Racines : déterminées AVANT tout démarrage du pool, depuis les dépendances
         // STATIQUES — jamais depuis la carte « restantes » (mutée en parallèle par les
         // terminaisons) : une racine rapide pourrait décrémenter une tâche à zéro
@@ -141,11 +199,13 @@ public final class TaskExecutor {
         try {
             for (Task task : racines) {
                 soumettre(task, pool, enCours, restantes, dependants, terminees,
-                        bloquables, terminées, issues);
+                        bloquables, terminées, issues, tâchesEnCours);
             }
             // Attendre la fin de toutes les soumissions (et des cascades).
             enCours.arriveAndAwaitAdvance();
         } finally {
+            battement.cancel(false);
+            pulsateur.shutdownNow();
             pool.shutdownNow();
         }
 
@@ -183,15 +243,16 @@ public final class TaskExecutor {
                            Map<String, Integer> restantes,
                            Map<String, List<String>> dependants,
                            AtomicInteger terminees, AtomicInteger bloquables,
-                           Set<String> terminées, CompteurIssues issues) {
+                           Set<String> terminées, CompteurIssues issues,
+                           Map<String, TâchePulsée> tâchesEnCours) {
         enCours.register();
         pool.submit(() -> {
             try {
                 executerUne(task, restantes, dependants, pool, enCours, terminees,
-                        bloquables, terminées, issues);
+                        bloquables, terminées, issues, tâchesEnCours);
             } catch (Throwable fuite) {
                 échecImprévu(task, fuite, restantes, dependants, pool, enCours,
-                        terminees, bloquables, terminées, issues);
+                        terminees, bloquables, terminées, issues, tâchesEnCours);
             } finally {
                 enCours.arriveAndDeregister();
             }
@@ -207,7 +268,7 @@ public final class TaskExecutor {
                               Map<String, List<String>> dependants, ExecutorService pool,
                               Phaser enCours, AtomicInteger terminees,
                               AtomicInteger bloquables, Set<String> terminées,
-                              CompteurIssues issues) {
+                              CompteurIssues issues, Map<String, TâchePulsée> tâchesEnCours) {
         String cause = fuite.getMessage() == null
                 ? fuite.getClass().getSimpleName() : fuite.getMessage();
         issues.compter(BuildEvent.TaskState.FAILED);
@@ -224,7 +285,7 @@ public final class TaskExecutor {
             // reste notre seule obligation.
         }
         terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                terminées, issues, false);
+                terminées, issues, tâchesEnCours, false);
     }
 
     /**
@@ -234,7 +295,7 @@ public final class TaskExecutor {
                              Map<String, List<String>> dependants, ExecutorService pool,
                              Phaser enCours, AtomicInteger terminees,
                              AtomicInteger bloquables, Set<String> terminées,
-                             CompteurIssues issues) {
+                             CompteurIssues issues, Map<String, TâchePulsée> tâchesEnCours) {
         String buildId = events.buildId();
         // Annulation posée avant le tour de cette tâche : saut silencieux.
         if (cancellation.isCancelled()) {
@@ -243,7 +304,7 @@ public final class TaskExecutor {
                     System.currentTimeMillis(), task.name(),
                     BuildEvent.TaskState.SKIPPED, 0));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, false);
+                    terminées, issues, tâchesEnCours, false);
             return;
         }
 
@@ -254,7 +315,7 @@ public final class TaskExecutor {
                     System.currentTimeMillis(), task.name(),
                     BuildEvent.TaskState.UP_TO_DATE, 0));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, true);
+                    terminées, issues, tâchesEnCours, true);
             return;
         }
 
@@ -264,6 +325,7 @@ public final class TaskExecutor {
         // l'événement, puits en panne) est convertie en échec propre, pas en perte
         // silencieuse de la tâche.
         ContexteTache contexte = new ContexteTache(task, events, cancellation, projectRoot);
+        tâchesEnCours.put(task.name(), new TâchePulsée(contexte, debut));
         try {
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
                     System.currentTimeMillis(), task.name(),
@@ -284,7 +346,7 @@ public final class TaskExecutor {
                     System.currentTimeMillis(), task.name(), étatFinal,
                     System.currentTimeMillis() - debut));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, true);
+                    terminées, issues, tâchesEnCours, true);
         } catch (TaskCancelledException annulation) {
             issues.compter(BuildEvent.TaskState.FAILED);
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
@@ -293,7 +355,7 @@ public final class TaskExecutor {
             events.log(BuildEvent.LogEvent.LogLevel.INFO,
                     "Tâche " + task.name() + " annulée");
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, false);
+                    terminées, issues, tâchesEnCours, false);
         } catch (Exception echec) {
             String cause = echec.getMessage() == null
                     ? echec.getClass().getSimpleName() : echec.getMessage();
@@ -305,7 +367,7 @@ public final class TaskExecutor {
             events.log(BuildEvent.LogEvent.LogLevel.ERROR,
                     "Échec de " + task.name() + " : " + cause);
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, false);
+                    terminées, issues, tâchesEnCours, false);
         } catch (java.lang.Error erreurGrave) {
             // Un Error ne doit JAMAIS rompre le comptage silencieusement : la tâche
             // échoue proprement, la cause est journalisée ET diagnostiquée, le build
@@ -322,8 +384,9 @@ public final class TaskExecutor {
             events.log(BuildEvent.LogEvent.LogLevel.ERROR, message);
             events.diagnostic(Diagnostic.error(task.name(), message));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, issues, false);
+                    terminées, issues, tâchesEnCours, false);
         } finally {
+            tâchesEnCours.remove(task.name());
             cancellation.unregisterCurrent();
         }
     }
@@ -339,7 +402,8 @@ public final class TaskExecutor {
                           Map<String, List<String>> dependants, ExecutorService pool,
                           Phaser enCours, AtomicInteger terminees,
                           AtomicInteger bloquables, Set<String> terminées,
-                          CompteurIssues issues, boolean reussie) {
+                          CompteurIssues issues, Map<String, TâchePulsée> tâchesEnCours,
+                          boolean reussie) {
         if (!terminées.add(task.name())) {
             return; // Déjà terminée (double passage d'un chemin d'erreur) : ignorer.
         }
@@ -360,7 +424,7 @@ public final class TaskExecutor {
             int restant = restantes.merge(dependant, -1, Integer::sum);
             if (restant == 0 && !cancellation.isCancelled()) {
                 soumettre(graph.task(dependant), pool, enCours, restantes, dependants,
-                        terminees, bloquables, terminées, issues);
+                        terminees, bloquables, terminées, issues, tâchesEnCours);
             }
         }
     }
@@ -456,6 +520,22 @@ public final class TaskExecutor {
          */
         default void téléchargement(BuildEvent.DownloadEvent événement) {
         }
+
+        /**
+         * Émet une pulsation de tâche longue (D-17) : la tâche nommée est EN COURS
+         * d'exécution depuis {@code elapsedMs}, avec son dernier message de
+         * progression. Implémentation par défaut : ignore (tests sans exécuteur).
+         *
+         * @param taskName  nom de la tâche en cours.
+         * @param message   dernier message de progression (peut être vide).
+         * @param elapsedMs temps écoulé depuis le début de la tâche.
+         */
+        default void pulsation(String taskName, String message, long elapsedMs) {
+        }
+    }
+
+    /** Une tâche inscrite à la pulsation : son contexte et son début. */
+    private record TâchePulsée(ContexteTache contexte, long début) {
     }
 
     /**
@@ -524,6 +604,9 @@ public final class TaskExecutor {
         /** Posé par {@link #marquerDepuisCache()} pendant l'exécution de la tâche. */
         private volatile boolean depuisCache;
 
+        /** Dernier message de progression posé par la tâche (D-17). */
+        private volatile String messageProgression = "";
+
         ContexteTache(Task task, BuildEvents events, CancellationFlag cancellation,
                       java.nio.file.Path projectRoot) {
             this.task = task;
@@ -560,6 +643,16 @@ public final class TaskExecutor {
         @Override
         public void marquerDepuisCache() {
             depuisCache = true;
+        }
+
+        @Override
+        public void progression(String message) {
+            messageProgression = message == null ? "" : message;
+        }
+
+        @Override
+        public String messageProgression() {
+            return messageProgression;
         }
 
         @Override

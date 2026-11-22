@@ -95,6 +95,13 @@ public class MainActivity extends Activity {
 
     private Verbosité verbosité = Verbosité.ESSENTIEL;
 
+    /** Clé de persistance de la verbosité (constat du rapport du 2026-11-21 : le
+     * champ vivait en mémoire seule — un redémarrage de la coquille le remettait à
+     * « essentiel », et l'utilisateur croyait ses téléchargements disparus du
+     * journal). */
+    private static final String PRÉFÉRENCES = "forge-coquille";
+    private static final String CLÉ_VERBOSITÉ = "verbosité";
+
     /** Fichier en cours de téléchargement (ligne vivante du résumé). */
     private String téléchargementCourant = "";
 
@@ -159,6 +166,7 @@ public class MainActivity extends Activity {
         boutonCopierJournaux = findViewById(R.id.action_copy_logs);
         boutonPartagerJournaux = findViewById(R.id.action_share_logs);
         journalBuild.setMovementMethod(new ScrollingMovementMethod());
+        chargerVerbosité();
         mettreÀJourBoutonVerbosité();
 
         canalUrl.setText(getString(R.string.install_channel_default));
@@ -184,8 +192,21 @@ public class MainActivity extends Activity {
                 case DÉTAILLÉ -> Verbosité.TOUT;
                 case TOUT -> Verbosité.ESSENTIEL;
             };
+            getSharedPreferences(PRÉFÉRENCES, MODE_PRIVATE).edit()
+                    .putString(CLÉ_VERBOSITÉ, verbosité.name()).apply();
             mettreÀJourBoutonVerbosité();
         });
+    }
+
+    /** Charge la verbosité mémorisée (défaut : essentiel). */
+    private void chargerVerbosité() {
+        String mémorisée = getSharedPreferences(PRÉFÉRENCES, MODE_PRIVATE)
+                .getString(CLÉ_VERBOSITÉ, Verbosité.ESSENTIEL.name());
+        try {
+            verbosité = Verbosité.valueOf(mémorisée);
+        } catch (IllegalArgumentException inconnue) {
+            verbosité = Verbosité.ESSENTIEL;
+        }
     }
 
     /** Texte du bouton de verbosité selon le niveau courant. */
@@ -788,6 +809,8 @@ public class MainActivity extends Activity {
             afficherTâche(tâche);
         } else if (événement instanceof BuildEvent.DownloadEvent téléchargement) {
             afficherTéléchargement(téléchargement);
+        } else if (événement instanceof BuildEvent.HeartbeatEvent pulsation) {
+            afficherPulsation(pulsation);
         } else if (événement instanceof BuildEvent.ProgressEvent progression) {
             this.progression.setIndeterminate(false);
             this.progression.setMax(Math.max(1, progression.tasksTotal()));
@@ -827,6 +850,27 @@ public class MainActivity extends Activity {
         }
         ajouterLigne(getString(R.string.build_task_line, tâche.taskName(),
                 badge.isEmpty() ? "" : " " + badge));
+    }
+
+    /**
+     * Pulsation d'une tâche longue (protocole 3) : la ligne vivante du résumé dit
+     * QUELLE tâche tourne, depuis combien de temps et où elle en est (« app:dex —
+     * dexage : 12/41 — 1 min 30 s ») — le constat du rapport du 2026-11-21 (des
+     * minutes de silence pendant le dexage lues comme un plantage) est refermé. Le
+     * journal, lui, reste calme : la pulsation vit dans le résumé.
+     */
+    private void afficherPulsation(BuildEvent.HeartbeatEvent pulsation) {
+        long secondes = Math.max(1, pulsation.elapsedMs() / 1000);
+        String durée = secondes < 60
+                ? getString(R.string.elapsed_seconds, secondes)
+                : getString(R.string.elapsed_minutes, secondes / 60, secondes % 60);
+        if (pulsation.message().isEmpty()) {
+            afficherRésumé(getString(R.string.heartbeat_line,
+                    pulsation.taskName(), durée));
+        } else {
+            afficherRésumé(getString(R.string.heartbeat_line_with_progress,
+                    pulsation.taskName(), pulsation.message(), durée));
+        }
     }
 
     /**

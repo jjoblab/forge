@@ -100,6 +100,9 @@ class MessageIOTest {
             new BuildEvent.DownloadEvent("b1", 8, "ui-android-1.7.1.aar", 4_000_000,
                     4_000_000, true),
             new BuildEvent.DownloadEvent("b1", 9, "pom-inconnu.xml", 512, -1, false),
+            new BuildEvent.HeartbeatEvent("b1", 10, "app:dex", "", 30_000),
+            new BuildEvent.HeartbeatEvent("b1", 11, "app:dex",
+                    "dexage : 12/41 — ui-android-1.7.1.aar", 61_500),
         };
         for (BuildEvent evenement : evenements) {
             assertEquals(evenement, roundTrip(evenement, MessageIO::writeBuildEvent,

@@ -1,11 +1,5 @@
 package jo.forge.engine.pipeline.android;
 
-import com.android.tools.r8.CompilationFailedException;
-import com.android.tools.r8.D8;
-import com.android.tools.r8.D8Command;
-import com.android.tools.r8.Diagnostic;
-import com.android.tools.r8.DiagnosticsHandler;
-import com.android.tools.r8.OutputMode;
 import jo.forge.engine.model.ForgeModule;
 import jo.forge.engine.pipeline.ProjectLayout;
 import jo.forge.engine.pipeline.java.ClasspathFile;
@@ -22,28 +16,36 @@ import java.util.Map;
 
 /**
  * Tâche {@code <module>:dex} : conversion des classes du module (et de ses
- * dépendances) en {@code classes.dex} par d8, <strong>en processus</strong> (pur Java,
- * aucun fork de VM nécessaire à cette échelle — l'échelle « travailleuse forkée » du
- * moteur de référence vise ses volumes de bibliothèques).
+ * dépendances) en {@code classes.dex} par d8, <strong>en processus</strong> — mais
+ * PAR BIBLIOTHÈQUE depuis la v0.2.22 (décision D-16, {@link DexBibliothèques}) :
+ * chaque jar est dexé séparément dans un seau à hash de contenu, puis les seaux
+ * sont fusionnés par lots bornés. Le pic de mémoire de chaque invocation d8 est
+ * borné par la plus grosse bibliothèque, plus par la fermeture entière — le constat
+ * appareil v0.2.21 (mort par signal 9 au dexage d'une fermeture Compose) est
+ * refermé, et chaque seau terminé survit à une mort brutale.
  *
  * <p>Entrées de l'oracle : le répertoire de classes du module, les répertoires de
  * classes des dépendances de projet, le fichier de classpath Maven résolu (les jars y
  * sont résumés par coordonnées), le niveau d'API minimal et la version du dexeur.
- * Sortie : le répertoire de dex.</p>
+ * Sortie : le répertoire de dex (un ou plusieurs {@code classes*.dex} en multidex
+ * natif dès minSdk 21).</p>
  *
  * <p>Les diagnostics d8 passent par son API de gestionnaire (pas de parsing de
- * sortie) ; l'échec du dexeur cite la première erreur.</p>
+ * sortie) ; l'échec du dexeur cite la première erreur. La progression est PULSÉE :
+ * chaque bibliothèque posée en message de progression, plus les lots de fusion —
+ * plus jamais de silence opaque pendant le dexage.</p>
  */
 public final class DexTask implements Task {
 
     /** Version du code de cette tâche. */
-    static final String TASK_VERSION = "1";
+    static final String TASK_VERSION = "2";
 
     private final ForgeModule module;
     private final ProjectLayout layout;
     private final List<Path> programmesSupplémentaires;
     private final Path classpathFile;
     private final Path androidJar;
+    private final Path cachePartagé;
 
     /**
      * Crée la tâche.
@@ -57,11 +59,30 @@ public final class DexTask implements Task {
     public DexTask(ForgeModule module, ProjectLayout layout,
                    List<Path> programmesSupplémentaires, Path classpathFile,
                    Path androidJar) {
+        this(module, layout, programmesSupplémentaires, classpathFile, androidJar,
+                null);
+    }
+
+    /**
+     * Crée la tâche avec cache de seaux partagé entre projets (décision D-18 :
+     * {@code <moteur>/cache/dex} — survit à une réimportation du projet).
+     *
+     * @param module      module Android.
+     * @param layout      disposition du projet.
+     * @param programmesSupplémentaires classes des dépendances de projet (répertoires).
+     * @param classpathFile fichier de classpath Maven résolu.
+     * @param androidJar  jar de la plate-forme (bibliothèque de référence d8).
+     * @param cachePartagé racine du cache de seaux partagé (null : cache projet).
+     */
+    public DexTask(ForgeModule module, ProjectLayout layout,
+                   List<Path> programmesSupplémentaires, Path classpathFile,
+                   Path androidJar, Path cachePartagé) {
         this.module = module;
         this.layout = layout;
         this.programmesSupplémentaires = List.copyOf(programmesSupplémentaires);
         this.classpathFile = classpathFile;
         this.androidJar = androidJar;
+        this.cachePartagé = cachePartagé;
     }
 
     @Override
@@ -80,15 +101,19 @@ public final class DexTask implements Task {
         entrées.add(layout.classesDir(module.name()));
         int minSdk = module.android().orElseThrow().minSdk();
         return new TaskIO(List.of(classpathFile), entrées,
-                Map.of("minApi", Integer.toString(minSdk), "dexeur", "d8"),
+                Map.of("minApi", Integer.toString(minSdk), "dexeur", "d8-lots"),
                 List.of(répertoireDex()), TASK_VERSION);
     }
 
     @Override
     public void execute(TaskContext context) throws IOException {
         context.checkCancelled();
-        Path dex = répertoireDex();
-        Files.createDirectories(dex);
+        int minSdk = module.android().orElseThrow().minSdk();
+
+        // Les programmes : les classes du module (emballées en jar déterministe),
+        // celles des dépendances de projet, puis les bibliothèques Maven du
+        // classpath d'exécution (un AAR y contribue par son classes.jar et ses
+        // libs/*.jar).
         List<Path> programmes = new ArrayList<>();
         for (Path source : programmesSupplémentaires) {
             if (Files.isDirectory(source)) {
@@ -99,85 +124,37 @@ public final class DexTask implements Task {
         }
         programmes.add(enJar(layout.classesDir(module.name()), context));
         if (Files.isRegularFile(classpathFile)) {
-            // Le classpath d'exécution résolu : les bibliothèques Maven sont dexées
-            // avec le module (APK monobloc v1 — pas de dex séparé par bibliothèque).
-            // Les descripteurs de modules Java (module-info.class, racine comme
-            // répertoires META-INF/versions/* des jars multi-versions) sont
-            // ÉCARTÉS : ils ne sont pas dexables et, présents dans plusieurs jars
-            // (stdlib, coroutines, annotations…), tuent d8 par « defined multiple
-            // times » — la fermeture Compose en porte six.
-            for (Path jar : ClasspathFile.lireJarsExécution(classpathFile)) {
-                programmes.add(assainir(jar, context));
-            }
+            programmes.addAll(ClasspathFile.lireJarsExécution(classpathFile));
         }
-        D8Command.Builder commande = D8Command.builder(
-                        new DiagnosticsVersPuits(context))
-                .addProgramFiles(programmes)
-                .addLibraryFiles(androidJar)
-                .setMinApiLevel(module.android().orElseThrow().minSdk())
-                .setOutput(dex, OutputMode.DexIndexed);
-        try {
-            D8.run(commande.build());
-        } catch (CompilationFailedException echec) {
-            // Les diagnostics détaillés sont déjà partis dans le puits.
-            throw new IOException("échec du dex de " + module.name()
-                    + " — voir les diagnostics", echec);
-        }
-        context.logger().info("dex produit : " + dex.resolve("classes.dex"));
-    }
 
-    /**
-     * Assainit un jar pour d8 : sans {@code module-info.class} (racine ou
-     * {@code META-INF/versions/*}). Le jar d'origine est renvoyé TEL QUEL
-     * quand il est déjà propre (le cas de tous les jars du module) ; la copie
-     * assainie vit dans {@code build/<module>/dex-input/} (atomique).
-     */
-    private Path assainir(Path jar, TaskContext context) throws IOException {
-        boolean àNettoyer;
-        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(jar.toFile())) {
-            àNettoyer = zip.stream().anyMatch(entrée ->
-                    entrée.getName().endsWith("module-info.class"));
-        } catch (IOException illisible) {
-            return jar; // jar absent/illisible : d8 le dira nommément.
-        }
-        if (!àNettoyer) {
-            return jar;
-        }
-        String nom = jar.getFileName().toString();
-        Path cible = layout.buildDir(module.name()).resolve("dex-input")
-                .resolve(nom.substring(0, nom.length() - 4) + "-nettoye.jar");
-        if (Files.isRegularFile(cible)) {
-            return cible;
-        }
-        Files.createDirectories(cible.getParent());
-        Path temporaire = cible.resolveSibling(cible.getFileName() + ".part");
-        try (java.util.zip.ZipFile zip = new java.util.zip.ZipFile(jar.toFile());
-             java.util.zip.ZipOutputStream sortie = new java.util.zip.ZipOutputStream(
-                     Files.newOutputStream(temporaire))) {
-            for (java.util.zip.ZipEntry entrée : zip.stream()
-                    .filter(e -> !e.isDirectory())
-                    .filter(e -> !e.getName().endsWith("module-info.class"))
-                    .sorted(java.util.Comparator.comparing(
-                            java.util.zip.ZipEntry::getName))
-                    .toList()) {
-                java.util.zip.ZipEntry copie = new java.util.zip.ZipEntry(
-                        entrée.getName());
-                copie.setTime(315532800000L);
-                sortie.putNextEntry(copie);
-                zip.getInputStream(entrée).transferTo(sortie);
-                sortie.closeEntry();
+        // Dexage PAR BIBLIOTHÈQUE (D-16) : clé de contenu seul dès minApi 26 (pas de
+        // désucrage) ; sous 26, le désucrage dépend de l'ensemble — l'empreinte
+        // d'univers entre dans la clé des seaux.
+        Path racineCache = cachePartagé != null
+                ? cachePartagé : layout.root().resolve(".forge").resolve("dex");
+        DexBibliothèques dexeur = new DexBibliothèques(racineCache, minSdk,
+                minSdk < 26 ? DexBibliothèques.empreinteUnivers(programmes) : "");
+
+        List<Path> seaux = new ArrayList<>();
+        int reprises = 0;
+        for (int i = 0; i < programmes.size(); i++) {
+            context.checkCancelled();
+            Path programme = programmes.get(i);
+            context.progression("dexage : " + (i + 1) + "/" + programmes.size()
+                    + " — " + programme.getFileName());
+            Path seau = dexeur.seauDe(programme, androidJar, context);
+            if (seaux.contains(seau)) {
+                continue; // Deux chemins vers le même artefact : un seul seau.
+            }
+            seaux.add(seau);
+            if (Files.isRegularFile(seau.resolve(".seau-complet"))) {
+                reprises++;
             }
         }
-        try {
-            Files.move(temporaire, cible,
-                    java.nio.file.StandardCopyOption.ATOMIC_MOVE);
-        } catch (IOException pasAtomique) {
-            Files.move(temporaire, cible,
-                    java.nio.file.StandardCopyOption.REPLACE_EXISTING);
-        }
-        context.logger().debug("jar assaini pour d8 (module-info écarté) : "
-                + cible.getFileName());
-        return cible;
+        context.logger().info(seaux.size() + " bibliothèque(s) à fusionner ("
+                + reprises + " reprise(s) du cache de dex)");
+        dexeur.fusionner(seaux, répertoireDex(), androidJar, context);
+        context.logger().info("dex produit : " + répertoireDex());
     }
 
     /**
@@ -224,30 +201,5 @@ public final class DexTask implements Task {
     /** Répertoire de sortie du dex. */
     Path répertoireDex() {
         return layout.buildDir(module.name()).resolve("dex");
-    }
-
-    /**
-     * Traduit les diagnostics d8 vers notre puits (fichier/ligne quand disponibles).
-     */
-    private record DiagnosticsVersPuits(TaskContext context) implements DiagnosticsHandler {
-
-        @Override
-        public void warning(Diagnostic diagnostic) {
-            context.logger().warn("d8 : " + diagnostic.getDiagnosticMessage());
-        }
-
-        @Override
-        public void error(Diagnostic diagnostic) {
-            jo.forge.engine.diag.Diagnostic traduit =
-                    new jo.forge.engine.diag.Diagnostic(
-                            jo.forge.api.BuildEvent.Severity.ERROR,
-                            diagnostic.getOrigin() == null ? ""
-                                    : diagnostic.getOrigin().toString(),
-                            0, 0,
-                            "d8",
-                            diagnostic.getDiagnosticMessage(),
-                            "dexeur");
-            context.diagnostics().report(traduit);
-        }
     }
 }

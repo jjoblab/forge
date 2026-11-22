@@ -74,6 +74,10 @@
     <string name="download_finished_line">↓ %1$s (%2$s)</string>
     <string name="download_progress_line">Téléchargement : %1$s (%2$s / %3$s)</string>
     <string name="download_progress_line_unknown">Téléchargement : %1$s (%2$s)</string>
+    <string name="heartbeat_line">%1$s en cours — %2$s</string>
+    <string name="heartbeat_line_with_progress">%1$s — %2$s (%3$s)</string>
+    <string name="elapsed_seconds">%1$d s</string>
+    <string name="elapsed_minutes">%1$d min %2$d s</string>
     <string name="build_in_progress">Build en cours…</string>
     <string name="task_state_failed">ÉCHOUÉE</string>
     <string name="task_state_skipped">SAUTÉE</string>
