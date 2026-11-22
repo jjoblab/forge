@@ -25,11 +25,14 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * Tests du dexage PAR BIBLIOTHÈQUE (décision D-16) : seaux à hash de contenu scellés
  * par sentinelle, reprise après mort brutale (un seau partiel est RE-dexé, les autres
  * repris tels quels), fusion en {@code classes*.dex} vérifiée (en-tête dex), et
- * réutilisation intégrale au deuxième passage (plus AUCUN re-dexage).
+ * réutilisation intégrale au deuxième passage (plus AUCUN re-dexage). Depuis la
+ * D-19 : la VOIE FINALE (minApi ≥ 26) assemble par COPIE, module d'abord, et se
+ * vérifie sur les classes DÉFINIES.
  *
  * <p>Le contexte du constat : la mort par signal 9 de la v0.2.21 au dexage monolithique
  * d'une fermeture Compose — chaque seau terminé doit SURVIVRE à une mort brutale, le
- * build suivant ne re-dexe que ce qui manque.</p>
+ * build suivant ne re-dexe que ce qui manque ; puis le constat v0.2.22 : la FUSION
+ * restait le goulot (104 s) et la fenêtre de tir du tueur de processus.</p>
  */
 class DexBibliothèquesTest {
 
@@ -130,7 +133,9 @@ class DexBibliothèquesTest {
                 "B.java", "public class B { public static int deux() { return 2; } }",
                 "C.java", "public class C {}"));
 
-        DexBibliothèques dexeur = new DexBibliothèques(tmp.resolve("cache"), 28);
+        // minApi 21 : voie INTERMÉDIAIRE de D-16 (sous 26, le désucrage exige la
+        // fusion par lots — la voie finale D-19 a ses tests dédiés plus bas).
+        DexBibliothèques dexeur = new DexBibliothèques(tmp.resolve("cache"), 21);
         Path seauA = dexeur.seauDe(jarA, androidJar, contexte);
         Path seauB = dexeur.seauDe(jarB, androidJar, contexte);
         assertEquals(1, dexDuSeau(seauA).size(), "une classe dans A");
@@ -187,7 +192,7 @@ class DexBibliothèquesTest {
         Path jarB = jarDe("multi-b", Map.of(
                 "B.java", "package p.b; public class B {}"));
         Contexte contexte = new Contexte();
-        DexBibliothèques dexeur = new DexBibliothèques(tmp.resolve("cache"), 28);
+        DexBibliothèques dexeur = new DexBibliothèques(tmp.resolve("cache"), 21);
         List<Path> seaux = List.of(dexeur.seauDe(jarA, androidJar, contexte),
                 dexeur.seauDe(jarB, androidJar, contexte));
         Path sortie = tmp.resolve("dex");
@@ -211,6 +216,130 @@ class DexBibliothèquesTest {
             List<Path> produits = new ArrayList<>();
             parcours.forEach(produits::add);
             assertEquals(1, produits.size(), "un seul classes.dex sous minSdk 21");
+        }
+    }
+
+    @Test
+    void voieFinaleAssembleParCopieAvecLeModuleDabord() throws IOException {
+        Path androidJar = jo.forge.engine.testutil.OutilsAndroidDeTest.androidJar();
+        Assumptions.assumeTrue(androidJar != null,
+                "android.jar requis (la CI l'installe)");
+        Contexte contexte = new Contexte();
+
+        Path jarModule = jarDe("module-app", Map.of(
+                "Main.java", "package p.app; public class Main {}"));
+        Path jarLib = jarDe("bibli-externe", Map.of(
+                "Outil.java", "package p.lib; public class Outil {}",
+                "Aide.java", "package p.lib; public class Aide {}"));
+
+        // minApi 28 : voie FINALE (D-19) — seaux en dex INDEXÉS à la racine, un
+        // classes.dex par bibliothèque (d8 découpe seul au-delà de 64 k réf.),
+        // scellés et vérifiés sur les classes DÉFINIES.
+        DexBibliothèques dexeur = new DexBibliothèques(tmp.resolve("cache-final"), 28);
+        Path seauModule = dexeur.seauDe(jarModule, androidJar, contexte);
+        Path seauLib = dexeur.seauDe(jarLib, androidJar, contexte);
+        assertTrue(Files.isRegularFile(seauModule.resolve("classes.dex")),
+                "seau final : classes.dex indexé à la racine");
+        assertTrue(Files.isRegularFile(seauLib.resolve("classes.dex")),
+                "les deux classes de la bibliothèque tiennent dans UN dex final");
+        assertTrue(Files.isRegularFile(seauModule.resolve(".seau-complet")));
+        assertTrue(DexDéfinies.lire(seauLib.resolve("classes.dex"))
+                        .containsAll(List.of("Lp/lib/Outil;", "Lp/lib/Aide;")),
+                "les classes DÉFINIES couvrent le jar entier");
+
+        // Assemblage PAR COPIE : le module D'ABORD (classes.dex — ses classes
+        // ombragent celles des bibliothèques à l'exécution), la bibliothèque en
+        // classes2.dex. Les octets des seaux sont recopiés TELS QUELS.
+        Path sortie = tmp.resolve("dex-final");
+        dexeur.fusionner(List.of(seauModule, seauLib), sortie, androidJar, contexte);
+        Path classesDex = sortie.resolve("classes.dex");
+        Path classes2Dex = sortie.resolve("classes2.dex");
+        assertTrue(Files.isRegularFile(classesDex), "classes.dex = module");
+        assertTrue(Files.isRegularFile(classes2Dex), "classes2.dex = bibliothèque");
+        assertEquals(-1L, Files.mismatch(seauModule.resolve("classes.dex"), classesDex),
+                "classes.dex = copie EXACTE du seau du module (aucune fusion d8)");
+        assertEquals(-1L, Files.mismatch(seauLib.resolve("classes.dex"), classes2Dex),
+                "classes2.dex = copie EXACTE du seau de la bibliothèque");
+        assertTrue(DexDéfinies.lire(classesDex).contains("Lp/app/Main;"));
+        assertTrue(DexDéfinies.lire(classes2Dex).contains("Lp/lib/Outil;"));
+
+        // MORT BRUTALE simulée sur la bibliothèque (sentinelle amputée + dex
+        // supprimé) : son seau est RE-dexé, le seau du module est repris TEL QUEL.
+        long avant = Files.getLastModifiedTime(
+                seauModule.resolve("classes.dex")).toMillis();
+        Files.deleteIfExists(seauLib.resolve(".seau-complet"));
+        Files.deleteIfExists(seauLib.resolve("classes.dex"));
+        Path seauLib2 = dexeur.seauDe(jarLib, androidJar, contexte);
+        assertEquals(seauLib, seauLib2, "même clé de contenu, même seau");
+        assertTrue(Files.isRegularFile(seauLib2.resolve("classes.dex")),
+                "bibliothèque entièrement re-dexée");
+        assertEquals(avant, Files.getLastModifiedTime(
+                        seauModule.resolve("classes.dex")).toMillis(),
+                "le seau du module survit à la mort brutale — zéro re-dexage");
+
+        // Ré-assemblage : reprise immédiate de TOUS les seaux, sorties identiques.
+        Path sortie2 = tmp.resolve("dex-final-2");
+        dexeur.fusionner(List.of(seauModule, seauLib2), sortie2, androidJar, contexte);
+        assertEquals(-1L, Files.mismatch(sortie.resolve("classes.dex"),
+                sortie2.resolve("classes.dex")), "assemblage déterministe");
+        assertEquals(-1L, Files.mismatch(sortie.resolve("classes2.dex"),
+                sortie2.resolve("classes2.dex")), "assemblage déterministe");
+    }
+
+    @Test
+    void sous26LaFusionIntermédiaireReste() throws IOException {
+        Path androidJar = jo.forge.engine.testutil.OutilsAndroidDeTest.androidJar();
+        Assumptions.assumeTrue(androidJar != null,
+                "android.jar requis (la CI l'installe)");
+        Contexte contexte = new Contexte();
+
+        // minApi 21 : la voie de D-16 est INCHANGÉE sous 26 — un .dex PAR CLASSE
+        // dans l'arborescence des paquets, fusion d8 par lots à la fin.
+        Path jarA = jarDe("inter-a", Map.of(
+                "A.java", "package q.a; public class A {}"));
+        DexBibliothèques dexeur = new DexBibliothèques(tmp.resolve("cache-inter"), 21);
+        Path seau = dexeur.seauDe(jarA, androidJar, contexte);
+        assertTrue(Files.isRegularFile(seau.resolve("q/a/A.dex")),
+                "mode intermédiaire conservé sous 26 : un .dex par classe");
+        assertFalse(Files.isRegularFile(seau.resolve("classes.dex")),
+                "pas de dex final sous 26");
+        Path sortie = tmp.resolve("dex-inter");
+        dexeur.fusionner(List.of(seau), sortie, androidJar, contexte);
+        assertTrue(Files.isRegularFile(sortie.resolve("classes.dex")),
+                "la fusion par lots produit toujours le classes.dex");
+    }
+
+    @Test
+    void voieFinaleToléranteAuJarVide() throws IOException {
+        Path androidJar = jo.forge.engine.testutil.OutilsAndroidDeTest.androidJar();
+        Assumptions.assumeTrue(androidJar != null,
+                "android.jar requis (la CI l'installe)");
+        Contexte contexte = new Contexte();
+
+        // Zip vide VALIDE (22 octets) — le cas réel d'un AAR sans classes.jar
+        // (AarExplodé en produit un) : d8 ne produit RIEN, le seau se scelle
+        // sans erreur et l'assemblage le SAUTE sans casser le build.
+        Path vide = tmp.resolve("vide.jar");
+        try (java.util.zip.ZipOutputStream zip = new java.util.zip.ZipOutputStream(
+                Files.newOutputStream(vide))) {
+            // Aucune entrée : zip vide valide.
+        }
+        DexBibliothèques dexeur = new DexBibliothèques(tmp.resolve("cache-vide"), 28);
+        Path seauVide = dexeur.seauDe(vide, androidJar, contexte);
+        assertTrue(Files.isRegularFile(seauVide.resolve(".seau-complet")),
+                "un jar vide se scelle sans erreur (aucune classe attendue)");
+        Path jarPlein = jarDe("plein", Map.of(
+                "P.java", "package p; public class P {}"));
+        Path seauPlein = dexeur.seauDe(jarPlein, androidJar, contexte);
+        Path sortie = tmp.resolve("dex-vide");
+        dexeur.fusionner(List.of(seauPlein, seauVide), sortie, androidJar, contexte);
+        assertTrue(Files.isRegularFile(sortie.resolve("classes.dex")),
+                "le seau vide est sauté, le seau plein embarqué");
+        try (DirectoryStream<Path> parcours =
+                     Files.newDirectoryStream(sortie, "classes*.dex")) {
+            List<Path> produits = new ArrayList<>();
+            parcours.forEach(produits::add);
+            assertEquals(1, produits.size(), "un seul classes.dex : le seau vide n'y est pas");
         }
     }
 }

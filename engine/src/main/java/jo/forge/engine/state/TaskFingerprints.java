@@ -90,6 +90,14 @@ public final class TaskFingerprints {
             maj(digest, prefixe + ":" + normaliser(fichier), "\u0000absent");
             return;
         }
+        if (Files.isDirectory(fichier)) {
+            // Répertoire déclaré comme fichier (rapport appareil v0.2.22 :
+            // « Entrée non régulière » sur le répertoire de dex de packageApk) :
+            // haché RÉCURSIVEMENT plutôt que refusé — une mauvaise déclaration ne
+            // doit pas priver la tâche de son statut À JOUR.
+            hasherRepertoire(digest, fichier);
+            return;
+        }
         if (!Files.isRegularFile(fichier)) {
             throw new IllegalStateException("Entrée non régulière : " + fichier);
         }

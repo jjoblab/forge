@@ -199,6 +199,19 @@ vers le SDK comme d'habitude.
   les seaux vivent désormais dans un cache PARTAGÉ entre projets
   (`<forgeHome>/cache/`) — réimporter un exemple ne re-télécharge plus rien.
   Décisions D-16 à D-18 dans `docs/conception.md`.
+- [x] Dex final sans fusion, reprise automatique du build (`v0.2.23`) — le second mur
+  Compose refermé : après la `v0.2.22`, le premier build mourait encore pendant la
+  FUSION des seaux (104 s de d8 au retry réussi, à chaque build non à jour). Dès
+  `minSdk 26`, chaque bibliothèque est dexée UNE FOIS en forme FINALE (d8 découpant
+  seul au-delà de 64 k références) et l'assemblage multidex devient une COPIE
+  renumérotée — `classes.dex` du module d'abord, puis `classes2.dex`,
+  `classes3.dex`… un dex par bibliothèque, AUCUNE fusion d8. L'exactitude se vérifie
+  sur les classes DÉFINIES des dex produits (lecture des `class_defs`). Et quand le
+  tueur de processus d'Android 12+ fauche le moteur malgré tout, la coquille RELANCE
+  elle-même le moteur et le build (3 tentatives au plus) — les caches font converger
+  chaque tentative. Au passage : `packageApk` peut enfin passer `À JOUR` (le
+  répertoire de dex est une entrée de répertoire, plus un « fichier non régulier »).
+  Décisions D-19/D-20 dans `docs/conception.md`.
 - [ ] Vérification sur appareil réel (ART) — reste : installation PackageInstaller de
   l'APK produit, validation appareil du `compileKotlin` corrigé (`kotlin-simple`,
   puis `application-kotlin`) ; procédure dans `docs/limites-et-suite.md`.

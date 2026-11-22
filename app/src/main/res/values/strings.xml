@@ -69,6 +69,9 @@
     <string name="build_error_no_path">Indiquez le chemin du projet (répertoire
         contenant forge.json).</string>
     <string name="build_error">Échec : %1$s</string>
+    <string name="build_auto_resume">— reprise automatique du build (tentative %1$d
+        sur %2$d) : le moteur a été arrêté par le système, il est relancé et le
+        build reprend depuis les caches</string>
     <string name="build_diagnostic_line">⚠ %1$s:%2$d — %3$s</string>
     <string name="build_task_line">&gt; Tâche %1$s%2$s</string>
     <string name="download_finished_line">↓ %1$s (%2$s)</string>

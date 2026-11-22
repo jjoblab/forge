@@ -25,6 +25,7 @@ import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.Consumer;
@@ -124,6 +125,23 @@ public class MainActivity extends Activity {
      * distinguer la mort attendue d'un moteur remplacé de la mort inattendue
      * du moteur en cours (seule la seconde doit alarmer l'utilisateur). */
     private final AtomicLong générationMoteur = new AtomicLong();
+
+    /** Build en cours côté moteur (décision D-20) : vrai entre l'accusé de
+     * démarrage et le verdict final — une mort du moteur dans cet intervalle
+     * est REPRISE automatiquement, pas affichée comme un échec. */
+    private volatile boolean buildEnCours = false;
+
+    /** Chemin du build en cours (reprise automatique D-20). */
+    private volatile String buildChemin = "";
+
+    /** Le build en cours est-il un sync (reprise automatique D-20). */
+    private volatile boolean buildSync = false;
+
+    /** Tentative courante du build (1 = initiale ; +1 à chaque reprise D-20). */
+    private final AtomicInteger tentativesBuild = new AtomicInteger(1);
+
+    /** Maximum de tentatives d'un même build (D-20) : l'initiale + 2 reprises. */
+    private static final int TENTATIVES_BUILD_MAX = 3;
 
     /** Journal de diagnostics du moteur en cours (stderr capturé) ; remplacé à chaque
      * build — l'ancien moteur peut encore écrire dans l'ancien tampon, sans gêne. */
@@ -634,53 +652,78 @@ public class MainActivity extends Activity {
         téléchargementCourant = "";
         progression.setIndeterminate(true);
         afficherRésumé(getString(R.string.build_starting));
+        tentativesBuild.set(1); // Tentative initiale (les reprises D-20 suivent).
+        exécuteur.submit(() -> lancerMoteurEtBuild(chemin, sync));
+    }
 
+    /**
+     * Lance le moteur puis lui soumet le build — le cœur PARTAGÉ par le premier
+     * passage et les REPRISES automatiques (décision D-20) : le tueur de processus
+     * d'Android 12+ (D-02) peut faucher le moteur au milieu d'un build ; depuis la
+     * v0.2.23 la coquille relance ELLE-MÊME le moteur et le build, sans rien
+     * demander à l'utilisateur — les caches du moteur (résolution, seaux de dex,
+     * empreintes de tâches — décisions D-16/D-18) font que chaque tentative part de
+     * plus près du but et le build converge.
+     *
+     * @param chemin chemin du projet à construire.
+     * @param sync   true pour un sync (résolution seule), false pour un build.
+     */
+    private void lancerMoteurEtBuild(String chemin, boolean sync) {
         Consumer<BuildEvent> événements = événement ->
                 runOnUiThread(() -> afficherÉvénement(événement));
-        exécuteur.submit(() -> {
-            try {
-                arrêterMoteurCourant();
-                long génération = générationMoteur.get();
-                JournalMoteur journal = new JournalMoteur(JournalMoteur.CAPACITÉ_PAR_DÉFAUT);
-                journalMoteur = journal;
-                EngineClient moteur = EngineSession.launchInstalled(
-                        new DeviceVmLauncher(), forgeHome(), installe, versionCoquille(),
-                        événements,
-                        // Mort du moteur sur son PROPRE fil : le sondage du code de sortie
-                        // peut durer 2,5 s — sur la file mono-fil de la coquille, il
-                        // retardait l'arrêt du moteur (l'arrêt est mis en file APRÈS la
-                        // fin du build, donc APRÈS ce sondage) et le diagnostic lisait
-                        // « processus encore vivant » d'un moteur jamais prié de partir.
-                        () -> new Thread(() -> publierMortMoteur(génération),
-                                "forge-mort-moteur").start(),
-                        // v0.2.15 : mode basse mémoire (tas moteur 256 Mo au lieu de
-                        // 1024) sur les appareils modestes — le tas par défaut a monté
-                        // pour le dexage d'une fermeture Compose (~60 Mo de classes en
-                        // processus par d8), il ne faut pas l'imposer à 2 Go de RAM.
-                        mémoireTotaleMo() < 2500, journal::ajouter);
-                moteurCourant.set(moteur);
-                dernierClient.set(moteur);
-                String buildId = (sync ? "sync-" : "app-") + System.currentTimeMillis();
-                dernierBuildId = buildId;
-                BuildRequest requête = new BuildRequest(buildId, chemin,
-                        new BuildOptions(2, false, false, false, mémoireTotaleMo(),
-                                abiPrincipale()));
-                BuildStarted démarré = sync
-                        ? moteur.sync(requête).get()
-                        : moteur.startBuild(requête).get();
-                runOnUiThread(() -> afficherRésumé(sync
-                        ? getString(R.string.sync_started, démarré.buildId())
-                        : getString(R.string.build_started, démarré.buildId())));
-            } catch (Exception echec) {
-                runOnUiThread(() -> {
-                    afficherRésumé(getString(sync ? R.string.sync_error : R.string.build_error,
-                            echec.getMessage() == null
-                                    ? echec.getClass().getSimpleName()
-                                    : echec.getMessage()));
-                    réinitialiserBoutons();
-                });
+        try {
+            // L'état d'installation est RELU à chaque tentative : une reprise peut
+            // suivre une réparation ou un changement de canal entre-temps.
+            EngineInstaller lecteur = new EngineInstaller(forgeHome(), null, null);
+            InstalledState installe = lecteur.currentState();
+            if (installe == null) {
+                throw new IllegalStateException(getString(R.string.status_engine_missing));
             }
-        });
+            arrêterMoteurCourant();
+            long génération = générationMoteur.get();
+            JournalMoteur journal = new JournalMoteur(JournalMoteur.CAPACITÉ_PAR_DÉFAUT);
+            journalMoteur = journal;
+            EngineClient moteur = EngineSession.launchInstalled(
+                    new DeviceVmLauncher(), forgeHome(), installe, versionCoquille(),
+                    événements,
+                    // Mort du moteur sur son PROPRE fil : le sondage du code de sortie
+                    // peut durer 2,5 s — sur la file mono-fil de la coquille, il
+                    // retardait l'arrêt du moteur (l'arrêt est mis en file APRÈS la
+                    // fin du build, donc APRÈS ce sondage) et le diagnostic lisait
+                    // « processus encore vivant » d'un moteur jamais prié de partir.
+                    () -> new Thread(() -> publierMortMoteur(génération),
+                            "forge-mort-moteur").start(),
+                    // v0.2.15 : mode basse mémoire (tas moteur 256 Mo au lieu de
+                    // 1024) sur les appareils modestes — le tas par défaut a monté
+                    // pour le dexage d'une fermeture Compose (~60 Mo de classes en
+                    // processus par d8), il ne faut pas l'imposer à 2 Go de RAM.
+                    mémoireTotaleMo() < 2500, journal::ajouter);
+            moteurCourant.set(moteur);
+            dernierClient.set(moteur);
+            String buildId = (sync ? "sync-" : "app-") + System.currentTimeMillis();
+            dernierBuildId = buildId;
+            BuildRequest requête = new BuildRequest(buildId, chemin,
+                    new BuildOptions(2, false, false, false, mémoireTotaleMo(),
+                            abiPrincipale()));
+            BuildStarted démarré = sync
+                    ? moteur.sync(requête).get()
+                    : moteur.startBuild(requête).get();
+            buildChemin = chemin;
+            buildSync = sync;
+            buildEnCours = true; // D-20 : la mort du moteur est désormais REPRISE.
+            runOnUiThread(() -> afficherRésumé(sync
+                    ? getString(R.string.sync_started, démarré.buildId())
+                    : getString(R.string.build_started, démarré.buildId())));
+        } catch (Exception echec) {
+            buildEnCours = false;
+            runOnUiThread(() -> {
+                afficherRésumé(getString(sync ? R.string.sync_error : R.string.build_error,
+                        echec.getMessage() == null
+                                ? echec.getClass().getSimpleName()
+                                : echec.getMessage()));
+                réinitialiserBoutons();
+            });
+        }
     }
 
     /**
@@ -733,6 +776,21 @@ public class MainActivity extends Activity {
         }
         Integer codeFinal = code;
         List<String> queue = journalMoteur.dernières(40);
+        // D-20 — reprise automatique : un moteur fauché AU MILIEU d'un build est
+        // relancé et le build re-soumis (constat appareil v0.2.22 : « le moteur a
+        // été tué, j'ai relancé, réussi » — la coquille fait désormais la relance
+        // elle-même). Les tentatives sont bornées ; au-delà, l'échec est affiché
+        // comme avant. Un build terminé ou annulé n'est jamais repris.
+        int tentative = 0;
+        boolean reprendre = false;
+        if (buildEnCours) {
+            tentative = tentativesBuild.incrementAndGet();
+            reprendre = tentative <= TENTATIVES_BUILD_MAX;
+        }
+        String cheminReprise = buildChemin;
+        boolean syncReprise = buildSync;
+        int tentativeFinale = tentative;
+        final boolean repriseAuto = reprendre;
         runOnUiThread(() -> {
             afficherRésumé(getString(R.string.host_engine_dead));
             ajouterLigne(codeFinal == null
@@ -745,7 +803,16 @@ public class MainActivity extends Activity {
                 ajouterLigne(getString(R.string.logs_engine_stderr_tail_header));
                 queue.forEach(this::ajouterLigne);
             }
-            réinitialiserBoutons();
+            if (repriseAuto) {
+                String reprise = getString(R.string.build_auto_resume,
+                        tentativeFinale, TENTATIVES_BUILD_MAX);
+                ajouterLigne(reprise);
+                afficherRésumé(reprise);
+                progression.setIndeterminate(true);
+                exécuteur.submit(() -> lancerMoteurEtBuild(cheminReprise, syncReprise));
+            } else {
+                réinitialiserBoutons();
+            }
         });
     }
 
@@ -753,6 +820,7 @@ public class MainActivity extends Activity {
      * Annule le build en cours.
      */
     private void annulerBuild() {
+        buildEnCours = false; // D-20 : un build ANNULÉ ne se reprend jamais seul.
         EngineClient moteur = moteurCourant.get();
         if (moteur != null) {
             exécuteur.submit(() -> {
@@ -817,6 +885,7 @@ public class MainActivity extends Activity {
             this.progression.setProgress(Math.min(progression.tasksDone(),
                     progression.tasksTotal()));
         } else if (événement instanceof BuildEvent.BuildFinished fin) {
+            buildEnCours = false; // D-20 : verdict rendu — plus aucune reprise.
             progression.setIndeterminate(false);
             // Le journal partagé doit se terminer par son PROPRE verdict : le
             // rapport appareil du 2026-11-20 a lu « build jamais terminé » sur un

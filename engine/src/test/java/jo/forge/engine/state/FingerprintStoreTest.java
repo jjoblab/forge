@@ -286,6 +286,40 @@ class FingerprintStoreTest {
         }
     }
 
+    @Test
+    @Timeout(30)
+    void répertoireDéclaréCommeFichierResteÀJour() throws Exception {
+        Path etat = tempDir.resolve("etat");
+        // Un répertoire d'entrée déclaré dans les FICHIERS (le piège exact du
+        // rapport appareil v0.2.22 : « Entrée non régulière » sur le répertoire
+        // de dex de packageApk) doit être haché RÉCURSIVEMENT, pas refusé.
+        Path répertoire = tempDir.resolve("dex");
+        Files.createDirectories(répertoire.resolve("paquet"));
+        Files.write(répertoire.resolve("paquet/classes.dex"), new byte[]{1, 2, 3});
+        TacheFichier tache = new TacheFichier("d", répertoire,
+                tempDir.resolve("out/d"), List.of());
+
+        Avertissements avertissements = new Avertissements();
+        executer(List.of(tache), etat, avertissements);
+        assertTrue(avertissements.messages.stream()
+                        .noneMatch(m -> m.contains("non régulière")),
+                "aucun refus d'entrée : " + avertissements.messages);
+
+        // Second passage sans changement : À JOUR (le statut n'est plus perdu).
+        Build second = executer(List.of(tache), etat, new Avertissements());
+        assertEquals(1, tache.executions.get(), "le répertoire haché vaut un fichier");
+        assertEquals(jo.forge.api.BuildEvent.TaskState.UP_TO_DATE,
+                second.etatFinal("d"));
+
+        // Le CONTENU du répertoire change : l'empreinte change, la tâche rejoue.
+        Files.write(répertoire.resolve("paquet/classes2.dex"), new byte[]{4, 5, 6});
+        Build troisieme = executer(List.of(tache), etat, new Avertissements());
+        assertEquals(2, tache.executions.get(),
+                "un contenu modifié dans le répertoire doit invalider l'état");
+        assertEquals(jo.forge.api.BuildEvent.TaskState.SUCCEEDED,
+                troisieme.etatFinal("d"));
+    }
+
     /** Encodage injectif du nom (même règle que le magasin). */
     private static String hexNom(String nom) {
         StringBuilder hex = new StringBuilder();

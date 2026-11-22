@@ -18,27 +18,31 @@ import java.util.Map;
  * Tâche {@code <module>:dex} : conversion des classes du module (et de ses
  * dépendances) en {@code classes.dex} par d8, <strong>en processus</strong> — mais
  * PAR BIBLIOTHÈQUE depuis la v0.2.22 (décision D-16, {@link DexBibliothèques}) :
- * chaque jar est dexé séparément dans un seau à hash de contenu, puis les seaux
- * sont fusionnés par lots bornés. Le pic de mémoire de chaque invocation d8 est
- * borné par la plus grosse bibliothèque, plus par la fermeture entière — le constat
- * appareil v0.2.21 (mort par signal 9 au dexage d'une fermeture Compose) est
- * refermé, et chaque seau terminé survit à une mort brutale.
+ * chaque jar est dexé séparément dans un seau à hash de contenu. Le pic de mémoire
+ * de chaque invocation d8 est borné par la plus grosse bibliothèque, et chaque seau
+ * terminé survit à une mort brutale.
+ *
+ * <p>Depuis la v0.2.23 (décision D-19), dès {@code minSdk 26} chaque seau est dexé
+ * en forme FINALE et l'assemblage multidex est une COPIE renumérotée — plus aucune
+ * fusion d8 : le constat appareil v0.2.22 (moteur tué pendant la fusion, puis
+ * 104 s de fusion au retry réussi) est refermé. Sous 26, la fusion par lots
+ * intermédiaires de D-16 reste (le désucrage exige l'univers des jars).</p>
  *
  * <p>Entrées de l'oracle : le répertoire de classes du module, les répertoires de
  * classes des dépendances de projet, le fichier de classpath Maven résolu (les jars y
- * sont résumés par coordonnées), le niveau d'API minimal et la version du dexeur.
+ * sont résumés par coordonnées), le niveau d'API minimal et la voie du dexeur.
  * Sortie : le répertoire de dex (un ou plusieurs {@code classes*.dex} en multidex
  * natif dès minSdk 21).</p>
  *
  * <p>Les diagnostics d8 passent par son API de gestionnaire (pas de parsing de
  * sortie) ; l'échec du dexeur cite la première erreur. La progression est PULSÉE :
- * chaque bibliothèque posée en message de progression, plus les lots de fusion —
- * plus jamais de silence opaque pendant le dexage.</p>
+ * chaque bibliothèque posée en message de progression, plus l'assemblage — plus
+ * jamais de silence opaque pendant le dexage.</p>
  */
 public final class DexTask implements Task {
 
     /** Version du code de cette tâche. */
-    static final String TASK_VERSION = "2";
+    static final String TASK_VERSION = "3";
 
     private final ForgeModule module;
     private final ProjectLayout layout;
@@ -101,7 +105,8 @@ public final class DexTask implements Task {
         entrées.add(layout.classesDir(module.name()));
         int minSdk = module.android().orElseThrow().minSdk();
         return new TaskIO(List.of(classpathFile), entrées,
-                Map.of("minApi", Integer.toString(minSdk), "dexeur", "d8-lots"),
+                Map.of("minApi", Integer.toString(minSdk),
+                        "dexeur", minSdk >= 26 ? "d8-final-multidex" : "d8-lots"),
                 List.of(répertoireDex()), TASK_VERSION);
     }
 
@@ -109,23 +114,33 @@ public final class DexTask implements Task {
     public void execute(TaskContext context) throws IOException {
         context.checkCancelled();
         int minSdk = module.android().orElseThrow().minSdk();
+        boolean voieFinale = minSdk >= 26; // D-19 : assemblage par copie, sans fusion.
 
         // Les programmes : les classes du module (emballées en jar déterministe),
         // celles des dépendances de projet, puis les bibliothèques Maven du
         // classpath d'exécution (un AAR y contribue par son classes.jar et ses
         // libs/*.jar).
-        List<Path> programmes = new ArrayList<>();
+        List<Path> programmesDéps = new ArrayList<>();
         for (Path source : programmesSupplémentaires) {
             if (Files.isDirectory(source)) {
-                programmes.add(enJar(source, context));
+                programmesDéps.add(enJar(source, context));
             } else {
-                programmes.add(source);
+                programmesDéps.add(source);
             }
         }
-        programmes.add(enJar(layout.classesDir(module.name()), context));
-        if (Files.isRegularFile(classpathFile)) {
-            programmes.addAll(ClasspathFile.lireJarsExécution(classpathFile));
-        }
+        Path jarModule = enJar(layout.classesDir(module.name()), context);
+        List<Path> jarsMaven = Files.isRegularFile(classpathFile)
+                ? ClasspathFile.lireJarsExécution(classpathFile) : List.of();
+
+        // Ordre APK (D-19) : le module D'ABORD — ses classes ombragent celles des
+        // bibliothèques à l'exécution (classes.dex parcouru le premier) — puis les
+        // dépendances de projet, puis les bibliothèques Maven. La voie intermédiaire
+        // utilise le même ordre (la fusion re-indexe tout, l'ordre n'y est que
+        // déterminisme).
+        List<Path> ordre = new ArrayList<>();
+        ordre.add(jarModule);
+        ordre.addAll(programmesDéps);
+        ordre.addAll(jarsMaven);
 
         // Dexage PAR BIBLIOTHÈQUE (D-16) : clé de contenu seul dès minApi 26 (pas de
         // désucrage) ; sous 26, le désucrage dépend de l'ensemble — l'empreinte
@@ -133,14 +148,14 @@ public final class DexTask implements Task {
         Path racineCache = cachePartagé != null
                 ? cachePartagé : layout.root().resolve(".forge").resolve("dex");
         DexBibliothèques dexeur = new DexBibliothèques(racineCache, minSdk,
-                minSdk < 26 ? DexBibliothèques.empreinteUnivers(programmes) : "");
+                minSdk < 26 ? DexBibliothèques.empreinteUnivers(ordre) : "");
 
         List<Path> seaux = new ArrayList<>();
         int reprises = 0;
-        for (int i = 0; i < programmes.size(); i++) {
+        for (int i = 0; i < ordre.size(); i++) {
             context.checkCancelled();
-            Path programme = programmes.get(i);
-            context.progression("dexage : " + (i + 1) + "/" + programmes.size()
+            Path programme = ordre.get(i);
+            context.progression("dexage : " + (i + 1) + "/" + ordre.size()
                     + " — " + programme.getFileName());
             Path seau = dexeur.seauDe(programme, androidJar, context);
             if (seaux.contains(seau)) {
@@ -151,7 +166,9 @@ public final class DexTask implements Task {
                 reprises++;
             }
         }
-        context.logger().info(seaux.size() + " bibliothèque(s) à fusionner ("
+        context.logger().info(seaux.size() + (voieFinale
+                ? " bibliothèque(s) à assembler ("
+                : " bibliothèque(s) à fusionner (")
                 + reprises + " reprise(s) du cache de dex)");
         dexeur.fusionner(seaux, répertoireDex(), androidJar, context);
         context.logger().info("dex produit : " + répertoireDex());

@@ -21,8 +21,7 @@ import java.util.List;
 /**
  * Dexage PAR BIBLIOTHÈQUE avec seaux à hash de contenu (décision D-16) — le modèle du
  * transform d'artefacts {@code DexingTransform} d'AGP et du moteur de référence :
- * chaque jar est dexé SÉPARÉMENT, en mode intermédiaire (un
- * {@code .dex} par classe), dans un seau {@code <cache>/minApi&lt;N&gt;-<format>/
+ * chaque jar est dexé SÉPARÉMENT dans un seau {@code <cache>/minApi<N>-<format>/
  * <sha256-du-contenu>/} scellé par une sentinelle de complétude.
  *
  * <p>Pourquoi : le constat appareil v0.2.21 (rapport du 2026-11-21) — une seule
@@ -33,6 +32,22 @@ import java.util.List;
  * chaque seau terminé SURVIT à une mort brutale (le build suivant ne re-dexe que ce
  * qui manque) ; et un build dont les dépendances n'ont pas changé re-fusionne des
  * seaux déjà prêts SANS re-dexer.</p>
+ *
+ * <p><strong>D-19 (v0.2.23) — voie finale sans fusion dès {@code minApi 26}</strong> :
+ * le constat appareil v0.2.22 a déplacé le coupable — le premier build meurt encore
+ * pendant la FUSION (les 57 seaux avaient survécu, le retry n'a plus qu'à fusionner,
+ * 104 s), et cette fusion reste une lourde passe d8 à chaque build non à jour.
+ * Dès {@code minApi 26} (la frontière SANS désucrage déjà retenue par D-16 — les
+ * lambdas, seuls désucrades restants, sont LOCAUX à leur bibliothèque), chaque seau
+ * est dexé UNE FOIS en forme FINALE ({@code OutputMode.DexIndexed} : d8 découpe
+ * lui-même au-delà de 64 k références) et l'assemblage multidex devient une simple
+ * COPIE renumérotée : {@code classes.dex} du module d'abord (ses classes ombragent
+ * celles des bibliothèques), puis {@code classes2.dex}, {@code classes3.dex}… un dex
+ * par bibliothèque. Plus AUCUNE invocation d8 à l'assemblage : le goulot de 104 s
+ * disparaît, et le premier build n'a plus de longue traîne CPU où le tueur frappe.
+ * L'exactitude se vérifie sur les classes DÉFINIES par les dex du seau
+ * ({@link DexDéfinies}) ; sous 26, le désucrage exige l'univers entier — fusion par
+ * lots intermédiaires inchangée.</p>
  *
  * <p>La fusion (d8 est son propre fusionneur, comme AGP) regroupe les {@code .dex} par
  * classe en LOTS bornés (multidex natif dès {@code minApi 21} : chaque lot devient un
@@ -53,6 +68,9 @@ final class DexBibliothèques {
     /** Version du format des seaux (tout changement de dexeur l'incrémente). */
     private static final String FORMAT_SEAU = "v1";
 
+    /** Version du format des seaux FINAUX (D-19 : dex indexés, sans fusion). */
+    private static final String FORMAT_SEAU_FINAL = "final-v1";
+
     /** Sentinelle de complétude d'un seau (présente = seau utilisable tel quel). */
     private static final String SENTINELLE = ".seau-complet";
 
@@ -71,6 +89,13 @@ final class DexBibliothèques {
 
     /** Empreinte de l'univers des jars (désucrage sous minApi 26), vide sinon. */
     private final String empreinteUnivers;
+
+    /**
+     * Voie finale sans fusion (D-19) : chaque jar est dexé en forme finale et
+     * l'assemblage multidex est une copie — dès {@code minApi 26} (frontière sans
+     * désucrage de D-16 ; sous 26, la fusion par lots intermédiaires reste).
+     */
+    private final boolean modeFinal;
 
     /**
      * Crée le dexeur par bibliothèque.
@@ -98,14 +123,18 @@ final class DexBibliothèques {
         this.répertoireCache = répertoireCache;
         this.minApi = minApi;
         this.empreinteUnivers = minApi >= 26 ? "" : empreinteUnivers;
+        this.modeFinal = minApi >= 26;
     }
 
     /**
      * Le répertoire racine des seaux pour cette configuration ({@code minApi} + format
-     * + univers éventuel).
+     * + univers éventuel) — la voie finale (D-19) vit sous sa PROPRE racine de format :
+     * les seaux intermédiaires d'une version antérieure restent valides pour les
+     * minApi inférieurs, sans jamais se mélanger avec les dex finaux.
      */
     private Path racineSeaux() {
-        String clé = "minApi" + minApi + "-" + FORMAT_SEAU;
+        String clé = "minApi" + minApi + "-"
+                + (modeFinal ? FORMAT_SEAU_FINAL : FORMAT_SEAU);
         if (!empreinteUnivers.isEmpty()) {
             clé += "-u" + empreinteUnivers;
         }
@@ -135,6 +164,23 @@ final class DexBibliothèques {
         Files.createDirectories(seau);
 
         List<String> classesAttendues = classesDe(assaini);
+        if (modeFinal) {
+            dexFinal(assaini, seau, androidJar, jar, context);
+        } else {
+            dexIntermédiaire(assaini, seau, androidJar, jar, context);
+        }
+        sceller(seau, classesAttendues.size());
+        return seau;
+    }
+
+    /**
+     * Dexage intermédiaire (un {@code .dex} par classe) puis vérification de
+     * présence fichier par fichier — le mode historique de D-16, requis sous
+     * {@code minApi 26} (le désucrage y dépend de l'univers des jars, réglé à la
+     * fusion).
+     */
+    private void dexIntermédiaire(Path assaini, Path seau, Path androidJar, Path jar,
+                                  TaskContext context) throws IOException {
         D8Command.Builder commande = D8Command.builder(new DiagnosticsVersPuits(context))
                 .addProgramFiles(assaini)
                 .addLibraryFiles(androidJar)
@@ -151,6 +197,7 @@ final class DexBibliothèques {
         }
         // Exactitude : chaque classe dexable du jar doit avoir son .dex — un dexeur
         // peut « réussir » en silenciant des classes (leçon du moteur de référence).
+        List<String> classesAttendues = classesDe(assaini);
         List<String> manquantes = new ArrayList<>();
         for (String classe : classesAttendues) {
             if (!Files.isRegularFile(seau.resolve(classe + ".dex"))) {
@@ -163,25 +210,104 @@ final class DexBibliothèques {
                     + " classe(s) de " + jar.getFileName() + " — première : "
                     + manquantes.get(0));
         }
-        sceller(seau, classesAttendues.size());
-        return seau;
     }
 
     /**
-     * Fusionne les seaux en {@code classes.dex}, {@code classes2.dex}… dans le
-     * répertoire de dex du module — d8 est son propre fusionneur (modèle AGP) : les
+     * Dexage FINAL (D-19) : forme indexée directement embarquable — d8 découpe
+     * lui-même en {@code classes.dex}, {@code classes2.dex}… au-delà de la limite de
+     * 64 k références (minApi ≥ 21). L'exactitude se vérifie sur les classes
+     * DÉFINIES par les dex produits ({@link DexDéfinies}) : le nom de fichier n'a
+     * plus aucun lien avec la classe.
+     */
+    private void dexFinal(Path assaini, Path seau, Path androidJar, Path jar,
+                          TaskContext context) throws IOException {
+        D8Command.Builder commande = D8Command.builder(new DiagnosticsVersPuits(context))
+                .addProgramFiles(assaini)
+                .addLibraryFiles(androidJar)
+                .setMinApiLevel(minApi)
+                .setOutput(seau, OutputMode.DexIndexed);
+        try {
+            D8.run(commande.build());
+        } catch (CompilationFailedException echec) {
+            supprimerArbre(seau);
+            throw new IOException("échec du dex final de " + jar.getFileName()
+                    + " — voir les diagnostics", echec);
+        }
+        List<String> manquantes = classesManquantes(seau, assaini);
+        if (!manquantes.isEmpty()) {
+            supprimerArbre(seau);
+            throw new IOException("d8 a silencieusement écarté " + manquantes.size()
+                    + " classe(s) de " + jar.getFileName() + " — première : "
+                    + manquantes.get(0));
+        }
+    }
+
+    /** Les classes du jar absentes des {@code class_defs} des dex du seau. */
+    private static List<String> classesManquantes(Path seau, Path assaini)
+            throws IOException {
+        java.util.Set<String> définies = new java.util.HashSet<>();
+        for (Path dex : dexFiniauxDuSeau(seau)) {
+            définies.addAll(DexDéfinies.lire(dex));
+        }
+        List<String> manquantes = new ArrayList<>();
+        for (String classe : classesDe(assaini)) {
+            if (!définies.contains("L" + classe + ";")) {
+                manquantes.add(classe);
+            }
+        }
+        return manquantes;
+    }
+
+    /** Les {@code classes*.dex} d'un seau final, triés par indice numérique. */
+    private static List<Path> dexFiniauxDuSeau(Path seau) throws IOException {
+        List<Path> fichiers = new ArrayList<>();
+        try (DirectoryStream<Path> parcours = Files.newDirectoryStream(seau,
+                "classes*.dex")) {
+            parcours.forEach(fichiers::add);
+        }
+        fichiers.sort(java.util.Comparator.comparingInt(DexBibliothèques::indiceDex));
+        return fichiers;
+    }
+
+    /** L'indice numérique d'un nom {@code classes.dex} / {@code classes2.dex}… */
+    private static int indiceDex(Path fichier) {
+        String nom = fichier.getFileName().toString();
+        if (nom.equals("classes.dex")) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(nom.substring("classes".length(),
+                    nom.length() - ".dex".length()));
+        } catch (NumberFormatException pasIndice) {
+            return Integer.MAX_VALUE; // Nom invu : en fin de liste, jamais perdu.
+        }
+    }
+
+    /**
+     * Fusionne (ou assemble, décision D-19) les seaux en {@code classes.dex},
+     * {@code classes2.dex}… dans le répertoire de dex du module.
+     *
+     * <p>Dès {@code minApi 26} (voie finale) : ASSEMBLAGE PAR COPIE — aucun d8, chaque
+     * seau final est copié sous le nom suivant de la séquence APK, dans l'ordre des
+     * seaux donné par l'appelant (le module d'abord : ses classes ombragent celles des
+     * bibliothèques). Sinon : d8 reste son propre fusionneur (modèle AGP) — les
      * {@code .dex} intermédiaires par classe sont regroupés en LOTS bornés, chaque
      * lot fusionné en dex indexé indépendant (multidex natif dès minApi 21 ; sous 21,
      * un seul lot — la limite 64 k méthodes du multidex légendaire s'applique).
      *
-     * @param seaux          seaux complets à fusionner.
+     * @param seaux          seaux complets à fusionner (ou assembler), dans l'ordre
+     *                       APK voulu pour la voie finale.
      * @param répertoireDex  répertoire de sortie (vidé de ses classes*.dex).
-     * @param androidJar     jar de la plate-forme.
+     * @param androidJar     jar de la plate-forme (voie intermédiaire seulement).
      * @param context        contexte d'exécution (progression, annulation).
      * @throws IOException si une fusion échoue.
      */
     void fusionner(List<Path> seaux, Path répertoireDex, Path androidJar,
                    TaskContext context) throws IOException {
+        if (modeFinal) {
+            assembler(seaux, répertoireDex, context);
+            return;
+        }
         Files.createDirectories(répertoireDex);
         // Nettoyage des classes*.dex d'un build précédent (les autres fichiers
         // éventuels du répertoire ne regardent pas la fusion).
@@ -275,6 +401,49 @@ final class DexBibliothèques {
         if (indiceDex == 0) {
             throw new IOException("la fusion n'a produit aucun dex — seaux vides ?");
         }
+    }
+
+    /**
+     * Assemblage multidex PAR COPIE (voie finale, D-19) : chaque seau final est copié
+     * sous le nom suivant de la séquence APK — aucune invocation d8, la passe qui
+     * prenait des minutes sur appareil (et où le moteur se faisait tuer) devient une
+     * copie de fichiers. L'ordre des seaux est celui de l'appelant : le module
+     * d'abord ({@code classes.dex} — ses classes ombragent celles des bibliothèques
+     * à l'exécution, comme l'ordre d'un classpath), puis les dépendances.
+     *
+     * @param seaux         seaux finaux complets, dans l'ordre APK voulu.
+     * @param répertoireDex répertoire de sortie (vidé de ses classes*.dex).
+     * @param context       contexte d'exécution (progression, annulation).
+     * @throws IOException si la copie échoue.
+     */
+    private void assembler(List<Path> seaux, Path répertoireDex, TaskContext context)
+            throws IOException {
+        Files.createDirectories(répertoireDex);
+        try (DirectoryStream<Path> anciens = Files.newDirectoryStream(répertoireDex,
+                "classes*.dex")) {
+            for (Path ancien : anciens) {
+                Files.deleteIfExists(ancien);
+            }
+        }
+        int indiceDex = 0; // classes.dex, classes2.dex, classes3.dex…
+        int bibliothèques = 0;
+        for (Path seau : seaux) {
+            context.checkCancelled();
+            List<Path> dexes = dexFiniauxDuSeau(seau);
+            if (dexes.isEmpty()) {
+                continue; // Bibliothèque sans classe dexable (jar vide) : rien.
+            }
+            bibliothèques++;
+            for (Path dex : dexes) {
+                Files.copy(dex, répertoireDex.resolve(nomDex(indiceDex++)),
+                        StandardCopyOption.REPLACE_EXISTING);
+            }
+        }
+        if (indiceDex == 0) {
+            throw new IOException("l'assemblage n'a produit aucun dex — seaux vides ?");
+        }
+        context.progression("assemblage multidex : " + bibliothèques
+                + " bibliothèque(s), " + indiceDex + " dex");
     }
 
     /** Nom APK du i-ème dex : {@code classes.dex}, {@code classes2.dex}… */

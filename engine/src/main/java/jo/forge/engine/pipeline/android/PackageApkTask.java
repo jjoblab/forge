@@ -25,8 +25,8 @@ import java.util.zip.ZipOutputStream;
 /**
  * Tâche {@code <module>:packageApk} : assemble l'APK non signé — les entrées de l'APK
  * de base issues d'aapt2 (ressources, manifeste, assets) plus les
- * {@code classes*.dex} produits par d8 (un seul, ou plusieurs en multidex natif
- * dès minSdk 21 — fusion par lots de la décision D-16).
+ * {@code classes*.dex} produits par le dex (un seul, ou plusieurs en multidex
+ * natif dès minSdk 21 — fusion par lots D-16 ou assemblage par copie D-19).
  *
  * <p>Déterminisme et sûreté : entrées recopiées triées par nom, horodatage fixe
  * (époque DOS), dex compressé (DEFLATED), écriture temporaire + renommage atomique.
@@ -74,8 +74,12 @@ public final class PackageApkTask implements Task {
 
     @Override
     public TaskIO io() {
-        return new TaskIO(List.of(ressources.apkBase(), dex.répertoireDex()),
-                List.of(),
+        // Le répertoire de dex est une ENTREE DE RÉPERTOIRE (hachée récursivement,
+        // contenu par contenu) : déclaré comme fichier, l'oracle refusait le
+        // répertoire (« Entrée non régulière », rapport appareil v0.2.22) et la tâche
+        // ne pouvait jamais passer À JOUR.
+        return new TaskIO(List.of(ressources.apkBase()),
+                List.of(dex.répertoireDex()),
                 Map.of("module", module.name()),
                 List.of(apkNonSigné()), TASK_VERSION);
     }
@@ -87,14 +91,14 @@ public final class PackageApkTask implements Task {
         Files.createDirectories(sortie.getParent());
         Path temporaire = sortie.resolveSibling(sortie.getFileName() + ".part");
         // Tous les classes*.dex du répertoire de dex (multidex natif dès minSdk 21 :
-        // la fusion D-16 produit classes.dex, classes2.dex…), triés pour le
-        // déterminisme — classes.dex avant classes2.dex, etc.
+        // fusion par lots D-16 ou assemblage par copie D-19), triés par INDICE
+        // numérique — classes.dex avant classes2.dex… et classes10 après classes9.
         List<Path> fichiersDex = new ArrayList<>();
         try (DirectoryStream<Path> parcours = Files.newDirectoryStream(
                 dex.répertoireDex(), "classes*.dex")) {
             parcours.forEach(fichiersDex::add);
         }
-        fichiersDex.sort(Comparator.comparing(Path::getFileName));
+        fichiersDex.sort(Comparator.comparingInt(PackageApkTask::indiceDex));
         if (fichiersDex.isEmpty()) {
             throw new IOException("aucun classes.dex dans " + dex.répertoireDex()
                     + " — la tâche de dex a-t-elle réussi ?");
@@ -126,6 +130,26 @@ public final class PackageApkTask implements Task {
     Path apkNonSigné() {
         return layout.buildDir(module.name()).resolve("packaged")
                 .resolve("unsigned.apk");
+    }
+
+    /**
+     * L'indice numérique d'un nom {@code classes.dex} / {@code classes2.dex}… — le
+     * tri LEXICOGRAPHIQUE mettait {@code classes10.dex} AVANT {@code classes2.dex} ;
+     * la voie finale D-19 produit un dex par bibliothèque (plusieurs dizaines pour
+     * une fermeture Compose), l'ordre des entrées de l'APK redevient celui de la
+     * séquence multidex.
+     */
+    private static int indiceDex(Path fichier) {
+        String nom = fichier.getFileName().toString();
+        if (nom.equals("classes.dex")) {
+            return 0;
+        }
+        try {
+            return Integer.parseInt(nom.substring("classes".length(),
+                    nom.length() - ".dex".length()));
+        } catch (NumberFormatException pasIndice) {
+            return Integer.MAX_VALUE; // Nom invu : en fin de liste, jamais perdu.
+        }
     }
 
     /**

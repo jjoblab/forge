@@ -507,6 +507,72 @@ les caches vivent au niveau du MOTEUR.
 - **Ce qui reste PAR projet** : les empreintes de tâches (`.forge/state/`) et les traces
   (`.forge/traces/`) — elles décrivent l'état DU projet, comme le `.gradle/` d'un projet.
 
+### D-19 — Dexage final par bibliothèque, assemblage multidex SANS fusion (v0.2.23)
+
+Constat appareil du 2026-11-22 (rapports `v0.2.22`, `application-compose`, moto g06) : le
+premier build meurt ENCORE (code de sortie inconnu, tueur de processus D-02) — mais la
+lecture croisée déplace le coupable : les 57 seaux de dex ont SURVÉCU (le retry n'a plus
+qu'à fusionner : « 57 reprise(s) du cache de dex »), les tâches de compilation sont passées
+`À JOUR` au second passage — c'est la FUSION, dernière longue passe CPU, qui tue ; et même
+réussie, elle COÛTE : 103,8 s sur les 108 s du build de reprise.
+
+- **Voie finale dès `minApi 26`** (la frontière SANS désucrage déjà retenue par D-16 — les
+  lambdas, seuls désucrades restants à ce niveau, sont LOCAUX à leur bibliothèque ; ni
+  méthodes par défaut ni statiques d'interface à abaisser dès 24) : chaque jar est dexé UNE
+  FOIS en forme FINALE (`OutputMode.DexIndexed`, d8 découpant lui-même en
+  `classes.dex`, `classes2.dex`… au-delà de 64 k références) dans son seau à hash de
+  contenu — même clé, même sentinelle, même résilience aux morts brutales que D-16.
+- **Assemblage PAR COPIE** : `app:dex` recopie les dex des seaux sous les noms suivants de
+  la séquence APK — AUCUNE invocation d8. Le module d'ABORD (`classes.dex` : ses classes
+  ombragent celles des bibliothèques à l'exécution, comme l'ordre d'un classpath), puis
+  les dépendances de projet, puis les bibliothèques Maven (`classes2.dex`,
+  `classes3.dex`…). Le goulot de 104 s devient une copie de fichiers ; le premier build
+  n'a plus de longue traîne CPU où le tueur frappe.
+- **Exactitude vérifiée sur les classes DÉFINIES** : le nom de fichier n'a plus de lien
+  avec la classe — les `class_defs` des dex du seau sont LUS (`DexDéfinies`, analyse
+  minimale de l'en-tête : `string_ids`, `type_ids`, `class_defs`, échec nommé sur toute
+  incohérence) et chaque classe du jar doit y figurer ; manquante = échec nommé, seau
+  détruit — la même politique que D-16, l'instrument en plus.
+- **Séparation des formats** : les seaux finaux vivent sous `minApi<N>-final-v1`, les
+  intermédiaires sous `minApi<N>-v1` — un projet `minSdk < 26` garde la voie de D-16
+  INTÉGRALE (désucrage par lots, clé d'univers), et les deux familles ne se mélangent
+  jamais. La propriété d'empreinte « dexeur » (`d8-final-multidex` / `d8-lots`) et la
+  version de tâche invalident les passages antérieurs.
+- **Connexe (rapport v0.2.22)** : `packageApk` déclarait le RÉPERTOIRE de dex comme
+  entrée FICHIER — l'oracle refusait (« Entrée non régulière ») et la tâche ne pouvait
+  jamais passer `À JOUR`. Le répertoire est désormais une entrée RÉPERTOIRE (hachée
+  récursivement), et l'oracle hache récursivement tout répertoire déclaré comme fichier
+  (une mauvaise déclaration ne prive plus une tâche de son statut). Le tri des
+  `classes*.dex` de l'APK devient NUMÉRIQUE (`classes10` après `classes9`).
+
+### D-20 — Reprise automatique du build après mort du moteur (v0.2.23)
+
+Le même constat, côté coquille : « le moteur a encore été tué, puis j'ai appuyé sur build
+de nouveau et réussi » — l'utilisateur faisait LUI-MÊME la reprise que les caches (D-13,
+D-16, D-18) rendent presque gratuite.
+
+- **Reprise automatique bornée** : une mort INATTENDUE du moteur (génération courante,
+  sans verdict `BuildFinished`) pendant qu'un build est en cours relance le moteur et
+  re-soumet le build — jusqu'à 3 tentatives (l'initiale + 2 reprises). Le journal affiche
+  la cause (code de sortie, queue du stderr) puis « reprise automatique du build
+  (tentative 2 sur 3) » ; au-delà du maximum, l'échec est affiché comme avant.
+- **Convergence par les caches** : chaque tentative hérite de la précédente — résolution
+  `FROM_CACHE` (D-13/D-18), tâches `À JOUR` (empreintes), seaux de dex repris au près
+  (D-16) : même un tueur qui frapperait à chaque tentative ne ferait qu'allonger le
+  build, chaque passage complétant le travail du précédent.
+- **Jamais de reprise abusive** : un verdict `BuildFinished` (réussite, échec OU
+  annulation) et une annulation utilisateur posée ferment la fenêtre de reprise ; une
+  mort APRÈS le verdict (arrêt de routine, extinction au repos) reste silencieuse comme
+  avant. L'état d'installation est relu à chaque tentative (une réparation entre-temps
+  est honorée).
+- **Pourquoi ne pas « empêcher » le tueur** : les parades réelles au tueur de processus
+  fantômes d'Android 12+ (D-02) exigent une action UTILISATEUR (désactivation de la
+  surveillance des processus fantômes par `adb`, option « restrictions de processus
+  enfants » d'Android 14+ — documentées dans `distribution.md` §8) ; le repli
+  `DexClassLoader` en processus `:engine` réel (D-03) éliminerait le statut « fantôme »
+  mais imposerait le tas de l'application au compilateur Kotlin — l'arbitrage reste
+  ouvert, la reprise automatique rend le tueur SUPPORTABLE en attendant.
+
 ## 4. Installateur (détail)
 
 Séquence du premier lancement (chaque exigence du cahier des charges y est visible) :
