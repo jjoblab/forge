@@ -189,6 +189,40 @@ public final class EngineClient {
     }
 
     /**
+     * Lance un sync : résolution des dépendances et préparation du modèle, SANS
+     * compilation (protocole 2 ; un moteur ancien refuse proprement la trame).
+     * Les événements arrivent en flux vers le consommateur, la fin reste un
+     * {@code BuildFinished}.
+     *
+     * @param request la requête (mêmes champs qu'un build).
+     * @return le futur de l'accusé de démarrage (identifiant acté par le moteur).
+     */
+    public CompletableFuture<BuildStarted> sync(BuildRequest request) {
+        // Garde-fou : une trame inconnue TUE le lecteur d'un moteur plus ancien —
+        // le refus doit venir de la coquille, jamais du moteur.
+        if (hello.protocolMax() < 2) {
+            CompletableFuture<BuildStarted> refus = new CompletableFuture<>();
+            refus.completeExceptionally(new EngineConnection.EngineConnectionException(
+                    "Sync non supporté : le moteur installé est trop ancien "
+                            + "(protocole " + hello.protocolMax() + " < 2) — mettez "
+                            + "le moteur à jour"));
+            return refus;
+        }
+        return connection.request(FrameType.SYNC_BUILD,
+                        out -> MessageIO.writeBuildRequest(out, request))
+                .thenApply(frame -> {
+                    if (frame.type() == FrameType.PROTOCOL_ERROR) {
+                        // Moteur plus ancien que le protocole 2 : refus propre, le
+                        // canal reste ouvert pour les builds ordinaires.
+                        throw new EngineConnection.EngineConnectionException(
+                                "Sync non supporté par ce moteur (protocole trop ancien)"
+                                        + " : " + decodeError(frame));
+                    }
+                    return decode(frame, MessageIO::readBuildStarted);
+                });
+    }
+
+    /**
      * Annule un build ; l'accusé n'arrive qu'une fois le build totalement arrêté
      * (exigence D-08).
      *

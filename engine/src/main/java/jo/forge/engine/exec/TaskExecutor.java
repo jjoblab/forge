@@ -129,6 +129,7 @@ public final class TaskExecutor {
         Phaser enCours = new Phaser(1); // Le thread orchestrateur compte pour un.
         AtomicInteger terminees = new AtomicInteger();
         AtomicInteger bloquables = new AtomicInteger(); // Sautées par blocage transitif.
+        CompteurIssues issues = new CompteurIssues();
 
         // Racines : déterminées AVANT tout démarrage du pool, depuis les dépendances
         // STATIQUES — jamais depuis la carte « restantes » (mutée en parallèle par les
@@ -140,7 +141,7 @@ public final class TaskExecutor {
         try {
             for (Task task : racines) {
                 soumettre(task, pool, enCours, restantes, dependants, terminees,
-                        bloquables, terminées);
+                        bloquables, terminées, issues);
             }
             // Attendre la fin de toutes les soumissions (et des cascades).
             enCours.arriveAndAwaitAdvance();
@@ -153,9 +154,9 @@ public final class TaskExecutor {
                 && terminees.get() + bloquables.get() == graph.size()
                 && events.dernierEchec() == null;
         String tacheFautive = events.dernierEchec();
-        String message = annule ? "build annulé"
-                : succes ? "build réussi"
-                : "échec à la tâche " + tacheFautive;
+        String message = annule ? "build annulé — " + issues.résumé()
+                : succes ? "build réussi — " + issues.résumé()
+                : "échec à la tâche " + tacheFautive + " — " + issues.résumé();
         events.buildFinished(new BuildEvent.BuildFinished(buildId,
                 System.currentTimeMillis(), succes, tacheFautive,
                 System.currentTimeMillis() - debut, message));
@@ -182,15 +183,15 @@ public final class TaskExecutor {
                            Map<String, Integer> restantes,
                            Map<String, List<String>> dependants,
                            AtomicInteger terminees, AtomicInteger bloquables,
-                           Set<String> terminées) {
+                           Set<String> terminées, CompteurIssues issues) {
         enCours.register();
         pool.submit(() -> {
             try {
                 executerUne(task, restantes, dependants, pool, enCours, terminees,
-                        bloquables, terminées);
+                        bloquables, terminées, issues);
             } catch (Throwable fuite) {
                 échecImprévu(task, fuite, restantes, dependants, pool, enCours,
-                        terminees, bloquables, terminées);
+                        terminees, bloquables, terminées, issues);
             } finally {
                 enCours.arriveAndDeregister();
             }
@@ -205,9 +206,11 @@ public final class TaskExecutor {
     private void échecImprévu(Task task, Throwable fuite, Map<String, Integer> restantes,
                               Map<String, List<String>> dependants, ExecutorService pool,
                               Phaser enCours, AtomicInteger terminees,
-                              AtomicInteger bloquables, Set<String> terminées) {
+                              AtomicInteger bloquables, Set<String> terminées,
+                              CompteurIssues issues) {
         String cause = fuite.getMessage() == null
                 ? fuite.getClass().getSimpleName() : fuite.getMessage();
+        issues.compter(BuildEvent.TaskState.FAILED);
         try {
             events.tacheEchouee(task.name());
             events.taskState(new BuildEvent.TaskStateEvent(events.buildId(),
@@ -221,7 +224,7 @@ public final class TaskExecutor {
             // reste notre seule obligation.
         }
         terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                terminées, false);
+                terminées, issues, false);
     }
 
     /**
@@ -230,25 +233,28 @@ public final class TaskExecutor {
     private void executerUne(Task task, Map<String, Integer> restantes,
                              Map<String, List<String>> dependants, ExecutorService pool,
                              Phaser enCours, AtomicInteger terminees,
-                             AtomicInteger bloquables, Set<String> terminées) {
+                             AtomicInteger bloquables, Set<String> terminées,
+                             CompteurIssues issues) {
         String buildId = events.buildId();
         // Annulation posée avant le tour de cette tâche : saut silencieux.
         if (cancellation.isCancelled()) {
+            issues.compter(BuildEvent.TaskState.SKIPPED);
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
                     System.currentTimeMillis(), task.name(),
                     BuildEvent.TaskState.SKIPPED, 0));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, false);
+                    terminées, issues, false);
             return;
         }
 
         // Oracle d'up-to-date : rien à faire si les entrées n'ont pas changé.
         if (oracle.isUpToDate(task)) {
+            issues.compter(BuildEvent.TaskState.UP_TO_DATE);
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
                     System.currentTimeMillis(), task.name(),
                     BuildEvent.TaskState.UP_TO_DATE, 0));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, true);
+                    terminées, issues, true);
             return;
         }
 
@@ -257,35 +263,41 @@ public final class TaskExecutor {
         // une erreur grave (mémoire saturée au moment de la construction de
         // l'événement, puits en panne) est convertie en échec propre, pas en perte
         // silencieuse de la tâche.
+        ContexteTache contexte = new ContexteTache(task, events, cancellation, projectRoot);
         try {
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
                     System.currentTimeMillis(), task.name(),
                     BuildEvent.TaskState.STARTED, 0));
             // Inscription pour l'interruption immédiate à l'annulation (décision D-08).
             cancellation.registerCurrent();
-            task.execute(new ContexteTache(task, events, cancellation, projectRoot));
+            task.execute(contexte);
             if (cancellation.isCancelled()) {
                 // Réussie mais annulation demandée pendant l'exécution : annulée.
                 throw new TaskCancelledException("annulation pendant l'exécution");
             }
             oracle.recordSuccess(task);
+            BuildEvent.TaskState étatFinal = contexte.depuisCache()
+                    ? BuildEvent.TaskState.FROM_CACHE
+                    : BuildEvent.TaskState.SUCCEEDED;
+            issues.compter(étatFinal);
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
-                    System.currentTimeMillis(), task.name(),
-                    BuildEvent.TaskState.SUCCEEDED,
+                    System.currentTimeMillis(), task.name(), étatFinal,
                     System.currentTimeMillis() - debut));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, true);
+                    terminées, issues, true);
         } catch (TaskCancelledException annulation) {
+            issues.compter(BuildEvent.TaskState.FAILED);
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
                     System.currentTimeMillis(), task.name(),
                     BuildEvent.TaskState.FAILED, System.currentTimeMillis() - debut));
             events.log(BuildEvent.LogEvent.LogLevel.INFO,
                     "Tâche " + task.name() + " annulée");
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, false);
+                    terminées, issues, false);
         } catch (Exception echec) {
             String cause = echec.getMessage() == null
                     ? echec.getClass().getSimpleName() : echec.getMessage();
+            issues.compter(BuildEvent.TaskState.FAILED);
             events.tacheEchouee(task.name());
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
                     System.currentTimeMillis(), task.name(),
@@ -293,7 +305,7 @@ public final class TaskExecutor {
             events.log(BuildEvent.LogEvent.LogLevel.ERROR,
                     "Échec de " + task.name() + " : " + cause);
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, false);
+                    terminées, issues, false);
         } catch (java.lang.Error erreurGrave) {
             // Un Error ne doit JAMAIS rompre le comptage silencieusement : la tâche
             // échoue proprement, la cause est journalisée ET diagnostiquée, le build
@@ -302,6 +314,7 @@ public final class TaskExecutor {
             // mémoire ; le crash ECJ sur ART s'affichait sous un faux diagnostic et
             // le rapport n'avait aucun diagnostic structuré).
             String message = MessagesErreursGraves.pour(erreurGrave, task.name());
+            issues.compter(BuildEvent.TaskState.FAILED);
             events.tacheEchouee(task.name());
             events.taskState(new BuildEvent.TaskStateEvent(buildId,
                     System.currentTimeMillis(), task.name(),
@@ -309,7 +322,7 @@ public final class TaskExecutor {
             events.log(BuildEvent.LogEvent.LogLevel.ERROR, message);
             events.diagnostic(Diagnostic.error(task.name(), message));
             terminer(task, restantes, dependants, pool, enCours, terminees, bloquables,
-                    terminées, false);
+                    terminées, issues, false);
         } finally {
             cancellation.unregisterCurrent();
         }
@@ -326,7 +339,7 @@ public final class TaskExecutor {
                           Map<String, List<String>> dependants, ExecutorService pool,
                           Phaser enCours, AtomicInteger terminees,
                           AtomicInteger bloquables, Set<String> terminées,
-                          boolean reussie) {
+                          CompteurIssues issues, boolean reussie) {
         if (!terminées.add(task.name())) {
             return; // Déjà terminée (double passage d'un chemin d'erreur) : ignorer.
         }
@@ -336,17 +349,18 @@ public final class TaskExecutor {
             if (!reussie) {
                 // Échec ou annulation : les dépendants sont bloqués transitivement.
                 bloquables.incrementAndGet();
+                issues.compter(BuildEvent.TaskState.SKIPPED);
                 events.taskState(new BuildEvent.TaskStateEvent(events.buildId(),
                         System.currentTimeMillis(), dependant,
                         BuildEvent.TaskState.SKIPPED, 0));
                 // Cascade : les dépendants du dépendant sont bloqués aussi.
-                terminerBloques(dependant, dependants, bloquables);
+                terminerBloques(dependant, dependants, bloquables, issues);
                 continue;
             }
             int restant = restantes.merge(dependant, -1, Integer::sum);
             if (restant == 0 && !cancellation.isCancelled()) {
                 soumettre(graph.task(dependant), pool, enCours, restantes, dependants,
-                        terminees, bloquables, terminées);
+                        terminees, bloquables, terminées, issues);
             }
         }
     }
@@ -355,13 +369,14 @@ public final class TaskExecutor {
      * Marque bloquées (transitivement) les tâches qui dépendent d'une tâche bloquée.
      */
     private void terminerBloques(String nom, Map<String, List<String>> dependants,
-                                 AtomicInteger bloquables) {
+                                 AtomicInteger bloquables, CompteurIssues issues) {
         for (String dependant : dependants.getOrDefault(nom, List.of())) {
             bloquables.incrementAndGet();
+            issues.compter(BuildEvent.TaskState.SKIPPED);
             events.taskState(new BuildEvent.TaskStateEvent(events.buildId(),
                     System.currentTimeMillis(), dependant,
                     BuildEvent.TaskState.SKIPPED, 0));
-            terminerBloques(dependant, dependants, bloquables);
+            terminerBloques(dependant, dependants, bloquables, issues);
         }
     }
 
@@ -432,6 +447,70 @@ public final class TaskExecutor {
          */
         default void diagnostic(jo.forge.engine.diag.Diagnostic diagnostic) {
         }
+
+        /**
+         * Émet un événement de téléchargement (progression d'une dépendance).
+         * Implémentation par défaut : ignore (tests sans réseau).
+         *
+         * @param événement la progression du téléchargement.
+         */
+        default void téléchargement(BuildEvent.DownloadEvent événement) {
+        }
+    }
+
+    /**
+     * Comptage des issues par état terminal — le décompte final du build, à la
+     * manière du « N actionable tasks : X executed, Y up-to-date » du moteur de
+     * référence : les sautées ne sont pas actionnables, elles n'entrent pas dans
+     * le compte des tâches utiles.
+     */
+    static final class CompteurIssues {
+
+        private final java.util.Map<BuildEvent.TaskState, Integer> issues =
+                new java.util.concurrent.ConcurrentHashMap<>();
+
+        /** Compte une issue (thread-safe). */
+        void compter(BuildEvent.TaskState état) {
+            issues.merge(état, 1, Integer::sum);
+        }
+
+        /**
+         * Le résumé lisible du décompte (ex. {@code 24 tâches : 5 exécutées,
+         * 12 à jour, 2 du cache, 5 sautées}).
+         */
+        String résumé() {
+            int exécutées = issues.getOrDefault(BuildEvent.TaskState.SUCCEEDED, 0);
+            int àJour = issues.getOrDefault(BuildEvent.TaskState.UP_TO_DATE, 0);
+            int duCache = issues.getOrDefault(BuildEvent.TaskState.FROM_CACHE, 0);
+            int échouées = issues.getOrDefault(BuildEvent.TaskState.FAILED, 0);
+            int sautées = issues.getOrDefault(BuildEvent.TaskState.SKIPPED, 0);
+            int actionnables = exécutées + àJour + duCache + échouées;
+            StringBuilder texte = new StringBuilder().append(actionnables).append(" tâche")
+                    .append(actionnables > 1 ? "s" : "").append(" : ");
+            List<String> parties = new ArrayList<>();
+            if (exécutées > 0) {
+                parties.add(exécutées + " exécutée" + (exécutées > 1 ? "s" : ""));
+            }
+            if (àJour > 0) {
+                parties.add(àJour + " à jour");
+            }
+            if (duCache > 0) {
+                parties.add(duCache + " du cache");
+            }
+            if (échouées > 0) {
+                parties.add(échouées + " échouée" + (échouées > 1 ? "s" : ""));
+            }
+            if (parties.isEmpty()) {
+                texte.append("aucune");
+            } else {
+                texte.append(String.join(", ", parties));
+            }
+            if (sautées > 0) {
+                texte.append(", ").append(sautées).append(" sautée")
+                        .append(sautées > 1 ? "s" : "").append(" (non actionnables)");
+            }
+            return texte.toString();
+        }
     }
 
     /** Contexte d'exécution donné aux tâches (journal tamponné au nom de la tâche). */
@@ -442,12 +521,20 @@ public final class TaskExecutor {
         private final CancellationFlag cancellation;
         private final java.nio.file.Path projectRoot;
 
+        /** Posé par {@link #marquerDepuisCache()} pendant l'exécution de la tâche. */
+        private volatile boolean depuisCache;
+
         ContexteTache(Task task, BuildEvents events, CancellationFlag cancellation,
                       java.nio.file.Path projectRoot) {
             this.task = task;
             this.events = events;
             this.cancellation = cancellation;
             this.projectRoot = projectRoot;
+        }
+
+        /** La tâche a-t-elle marqué qu'elle relisait un cache ? */
+        boolean depuisCache() {
+            return depuisCache;
         }
 
         @Override
@@ -458,6 +545,21 @@ public final class TaskExecutor {
         @Override
         public jo.forge.engine.diag.DiagnosticSink diagnostics() {
             return events::diagnostic;
+        }
+
+        @Override
+        public java.util.function.Consumer<BuildEvent.DownloadEvent> téléchargements() {
+            return events::téléchargement;
+        }
+
+        @Override
+        public String buildId() {
+            return events.buildId();
+        }
+
+        @Override
+        public void marquerDepuisCache() {
+            depuisCache = true;
         }
 
         @Override

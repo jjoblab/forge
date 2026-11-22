@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.security.MessageDigest;
 import java.time.Duration;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 /**
@@ -28,6 +29,12 @@ import java.util.function.Consumer;
  * avertissement est émis (politique consignée : refuser aurait exclu des dépôts réels
  * sans sommes) — les artefacts du MOTEUR, eux, exigent TOUJOURS une somme signée
  * (installateur, manifeste ECDSA).</p>
+ *
+ * <p><b>Progression et annulation</b> (v0.2.21) : chaque transfert observable
+ * ({@link ProgressionTéléchargement} — début, avancement borné, fin) et annulable
+ * ({@link Annulée} levée au premier tampon après la demande) : une résolution Compose
+ * interrompue ne reste pas bloquée sur une lecture réseau longue, et l'utilisateur
+ * voit chaque fichier qui passe au lieu d'un silence de plusieurs minutes.</p>
  */
 public final class HttpTransport {
 
@@ -43,7 +50,12 @@ public final class HttpTransport {
     /** Taille de la mémoire tampon de flux. */
     private static final int TAILLE_TAMPON = 64 * 1024;
 
+    /** Écart minimal entre deux émissions d'avancement (128 Kio). */
+    private static final long SEUIL_AVANCEMENT = 128 * 1024;
+
     private final Consumer<String> avertissements;
+    private final BooleanSupplier annulation;
+    private final ProgressionTéléchargement progression;
 
     /**
      * Crée le transport.
@@ -51,7 +63,22 @@ public final class HttpTransport {
      * @param avertissements consommateur d'avertissements (journal du build).
      */
     public HttpTransport(Consumer<String> avertissements) {
+        this(avertissements, null, null);
+    }
+
+    /**
+     * Crée le transport avec observation et annulation.
+     *
+     * @param avertissements consommateur d'avertissements (journal du build).
+     * @param annulation     fournisseur d'annulation (null : jamais annulé) ; testé
+     *                       avant chaque connexion et à chaque tampon reçu.
+     * @param progression    observateur des transferts (null : silencieux).
+     */
+    public HttpTransport(Consumer<String> avertissements, BooleanSupplier annulation,
+                         ProgressionTéléchargement progression) {
         this.avertissements = avertissements == null ? message -> { } : avertissements;
+        this.annulation = annulation;
+        this.progression = progression == null ? new ProgressionTéléchargement() { } : progression;
     }
 
     /**
@@ -91,7 +118,9 @@ public final class HttpTransport {
      */
     public String téléchargerVersFichier(String url, Path destination, String urlSomme)
             throws IOException {
+        vérifierAnnulation(url);
         String sommeAttendue = urlSomme == null ? null : téléchargerSomme(urlSomme);
+        String ressource = nomCourt(url);
         byte[] tampon = new byte[TAILLE_TAMPON];
         MessageDigest sha1 = digest("SHA-1");
         MessageDigest sha256 = digest("SHA-256");
@@ -103,16 +132,29 @@ public final class HttpTransport {
         if (code != HttpURLConnection.HTTP_OK) {
             throw new IOException("HTTP " + code + " pour " + url);
         }
+        long total = connexion.getContentLengthLong();
         Files.createDirectories(destination.getParent());
         Path temporaire = destination.resolveSibling(
                 destination.getFileName() + ".part");
+        long lus = 0;
+        long dernierAvancement = 0;
+        progression.début(ressource, total);
         try (InputStream entrée = connexion.getInputStream();
              OutputStream sortie = Files.newOutputStream(temporaire)) {
-            int lus;
-            while ((lus = entrée.read(tampon)) >= 0) {
-                sha1.update(tampon, 0, lus);
-                sha256.update(tampon, 0, lus);
-                sortie.write(tampon, 0, lus);
+            int lusTampon;
+            while ((lusTampon = entrée.read(tampon)) >= 0) {
+                if (annulation != null && annulation.getAsBoolean()) {
+                    throw new Annulée(url);
+                }
+                sha1.update(tampon, 0, lusTampon);
+                sha256.update(tampon, 0, lusTampon);
+                sortie.write(tampon, 0, lusTampon);
+                lus += lusTampon;
+                if (lus - dernierAvancement >= SEUIL_AVANCEMENT || (total >= 0
+                        && lus == total)) {
+                    dernierAvancement = lus;
+                    progression.avance(lus, total);
+                }
             }
         } catch (IOException echec) {
             Files.deleteIfExists(temporaire);
@@ -136,7 +178,22 @@ public final class HttpTransport {
         } catch (IOException pasAtomique) {
             Files.move(temporaire, destination, StandardCopyOption.REPLACE_EXISTING);
         }
+        progression.fin(ressource, lus);
         return hex(sha256.digest());
+    }
+
+    /** Le fichier court d'une URL (dernier segment — lisible dans une console). */
+    private static String nomCourt(String url) {
+        int barre = url.lastIndexOf('/');
+        return barre >= 0 && barre < url.length() - 1
+                ? url.substring(barre + 1) : url;
+    }
+
+    /** Lève avant toute connexion si l'annulation est déjà demandée. */
+    private void vérifierAnnulation(String url) throws Annulée {
+        if (annulation != null && annulation.getAsBoolean()) {
+            throw new Annulée(url);
+        }
     }
 
     /**
@@ -204,6 +261,16 @@ public final class HttpTransport {
 
         Introuvable(String url) {
             super("introuvable : " + url);
+        }
+    }
+
+    /** Signal d'annulation demandée pendant un transfert (jamais une erreur réseau). */
+    static final class Annulée extends IOException {
+
+        private static final long serialVersionUID = 1L;
+
+        Annulée(String url) {
+            super("téléchargement annulé : " + url);
         }
     }
 }

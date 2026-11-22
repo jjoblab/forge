@@ -368,6 +368,68 @@ de scripts Gradle (Phase 4.13, optionnel) sera un lecteur statique vers ce modè
   les sorties déclarées existent encore (parité avec le recalcul « live » du moteur de
   référence, REF-023). Erreur de lecture d'une entrée ⇒ invalidation + journal (corrige C-4).
 
+### D-13 — Cache de résolution (v0.2.21)
+
+Le pendant du « metadata cache » de Gradle, que la réplique Maven (D des dépôts) ne couvre
+pas : celle-ci évite de re-télécharger les FICHIERS, mais chaque build re-marche le graphe —
+des centaines de lectures de POM et de métadonnées de module, chacune potentiellement réseau,
+pour une fermeture Compose.
+
+- **Deux niveaux** : (1) la réplique Maven `.forge/deps` (artefacts, POM, `.module`, marqueurs
+  négatifs — existait déjà) ; (2) le **résultat de résolution** par module, sous
+  `.forge/résolutions/<hex(module)>.json` : la liste ordonnée des coordonnées retenues et leur
+  empaquetage, pour les classpaths de compilation et d'exécution.
+- **Clé** = SHA-256 de tout ce qui influe sur la résolution : racines (coordonnées ET portées,
+  ordre compris), dépôts, cible Android, niveau d'API, politique de médiation, version du
+  format. Une lecture ne vaut QUE si tous les artefacts mémorisés existent toujours dans la
+  réplique (sinon : échec de cache silencieux, la marche répare).
+- **Sémantique des versions** (parité Gradle) : version STATIQUE crue indéfiniment — zéro
+  requête ; racine `-SNAPSHOT` = volatile, ce cache est contourné (lecture ET écriture) ;
+  la revalidation périodique des modules changeants reste un écart consigné.
+- **Relecture** : la tâche `<module>:resolveDependencies` reconstitue le classpath depuis les
+  coordonnées mémorisées (explosion AAR au besoin, bornes `minCompileSdk` recontrôlées — la
+  cible fait partie de la clé), marque son contexte « depuis cache » : l'état de tâche
+  rapporté est `FROM_CACHE` (protocole 2), et le journal dit combien de dépendances sont
+  relues sans aucune requête réseau. Un échec de relecture retombe sur la marche — un cache
+  défaillant ne bloque jamais un build.
+- **Écriture** : atomique (temp + renommage), silencieuse en échec (le cache est une
+  optimisation, pas une obligation).
+
+### D-14 — Progression et annulation des téléchargements (v0.2.21)
+
+Constat d'appareil (2026-11-22) : la résolution d'un projet Compose, c'est des centaines de
+requêtes séquentielles ; sans flux visible, « un long silence de plusieurs minutes se lit
+comme un plantage », et une annulation pendant une lecture réseau longue ne prenait effet
+qu'au délai de lecture (30 s).
+
+- **Progression** : chaque transfert émet début/avancement/fin (`ProgressionTéléchargement`)
+  — avancement borné (un événement au moins tous les 128 Kio, pas de saturation du canal) ;
+  côté coquille (protocole 2), un `DownloadEvent` structuré nourrit la ligne vivante du
+  résumé (« Téléchargement : ui-android-1.7.1.aar (2,3 / 4,1 Mio) ») et, en journal détaillé,
+  une ligne par fichier terminé. Une coquille protocole 1 reçoit la dégradation : une entrée
+  INFO par fichier terminé.
+- **Annulation** : le résolveur reçoit un fournisseur d'annulation (le jeton du build) —
+  testé à chaque nœud de la marche et à CHAQUE tampon réseau (`HttpTransport.Annulée` →
+  `TaskCancelledException`) : l'annulation coupe le transfert en cours, pas au prochain délai.
+- **Décompte final** : l'exécuteur compte les issues par tâche (exécutées, à jour, du cache,
+  échouées, sautées) et le verdict du build les porte — « build réussi — 24 tâches : 5
+  exécutées, 12 à jour, 2 du cache, 5 sautées » ; les sautées n'entrent pas dans les
+  actionnables (sémantique des consoles de build classiques).
+
+### D-15 — Sync (v0.2.21)
+
+L'équivalent du sync des environnements de build classiques : préparer tout SAUF compiler —
+aujourd'hui la résolution des dépendances de chaque module (modèle déjà lu à chaque build).
+
+- **Trame dédiée** `SYNC_BUILD` (protocole 2, charge utile identique à `START_BUILD`) : le
+  graphe est filtré aux tâches `:resolveDependencies` ; le flux d'événements et le
+  `BuildFinished` sont ceux d'un build — la coquille n'a qu'un bouton de plus.
+- **Compatibilité** : un moteur protocole 1 ne connaît pas la trame — la COQUILLE refuse
+  d'envoyer un sync vers un moteur négociant < 2 (une trame inconnue tuerait son lecteur) ;
+  un moteur qui reçoit la trame par un autre chemin répond `PROTOCOL_ERROR` proprement.
+- **Après un sync**, un build voit la résolution `UP_TO_DATE` : les empreintes (D-12) font la
+  jointure, aucune invalidation supplémentaire n'est nécessaire.
+
 ## 4. Installateur (détail)
 
 Séquence du premier lancement (chaque exigence du cahier des charges y est visible) :

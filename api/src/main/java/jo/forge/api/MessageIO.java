@@ -31,6 +31,7 @@ public final class MessageIO {
     private static final int KIND_TASK_STATE = 3;
     private static final int KIND_PROGRESS = 4;
     private static final int KIND_FINISHED = 5;
+    private static final int KIND_DOWNLOAD = 6;
 
     private MessageIO() {
         // Utilitaire statique : pas d'instanciation.
@@ -351,6 +352,13 @@ public final class MessageIO {
             out.writeLong(progress.timestamp());
             out.writeInt(progress.tasksTotal());
             out.writeInt(progress.tasksDone());
+        } else if (event instanceof BuildEvent.DownloadEvent download) {
+            out.writeByte(KIND_DOWNLOAD);
+            out.writeLong(download.timestamp());
+            writeString(out, download.resource());
+            out.writeLong(download.bytesDownloaded());
+            out.writeLong(download.bytesTotal());
+            out.writeBoolean(download.done());
         } else if (event instanceof BuildEvent.BuildFinished finished) {
             out.writeByte(KIND_FINISHED);
             out.writeLong(finished.timestamp());
@@ -389,6 +397,9 @@ public final class MessageIO {
             case KIND_PROGRESS:
                 return new BuildEvent.ProgressEvent(buildId, timestamp,
                         in.readInt(), in.readInt());
+            case KIND_DOWNLOAD:
+                return new BuildEvent.DownloadEvent(buildId, timestamp, readString(in),
+                        in.readLong(), in.readLong(), in.readBoolean());
             case KIND_FINISHED:
                 return new BuildEvent.BuildFinished(buildId, timestamp, in.readBoolean(),
                         readString(in), in.readLong(), readString(in));

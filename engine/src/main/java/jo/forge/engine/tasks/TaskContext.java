@@ -62,4 +62,36 @@ public interface TaskContext {
     default void checkCancelled() {
         cancellation().check();
     }
+
+    /**
+     * Observateur des téléchargements de la tâche : chaque transfert réseau visible
+     * devient un événement structuré vers la coquille (progression en direct, plus un
+     * silence jamais long). L'implémentation par défaut ignore — les tâches sans
+     * réseau n'ont rien à rapporter.
+     *
+     * @return le consommateur d'événements de téléchargement (jamais nul).
+     */
+    default java.util.function.Consumer<jo.forge.api.BuildEvent.DownloadEvent>
+    téléchargements() {
+        return événement -> {
+        };
+    }
+
+    /**
+     * Identifiant du build en cours (pour horodater les événements de la tâche).
+     *
+     * @return l'identifiant (chaîne vide par défaut — exécutions hors build).
+     */
+    default String buildId() {
+        return "";
+    }
+
+    /**
+     * Marque la tâche comme exécutée DEPUIS UN CACHE : elle a produit ses sorties en
+     * relisant un résultat mémorisé, sans recalculer (l'état rapporté à la coquille
+     * sera {@code FROM_CACHE} au lieu de {@code SUCCEEDED} — parité avec le décompte
+     * « from-cache » du moteur de référence).
+     */
+    default void marquerDepuisCache() {
+    }
 }

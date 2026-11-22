@@ -12,6 +12,7 @@ public sealed interface BuildEvent permits
         BuildEvent.DiagnosticEvent,
         BuildEvent.TaskStateEvent,
         BuildEvent.ProgressEvent,
+        BuildEvent.DownloadEvent,
         BuildEvent.BuildFinished {
 
     /**
@@ -141,7 +142,9 @@ public sealed interface BuildEvent permits
         /** La tâche a été sautée (non demandée, condition non remplie). */
         SKIPPED(4),
         /** La tâche était à jour : aucun travail nécessaire. */
-        UP_TO_DATE(5);
+        UP_TO_DATE(5),
+        /** La tâche s'est exécutée en relisant un cache (aucun travail recalculé). */
+        FROM_CACHE(6);
 
         private final int wireCode;
 
@@ -193,6 +196,28 @@ public sealed interface BuildEvent permits
      * @param tasksDone  nombre de tâches terminées (quel que soit leur état final).
      */
     record ProgressEvent(String buildId, long timestamp, int tasksTotal, int tasksDone)
+            implements BuildEvent {
+    }
+
+    /**
+     * Progression d'un téléchargement de dépendance (protocole 2).
+     *
+     * <p>Émis par la résolution Maven : au début (0 octet), à intervalle pendant le
+     * transfert (fréquence bornée par le moteur) et à la fin. {@code done} distingue la
+     * progression partielle ({@code false}) du téléchargement terminé ({@code true}).
+     * La ressource est identifiée par son fichier court (lisible dans une console) ;
+     * {@code bytesTotal} vaut {@code -1} quand le serveur ne l'annonce pas.</p>
+     *
+     * @param buildId         identifiant du build.
+     * @param timestamp       horodatage côté moteur.
+     * @param resource        fichier téléchargé (ex. {@code ui-android-1.7.1.aar}),
+     *                        jamais nul.
+     * @param bytesDownloaded octets reçus à ce stade.
+     * @param bytesTotal      taille totale annoncée, ou {@code -1} si inconnue.
+     * @param done            {@code true} quand le téléchargement est terminé.
+     */
+    record DownloadEvent(String buildId, long timestamp, String resource,
+                         long bytesDownloaded, long bytesTotal, boolean done)
             implements BuildEvent {
     }
 

@@ -157,6 +157,52 @@ class BuildEngineServerTest {
         }
     }
 
+    @Test
+    @Timeout(60)
+    void syncNeCompileJamaisEtAnnonceLaCapacité() throws Exception {
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(2);
+            Status état = session.status();
+            assertTrue(état.capabilities().contains("sync"),
+                    "le moteur annonce la capacité sync : " + état.capabilities());
+
+            List<BuildEvent> événements = session.sync(temporaire);
+            BuildEvent.BuildFinished fin = dernier(événements,
+                    BuildEvent.BuildFinished.class);
+            assertTrue(fin.success(), "le sync doit réussir : " + fin.message());
+
+            List<String> tâchesExécutées = événements.stream()
+                    .filter(e -> e instanceof BuildEvent.TaskStateEvent t
+                            && t.state() == BuildEvent.TaskState.SUCCEEDED)
+                    .map(e -> ((BuildEvent.TaskStateEvent) e).taskName())
+                    .toList();
+            assertEquals(List.of("app:resolveDependencies", "core:resolveDependencies")
+                    .stream().sorted().toList(),
+                    tâchesExécutées.stream().sorted().toList(),
+                    "un sync n'exécute QUE la résolution des dépendances");
+            assertTrue(événements.stream().noneMatch(e ->
+                            e instanceof BuildEvent.TaskStateEvent t
+                                    && t.taskName().contains("compile")),
+                    "aucune tâche de compilation dans un sync");
+            assertTrue(événements.stream().anyMatch(e ->
+                            e instanceof BuildEvent.LogEvent l && l.message()
+                                    .startsWith("sync")),
+                    "le journal annonce le sync");
+
+            // Un build complet APRÈS un sync : la résolution est à jour, la
+            // compilation reste à faire — les deux mondes coexistent.
+            List<BuildEvent> build = session.build(temporaire);
+            assertTrue(dernier(build, BuildEvent.BuildFinished.class).success());
+            assertTrue(build.stream().anyMatch(e ->
+                            e instanceof BuildEvent.TaskStateEvent t
+                                    && t.state() == BuildEvent.TaskState.UP_TO_DATE
+                                    && t.taskName().endsWith(":resolveDependencies")),
+                    "le build voit la résolution faite par le sync comme à jour");
+            session.arrêt();
+        }
+    }
+
     /**
      * Récupère le dernier événement du type demandé.
      */
@@ -224,17 +270,32 @@ class BuildEngineServerTest {
 
         /** Poignée de main complète : CLIENT_HELLO et accusé. */
         void poignéeDeMain() throws IOException {
+            poignéeDeMain(1);
+        }
+
+        /** Poignée de main complète à une version de protocole donnée. */
+        void poignéeDeMain(int version) throws IOException {
             écrire(FrameType.CLIENT_HELLO, out -> MessageIO.writeClientHello(out,
-                    new ClientHello("0.1.0-test", 1)));
+                    new ClientHello("0.1.0-test", version)));
             assertEquals(FrameType.CLIENT_HELLO, lireTrame().type());
         }
 
         /** Lance un build et collecte tous les événements jusqu'à la fin. */
         List<BuildEvent> build(Path racine) throws IOException {
+            return requête(FrameType.START_BUILD, racine);
+        }
+
+        /** Lance un sync (protocole 2) et collecte les événements jusqu'à la fin. */
+        List<BuildEvent> sync(Path racine) throws IOException {
+            return requête(FrameType.SYNC_BUILD, racine);
+        }
+
+        /** Envoie START_BUILD ou SYNC_BUILD et collecte le flux d'événements. */
+        List<BuildEvent> requête(FrameType type, Path racine) throws IOException {
             BuildRequest requête = new BuildRequest("b" + (++corrélation),
                     racine.toString(),
                     new BuildOptions(2, false, false, false, 4096, "x86_64"));
-            écrire(FrameType.START_BUILD,
+            écrire(type,
                     out -> MessageIO.writeBuildRequest(out, requête));
             Frame accusé = lireTrame();
             assertEquals(FrameType.BUILD_STARTED, accusé.type());

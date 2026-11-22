@@ -18,8 +18,16 @@ public final class ProtocolVersions {
     /** Plus ancienne version de protocole comprise par ce module. */
     public static final int PROTOCOL_MIN = 1;
 
-    /** Plus récente version de protocole comprise par ce module. */
-    public static final int PROTOCOL_MAX = 1;
+    /**
+     * Plus récente version de protocole comprise par ce module.
+     *
+     * <p>Version 2 (additive) : événement de téléchargement
+     * ({@code BuildEvent.DownloadEvent}), état de tâche {@code FROM_CACHE} et trame
+     * {@code SYNC_BUILD}. Le moteur NE PULSE ces nouveautés que vers une coquille
+     * ayant négocié la version 2 ; une coquille version 1 reçoit les dégradations
+     * équivalentes (journal INFO, {@code SUCCEEDED}, refus propre de la trame).</p>
+     */
+    public static final int PROTOCOL_MAX = 2;
 
     private ProtocolVersions() {
         // Constantes uniquement : pas d'instanciation.

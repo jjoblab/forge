@@ -1,8 +1,11 @@
 package jo.forge.engine.pipeline.java;
 
+import jo.forge.api.BuildEvent;
 import jo.forge.engine.deps.ConflictPolicy;
 import jo.forge.engine.deps.Coordinate;
 import jo.forge.engine.deps.DependencyResolver;
+import jo.forge.engine.deps.ProgressionTéléchargement;
+import jo.forge.engine.deps.ResolutionResultCache;
 import jo.forge.engine.deps.ResolverCache;
 import jo.forge.engine.model.DependencyScope;
 import jo.forge.engine.model.ForgeModule;
@@ -18,6 +21,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.TreeMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 
 /**
  * Tâche {@code <module>:resolveDependencies} : résout les dépendances Maven du module
@@ -92,6 +97,9 @@ public final class ResolveDependenciesTask implements Task {
             context.logger().info("aucune dépendance Maven à résoudre");
             return;
         }
+        AtomicLong téléchargées = new AtomicLong();
+        ProgressionTéléchargement progression = progressionVersÉvénements(context,
+                téléchargées);
         DependencyResolver résolveur = new DependencyResolver(dépôts,
                 new ResolverCache(layout.root().resolve(".forge").resolve("deps")),
                 horsLigne,
@@ -99,10 +107,22 @@ public final class ResolveDependenciesTask implements Task {
                 module.type() == jo.forge.engine.model.ModuleType.APPLICATION
                         || module.type() == jo.forge.engine.model.ModuleType.ANDROID_LIBRARY,
                 module.android().map(jo.forge.engine.model.AndroidFacet::targetSdk)
-                        .orElse(-1));
+                        .orElse(-1),
+                new ResolutionResultCache(layout.root().resolve(".forge")
+                        .resolve("résolutions")),
+                context.cancellation()::isCancelled,
+                progression);
         context.checkCancelled();
-        DependencyResolver.Result résultat = résolveur.resolve(racines,
+        DependencyResolver.Result résultat = résolveur.resolve(module.name(), racines,
                 ConflictPolicy.NEWEST);
+        if (résolveur.dernièreDepuisCache()) {
+            // Le graphe n'a pas été re-marché : sortie produite en relisant le cache
+            // de résolution — l'état FROM_CACHE dit exactement ça à la coquille.
+            context.marquerDepuisCache();
+            context.logger().info(résultat.compileClasspath().size()
+                    + " dépendance(s) relue(s) du cache de résolution — aucune requête"
+                    + " réseau");
+        }
 
         List<ClasspathFile.Entrée> compilation = new ArrayList<>();
         résultat.compileClasspath().forEach(artefact -> compilation.add(
@@ -118,7 +138,40 @@ public final class ResolveDependenciesTask implements Task {
         long aars = compilation.stream().filter(ClasspathFile.Entrée::estAar).count();
         context.logger().info(compilation.size() + " dépendance(s) au classpath"
                 + " de compilation, " + exécution.size() + " à l'exécution"
-                + (aars > 0 ? " (dont " + aars + " AAR)" : ""));
+                + (aars > 0 ? " (dont " + aars + " AAR)" : "")
+                + (téléchargées.get() > 0
+                        ? ", " + téléchargées.get() + " téléchargée(s)"
+                        : ", cache complet"));
+    }
+
+    /**
+     * Adapte la progression des téléchargements en événements structurés vers la
+     * coquille — chaque fichier vu passer, jamais de silence réseau long.
+     */
+    private static ProgressionTéléchargement progressionVersÉvénements(
+            TaskContext context, AtomicLong téléchargées) {
+        String buildId = context.buildId();
+        Consumer<BuildEvent.DownloadEvent> puits = context.téléchargements();
+        return new ProgressionTéléchargement() {
+            @Override
+            public void début(String ressource, long totalAttendu) {
+                puits.accept(new BuildEvent.DownloadEvent(buildId,
+                        System.currentTimeMillis(), ressource, 0, totalAttendu, false));
+            }
+
+            @Override
+            public void avance(long lus, long total) {
+                puits.accept(new BuildEvent.DownloadEvent(buildId,
+                        System.currentTimeMillis(), "", lus, total, false));
+            }
+
+            @Override
+            public void fin(String ressource, long octets) {
+                téléchargées.incrementAndGet();
+                puits.accept(new BuildEvent.DownloadEvent(buildId,
+                        System.currentTimeMillis(), ressource, octets, octets, true));
+            }
+        };
     }
 
     /**

@@ -1,6 +1,7 @@
 package jo.forge.engine.deps;
 
 import jo.forge.engine.model.DependencyScope;
+import jo.forge.engine.tasks.TaskCancelledException;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -14,7 +15,9 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
+import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 /**
@@ -53,6 +56,16 @@ import java.util.function.Consumer;
  * <p>Marche séquentielle en v1 (la référence parallélise par vagues — optimisation
  * future consignée) ; les choix de versions convergent en au plus deux passes
  * (re-marche forcée si la médiation change une version développée).</p>
+ *
+ * <p><b>Cache de résolution</b> (v0.2.21, décision D-13) : {@code resolve(module, …)}
+ * consulte d'abord le résultat mémorisé ({@link ResolutionResultCache}) — une
+ * résolution déjà faite, aux entrées identiques et artefacts toujours en cache, se
+ * relit SANS marche ni réseau ; le résultat d'une marche complète y est mémorisé.
+ * Les racines {@code -SNAPSHOT} contournent ce cache (versions volatiles).</p>
+ *
+ * <p><b>Annulation et progression</b> (v0.2.21) : un fournisseur d'annulation coupe
+ * la marche et les téléchargements ({@link TaskCancelledException}) ; un observateur
+ * ({@link ProgressionTéléchargement}) reçoit chaque transfert au fil de l'eau.</p>
  */
 public final class DependencyResolver {
 
@@ -72,6 +85,12 @@ public final class DependencyResolver {
     private final Consumer<String> avertissements;
     private final boolean cibleAndroid;
     private final int apiCible;
+    private final ResolutionResultCache cacheRésolution;
+    private final BooleanSupplier annulation;
+    private final ProgressionTéléchargement progression;
+
+    /** La dernière résolution a-t-elle été relue du cache (sans marche ni réseau) ? */
+    private boolean dernièreDepuisCache;
 
     /** Une dépendance racine demandée par un module. */
     public record RootDependency(Coordinate coordinate, DependencyScope scope) {
@@ -147,6 +166,32 @@ public final class DependencyResolver {
     public DependencyResolver(List<String> dépôts, ResolverCache cache, boolean horsLigne,
                                Consumer<String> avertissements, boolean cibleAndroid,
                                int apiCible) {
+        this(dépôts, cache, horsLigne, avertissements, cibleAndroid, apiCible,
+                null, null, null);
+    }
+
+    /**
+     * Crée le résolveur complet pour la cible d'un module.
+     *
+     * @param dépôts          URLs des dépôts (HTTPS exigé, boucle locale tolérée).
+     * @param cache           cache persistant (réplique Maven, hors ligne).
+     * @param horsLigne       aucun accès réseau : cache seul, échec clair sinon.
+     * @param avertissements  consommateur d'avertissements.
+     * @param cibleAndroid    module Android : les métadonnées Gradle sélectionnent
+     *                        les variantes {@code -android} (sinon {@code -jvm}).
+     * @param apiCible        niveau d'API de compilation du module (borne
+     *                        {@code minCompileSdk} des AAR ; négatif : sans borne).
+     * @param cacheRésolution cache du résultat de résolution par module (null :
+     *                        désactivé — tests et usages outils).
+     * @param annulation      fournisseur d'annulation (null : jamais annulé) ; testé
+     *                        à chaque nœud de la marche et à chaque tampon réseau.
+     * @param progression     observateur des téléchargements (null : silencieux).
+     */
+    public DependencyResolver(List<String> dépôts, ResolverCache cache, boolean horsLigne,
+                               Consumer<String> avertissements, boolean cibleAndroid,
+                               int apiCible, ResolutionResultCache cacheRésolution,
+                               BooleanSupplier annulation,
+                               ProgressionTéléchargement progression) {
         this.dépôts = dépôts.stream()
                 .map(dépôt -> dépôt.endsWith("/") && dépôt.length() > 1
                         ? dépôt.substring(0, dépôt.length() - 1) : dépôt)
@@ -156,7 +201,12 @@ public final class DependencyResolver {
         this.avertissements = avertissements == null ? message -> { } : avertissements;
         this.cibleAndroid = cibleAndroid;
         this.apiCible = apiCible;
-        this.transport = new HttpTransport(this.avertissements);
+        this.cacheRésolution = cacheRésolution;
+        this.annulation = annulation;
+        this.progression = progression == null
+                ? new ProgressionTéléchargement() { } : progression;
+        this.transport = new HttpTransport(this.avertissements, annulation,
+                this.progression);
         this.dépôts.forEach(HttpTransport::vérifierUrlDépôt);
         if (this.dépôts.isEmpty()) {
             throw new ResolverException(
@@ -165,7 +215,8 @@ public final class DependencyResolver {
     }
 
     /**
-     * Résout les dépendances d'un module et télécharge les jars retenus.
+     * Résout les dépendances d'un module et télécharge les jars retenus (sans cache
+     * de résolution — usages outils et tests).
      *
      * @param racines dépendances directes du module (coordonnée + portée Forge).
      * @param politique médiation de versions.
@@ -175,6 +226,115 @@ public final class DependencyResolver {
      *                           diagnostic actionnable).
      */
     public Result resolve(List<RootDependency> racines, ConflictPolicy politique) {
+        return resolve(null, racines, politique);
+    }
+
+    /**
+     * Résout les dépendances d'un module, avec cache de résolution : une résolution
+     * aux entrées identiques, dont tous les artefacts restent en cache, se relit
+     * SANS marche ni réseau (décision D-13) ; sinon la marche s'exécute et son
+     * résultat est mémorisé pour la prochaine fois.
+     *
+     * @param module    nom du module (clé du cache de résolution ; null : pas de
+     *                  cache).
+     * @param racines   dépendances directes du module (coordonnée + portée Forge).
+     * @param politique médiation de versions.
+     * @return les classpaths de compilation et d'exécution, ordonnés, sans doublon.
+     * @throws ResolverException     si une dépendance est introuvable, si un conflit
+     *                               est refusé, ou si une borne est dépassée.
+     * @throws TaskCancelledException si l'annulation est demandée pendant la marche
+     *                               ou un téléchargement.
+     */
+    public Result resolve(String module, List<RootDependency> racines,
+                          ConflictPolicy politique) {
+        dernièreDepuisCache = false;
+        String empreinte = null;
+        if (module != null && cacheRésolution != null
+                && ResolutionResultCache.mémorisable(racines)) {
+            empreinte = ResolutionResultCache.empreinte(racines, dépôts, cibleAndroid,
+                    apiCible, politique);
+            Optional<ResolutionResultCache.Mémoire> mémoire =
+                    cacheRésolution.lire(module, empreinte);
+            if (mémoire.isPresent() && artefactsPrésents(mémoire.get())) {
+                try {
+                    Result relue = relire(mémoire.get());
+                    dernièreDepuisCache = true;
+                    return relue;
+                } catch (ResolverException rejouée) {
+                    // Relecture impossible (AAR corrompu entre-temps…) : la marche
+                    // reprend la main — un cache défaillant ne bloque jamais.
+                }
+            }
+        }
+        Result résultat = résoudreParLaMarche(racines, politique);
+        if (empreinte != null) {
+            cacheRésolution.écrire(module, empreinte,
+                    mémoriser(résultat.compileClasspath()),
+                    mémoriser(résultat.runtimeClasspath()));
+        }
+        return résultat;
+    }
+
+    /**
+     * La dernière résolution a-t-elle été relue du cache (sans marche ni réseau) ?
+     *
+     * @return {@code true} si le cache de résolution a répondu.
+     */
+    public boolean dernièreDepuisCache() {
+        return dernièreDepuisCache;
+    }
+
+    /**
+     * Tous les artefacts d'un résultat mémorisé existent-ils toujours en cache ?
+     * Une coordonnée peut figurer dans les DEUX classpaths (compile et runtime) :
+     * le dédoublonnage n'est qu'une optimisation, jamais un échec.
+     */
+    private boolean artefactsPrésents(ResolutionResultCache.Mémoire mémoire) {
+        Set<Coordinate> vérifiés = new HashSet<>();
+        for (ResolutionResultCache.EntréeMémorisée entrée : mémoire.compile()) {
+            if (vérifiés.add(entrée.coordinate())
+                    && !cache.aArtefact(entrée.coordinate(),
+                    "." + entrée.packaging())) {
+                return false;
+            }
+        }
+        for (ResolutionResultCache.EntréeMémorisée entrée : mémoire.runtime()) {
+            if (vérifiés.add(entrée.coordinate())
+                    && !cache.aArtefact(entrée.coordinate(),
+                    "." + entrée.packaging())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Rejoue un résultat mémorisé : artefacts déjà en cache, explosion AAR au besoin. */
+    private Result relire(ResolutionResultCache.Mémoire mémoire) {
+        List<ResolvedJar> compilation = new ArrayList<>();
+        for (ResolutionResultCache.EntréeMémorisée entrée : mémoire.compile()) {
+            compilation.add(acheverArtefact(entrée.coordinate(), entrée.packaging()));
+        }
+        List<ResolvedJar> exécution = new ArrayList<>();
+        for (ResolutionResultCache.EntréeMémorisée entrée : mémoire.runtime()) {
+            exécution.add(acheverArtefact(entrée.coordinate(), entrée.packaging()));
+        }
+        return new Result(compilation, exécution);
+    }
+
+    /** Mémorise un classpath résolu (coordonnée finale + empaquetage). */
+    private static List<ResolutionResultCache.EntréeMémorisée> mémoriser(
+            List<ResolvedJar> classpath) {
+        List<ResolutionResultCache.EntréeMémorisée> entrées = new ArrayList<>();
+        for (ResolvedJar jar : classpath) {
+            entrées.add(new ResolutionResultCache.EntréeMémorisée(
+                    jar.coordinate(), jar.packaging()));
+        }
+        return entrées;
+    }
+
+    /** La marche complète : médiation, fermetures, téléchargement des retenus. */
+    private Result résoudreParLaMarche(List<RootDependency> racines,
+                                       ConflictPolicy politique) {
         Map<Coordinate, PomEffectif> poms = new HashMap<>();
         Map<Gav, Set<String>> versionsDemandées = new LinkedHashMap<>();
         Map<Gav, List<List<String>>> chemins = new LinkedHashMap<>();
@@ -292,6 +452,18 @@ public final class DependencyResolver {
         return new Result(jarsCompilation, jarsExécution);
     }
 
+    /** Lève l'annulation coopérative (jamais une erreur de build). */
+    private void vérifierAnnulation() {
+        if (annulation != null && annulation.getAsBoolean()) {
+            throw new TaskCancelledException("résolution annulée");
+        }
+    }
+
+    /** Traduit une annulation de transport en annulation de tâche. */
+    private static TaskCancelledException annulé(HttpTransport.Annulée annulée) {
+        return new TaskCancelledException(annulée.getMessage());
+    }
+
     /** Résultat interne d'une passe de marche. */
     private record Marche(Map<Gav, String> développées, Map<Gav, Coordinate> finales,
                           Map<Gav, Gav> familles) {
@@ -339,6 +511,7 @@ public final class DependencyResolver {
         int nœuds = 0;
         Set<Coordinate> vus = new HashSet<>();
         while (!file.isEmpty()) {
+            vérifierAnnulation();
             Demande demande = file.poll();
             Coordinate coordonnée = demande.coordonnée();
             if (!vus.add(coordonnée)) {
@@ -584,6 +757,8 @@ public final class DependencyResolver {
                 return lireModule(cache.cheminModule(coordonnée));
             } catch (HttpTransport.Introuvable introuvable) {
                 cache.marquerIntrouvable(coordonnée, "module");
+            } catch (HttpTransport.Annulée annulée) {
+                throw annulé(annulée);
             } catch (IOException e) {
                 avertissements.accept(url + " : " + e.getMessage());
             }
@@ -835,6 +1010,8 @@ public final class DependencyResolver {
                 } catch (HttpTransport.Introuvable introuvable) {
                     cache.marquerIntrouvable(coordonnée, packaging);
                     erreurs.append(introuvable.getMessage()).append(" ; ");
+                } catch (HttpTransport.Annulée annulée) {
+                    throw annulé(annulée);
                 } catch (IOException e) {
                     erreurs.append(url).append(" : ").append(e.getMessage())
                             .append(" ; ");
@@ -1016,6 +1193,8 @@ public final class DependencyResolver {
             } catch (HttpTransport.Introuvable introuvable) {
                 cache.marquerIntrouvable(coordonnée, "pom");
                 erreurs.append(introuvable.getMessage()).append(" ; ");
+            } catch (HttpTransport.Annulée annulée) {
+                throw annulé(annulée);
             } catch (ResolverException invalide) {
                 // Le dépôt a RÉPONDU (téléchargement et somme vérifiés) mais le
                 // contenu est rejeté : effacer le fichier du cache et le DIRE.

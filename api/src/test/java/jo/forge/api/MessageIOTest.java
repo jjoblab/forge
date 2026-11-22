@@ -92,13 +92,27 @@ class MessageIOTest {
                     12, 3, "javac:err", "symbole introuvable", "compilateur-java"),
             new BuildEvent.TaskStateEvent("b1", 3, "app:compile",
                     BuildEvent.TaskState.UP_TO_DATE, 45),
+            new BuildEvent.TaskStateEvent("b1", 6, "app:resolveDependencies",
+                    BuildEvent.TaskState.FROM_CACHE, 12),
             new BuildEvent.ProgressEvent("b1", 4, 10, 6),
             new BuildEvent.BuildFinished("b1", 5, false, "app:compile", 1_234, "échec"),
+            new BuildEvent.DownloadEvent("b1", 7, "ui-android-1.7.1.aar", 0, 4_000_000, false),
+            new BuildEvent.DownloadEvent("b1", 8, "ui-android-1.7.1.aar", 4_000_000,
+                    4_000_000, true),
+            new BuildEvent.DownloadEvent("b1", 9, "pom-inconnu.xml", 512, -1, false),
         };
         for (BuildEvent evenement : evenements) {
             assertEquals(evenement, roundTrip(evenement, MessageIO::writeBuildEvent,
                     MessageIO::readBuildEvent));
         }
+    }
+
+    @Test
+    void etatFromCacheEtEvenementTéléchargementOntLeursCodesFiliaires() {
+        assertEquals(6, BuildEvent.TaskState.FROM_CACHE.wireCode());
+        assertEquals(BuildEvent.TaskState.FROM_CACHE,
+                BuildEvent.TaskState.fromWire(6));
+        assertThrows(ProtocolException.class, () -> BuildEvent.TaskState.fromWire(99));
     }
 
     @Test

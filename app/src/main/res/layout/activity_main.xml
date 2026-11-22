@@ -180,6 +180,13 @@
                 android:text="@string/action_build" />
 
             <Button
+                android:id="@+id/action_sync"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:text="@string/action_sync" />
+
+            <Button
                 android:id="@+id/action_cancel_build"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -213,6 +220,16 @@
             android:layout_marginTop="8dp"
             android:textAppearance="@android:style/TextAppearance.Material.Body1"
             android:textStyle="bold" />
+
+        <!-- Verbosité du journal : essentiel (tâches et verdict), détaillé
+             (+ téléchargements), tout (+ débogage) — le modèle des consoles
+             de build classiques. Le texte est posé en code (chaîne formatée). -->
+        <Button
+            android:id="@+id/action_log_verbosity"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:minHeight="36dp" />
 
         <TextView
             android:id="@+id/build_log"

@@ -48,7 +48,12 @@ public enum FrameType {
     PROTOCOL_ERROR(13),
 
     /** Erreur interne du moteur non liée à un build (le moteur reste vivant). */
-    INTERNAL_ERROR(14);
+    INTERNAL_ERROR(14),
+
+    /** Demande d'un sync : résolution des dépendances et modèle, sans compilation
+     *  (protocole 2 ; la charge utile est une requête de build, la réponse un flux
+     *  d'événements terminé par {@code BuildFinished}). */
+    SYNC_BUILD(15);
 
     private final int wireCode;
 

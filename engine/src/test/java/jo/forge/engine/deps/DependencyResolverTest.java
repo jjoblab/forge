@@ -11,6 +11,7 @@ import java.util.ArrayList;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -743,5 +744,168 @@ class DependencyResolverTest {
                 () -> DependencyResolver.versionExacte("[1.0,2.0)"));
         assertTrue(refus.getMessage().contains("[1.0,2.0)"),
                 "une vraie plage est refusée nommément : " + refus.getMessage());
+    }
+
+    // --- Cache de résolution, annulation, progression (v0.2.21) ---------------------------
+
+    /** Résolveur complet : cache de résolution + annulation + progression branchés. */
+    private DependencyResolver résolveurComplet(DépôtLocal dépôt, boolean horsLigne,
+                                                List<String> avertissements,
+                                                java.util.function.BooleanSupplier annulation,
+                                                ProgressionTéléchargement progression) {
+        return new DependencyResolver(List.of(dépôt.url()),
+                new ResolverCache(temporaire.resolve("cache")), horsLigne,
+                avertissements::add, false, -1,
+                new ResolutionResultCache(temporaire.resolve("résolutions")),
+                annulation, progression);
+    }
+
+    /** Une progression qui enregistre tout (les téléchargements vus passer). */
+    private static final class ProgressionEnregistrée implements ProgressionTéléchargement {
+
+        final List<String> événements = new ArrayList<>();
+        int finies;
+
+        @Override
+        public void début(String ressource, long totalAttendu) {
+            événements.add("début " + ressource + " total=" + totalAttendu);
+        }
+
+        @Override
+        public void fin(String ressource, long octets) {
+            finies++;
+            événements.add("fin " + ressource + " octets=" + octets);
+        }
+    }
+
+    @Test
+    void cacheDeRésolutionReluSansMarcheSansRéseau() throws Exception {
+        try (DépôtLocal dépôt = DépôtLocal.démarrer()) {
+            Coordinate a = new Coordinate("demo", "lib-a", "1.0");
+            Coordinate b = new Coordinate("demo", "lib-b", "1.0");
+            publier(dépôt, a, pom("demo", "lib-a", "1.0",
+                    deps(dépendance("demo", "lib-b", "1.0", null))));
+            publier(dépôt, b, pom("demo", "lib-b", "1.0"));
+
+            // Premier passage : marche complète, téléchargements visibles.
+            ProgressionEnregistrée première = new ProgressionEnregistrée();
+            DependencyResolver.Result premier = résolveurComplet(dépôt, false,
+                    new ArrayList<>(), null, première)
+                    .resolve("app", List.of(new DependencyResolver.RootDependency(
+                            a, DependencyScope.API)), ConflictPolicy.NEWEST);
+            assertFalse(premier.compileClasspath().isEmpty());
+            assertTrue(première.finies > 0, "la première résolution télécharge");
+
+            // Second passage, dépôt ARRÊTÉ : seule la relecture du cache de
+            // résolution peut répondre — zéro marche, zéro réseau.
+            ProgressionEnregistrée seconde = new ProgressionEnregistrée();
+            DependencyResolver résolveur = résolveurComplet(dépôt, true,
+                    new ArrayList<>(), null, seconde);
+            DependencyResolver.Result relu = résolveur.resolve("app",
+                    List.of(new DependencyResolver.RootDependency(
+                            a, DependencyScope.API)), ConflictPolicy.NEWEST);
+            assertTrue(résolveur.dernièreDepuisCache(),
+                    "le résultat vient du cache de résolution, pas de la marche");
+            assertEquals(
+                    premier.compileClasspath().stream()
+                            .map(jar -> jar.coordinate().toString()).toList(),
+                    relu.compileClasspath().stream()
+                            .map(jar -> jar.coordinate().toString()).toList(),
+                    "même classpath que la marche complète");
+            assertEquals(0, seconde.finies,
+                    "aucun téléchargement pendant la relecture");
+        }
+    }
+
+    @Test
+    void cacheDeRésolutionInvalideAuxEntréesDifférentes() throws Exception {
+        try (DépôtLocal dépôt = DépôtLocal.démarrer()) {
+            Coordinate a = new Coordinate("demo", "lib-a", "1.0");
+            Coordinate b = new Coordinate("demo", "lib-b", "1.0");
+            publier(dépôt, a, pom("demo", "lib-a", "1.0"));
+            publier(dépôt, b, pom("demo", "lib-b", "1.0"));
+
+            List<DependencyResolver.RootDependency> racineSeule = List.of(
+                    new DependencyResolver.RootDependency(a, DependencyScope.API));
+            résolveurComplet(dépôt, false, new ArrayList<>(), null,
+                    new ProgressionEnregistrée())
+                    .resolve("app", racineSeule, ConflictPolicy.NEWEST);
+
+            // Ajout d'une racine : l'empreinte change, la marche REPART.
+            DependencyResolver résolveur = résolveurComplet(dépôt, false,
+                    new ArrayList<>(), null, new ProgressionEnregistrée());
+            DependencyResolver.Result résultat = résolveur.resolve("app",
+                    List.of(new DependencyResolver.RootDependency(a, DependencyScope.API),
+                            new DependencyResolver.RootDependency(b, DependencyScope.API)),
+                    ConflictPolicy.NEWEST);
+            assertFalse(résolveur.dernièreDepuisCache(),
+                    "des entrées différentes re-marchent");
+            assertEquals(2, résultat.compileClasspath().size());
+        }
+    }
+
+    @Test
+    void annulationAvantLaRésolutionEstPropre() throws Exception {
+        try (DépôtLocal dépôt = DépôtLocal.démarrer()) {
+            Coordinate a = new Coordinate("demo", "lib-a", "1.0");
+            publier(dépôt, a, pom("demo", "lib-a", "1.0"));
+
+            DependencyResolver résolveur = résolveurComplet(dépôt, false,
+                    new ArrayList<>(), () -> true, new ProgressionEnregistrée());
+            assertThrows(jo.forge.engine.tasks.TaskCancelledException.class,
+                    () -> résolveur.resolve("app",
+                            List.of(new DependencyResolver.RootDependency(
+                                    a, DependencyScope.API)),
+                            ConflictPolicy.NEWEST),
+                    "l'annulation déjà posée coupe avant toute marche");
+        }
+    }
+
+    @Test
+    void annulationPendantUnTéléchargementCoupeLeTransfert() throws Exception {
+        try (DépôtLocal dépôt = DépôtLocal.démarrer()) {
+            Coordinate a = new Coordinate("demo", "lib-a", "1.0");
+            Coordinate b = new Coordinate("demo", "lib-b", "1.0");
+            publier(dépôt, a, pom("demo", "lib-a", "1.0",
+                    deps(dépendance("demo", "lib-b", "1.0", null))));
+            publier(dépôt, b, pom("demo", "lib-b", "1.0"));
+
+            // L'annulation se pose au PREMIER octet téléchargé : le transfert en
+            // cours doit être coupé au tampon suivant, pas attendre son délai.
+            java.util.concurrent.atomic.AtomicBoolean annulé =
+                    new java.util.concurrent.atomic.AtomicBoolean(false);
+            ProgressionTéléchargement sablier = new ProgressionTéléchargement() {
+                @Override
+                public void début(String ressource, long totalAttendu) {
+                    annulé.set(true);
+                }
+            };
+            DependencyResolver résolveur = résolveurComplet(dépôt, false,
+                    new ArrayList<>(), annulé::get, sablier);
+            assertThrows(jo.forge.engine.tasks.TaskCancelledException.class,
+                    () -> résolveur.resolve("app",
+                            List.of(new DependencyResolver.RootDependency(
+                                    a, DependencyScope.API)), ConflictPolicy.NEWEST),
+                    "un téléchargement annulé coupe la résolution, pas le build entier");
+        }
+    }
+
+    @Test
+    void progressionVoitChaqueFichierPasser() throws Exception {
+        try (DépôtLocal dépôt = DépôtLocal.démarrer()) {
+            Coordinate a = new Coordinate("demo", "lib-a", "1.0");
+            publier(dépôt, a, pom("demo", "lib-a", "1.0"));
+
+            ProgressionEnregistrée progression = new ProgressionEnregistrée();
+            résolveurComplet(dépôt, false, new ArrayList<>(), null, progression)
+                    .resolve("app", List.of(new DependencyResolver.RootDependency(
+                            a, DependencyScope.API)), ConflictPolicy.NEWEST);
+
+            assertTrue(progression.événements.stream().anyMatch(e -> e.startsWith("début ")),
+                    "chaque téléchargement commence visible : " + progression.événements);
+            assertTrue(progression.finies >= 2,
+                    "POM et jar vus finir (au moins 2 fichiers) : "
+                            + progression.événements);
+        }
     }
 }

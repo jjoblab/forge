@@ -74,13 +74,29 @@ public class MainActivity extends Activity {
     private EditText cheminProjet;
     private Button boutonImporterExemples;
     private Button construireButton;
+    private Button synchroniserButton;
     private Button annulerButton;
     private Button installerButton;
+    private Button boutonVerbosité;
     private Button boutonCopierJournaux;
     private Button boutonPartagerJournaux;
     private ProgressBar progression;
     private TextView journalBuild;
     private TextView résuméBuild;
+
+    /**
+     * Verbosité du journal de build — le modèle des consoles de build classiques :
+     * essentiel (lignes de tâches, avertissements, verdict), détaillé (+ informations
+     * et téléchargements), tout (+ débogage).
+     */
+    private enum Verbosité {
+        ESSENTIEL, DÉTAILLÉ, TOUT
+    }
+
+    private Verbosité verbosité = Verbosité.ESSENTIEL;
+
+    /** Fichier en cours de téléchargement (ligne vivante du résumé). */
+    private String téléchargementCourant = "";
 
     /** Manifeste du canal vérifié (null tant que rien n'a été chargé). */
     private EngineManifest manifesteCanal;
@@ -133,14 +149,17 @@ public class MainActivity extends Activity {
         cheminProjet = findViewById(R.id.build_project_path);
         boutonImporterExemples = findViewById(R.id.action_import_examples);
         construireButton = findViewById(R.id.action_build);
+        synchroniserButton = findViewById(R.id.action_sync);
         annulerButton = findViewById(R.id.action_cancel_build);
         installerButton = findViewById(R.id.action_install_apk);
+        boutonVerbosité = findViewById(R.id.action_log_verbosity);
         progression = findViewById(R.id.build_progress);
         journalBuild = findViewById(R.id.build_log);
         résuméBuild = findViewById(R.id.build_summary);
         boutonCopierJournaux = findViewById(R.id.action_copy_logs);
         boutonPartagerJournaux = findViewById(R.id.action_share_logs);
         journalBuild.setMovementMethod(new ScrollingMovementMethod());
+        mettreÀJourBoutonVerbosité();
 
         canalUrl.setText(getString(R.string.install_channel_default));
 
@@ -152,12 +171,47 @@ public class MainActivity extends Activity {
         boutonInstaller.setOnClickListener(vue -> installerMoteur());
         boutonAnnulerInstall.setOnClickListener(vue -> annulerInstallation());
         boutonDésinstaller.setOnClickListener(vue -> confirmerDésinstallation());
-        construireButton.setOnClickListener(vue -> lancerBuild());
+        construireButton.setOnClickListener(vue -> lancerBuild(false));
+        synchroniserButton.setOnClickListener(vue -> lancerBuild(true));
         boutonImporterExemples.setOnClickListener(vue -> importerExemples());
         annulerButton.setOnClickListener(vue -> annulerBuild());
         installerButton.setOnClickListener(vue -> installerDernierApk());
         boutonCopierJournaux.setOnClickListener(vue -> copierJournaux());
         boutonPartagerJournaux.setOnClickListener(vue -> partagerJournaux());
+        boutonVerbosité.setOnClickListener(vue -> {
+            verbosité = switch (verbosité) {
+                case ESSENTIEL -> Verbosité.DÉTAILLÉ;
+                case DÉTAILLÉ -> Verbosité.TOUT;
+                case TOUT -> Verbosité.ESSENTIEL;
+            };
+            mettreÀJourBoutonVerbosité();
+        });
+    }
+
+    /** Texte du bouton de verbosité selon le niveau courant. */
+    private void mettreÀJourBoutonVerbosité() {
+        int identifiant = switch (verbosité) {
+            case ESSENTIEL -> R.string.verbosity_essential;
+            case DÉTAILLÉ -> R.string.verbosity_detailed;
+            case TOUT -> R.string.verbosity_everything;
+        };
+        boutonVerbosité.setText(getString(R.string.action_log_verbosity,
+                getString(identifiant)));
+    }
+
+    /**
+     * Un niveau de journal est-il affiché à la verbosité courante ?
+     *
+     * @param niveau le niveau de l'entrée.
+     * @return {@code true} si l'entrée doit figurer au journal.
+     */
+    private boolean niveauAffiché(BuildEvent.LogEvent.LogLevel niveau) {
+        return switch (verbosité) {
+            case ESSENTIEL -> niveau == BuildEvent.LogEvent.LogLevel.WARN
+                    || niveau == BuildEvent.LogEvent.LogLevel.ERROR;
+            case DÉTAILLÉ -> niveau != BuildEvent.LogEvent.LogLevel.DEBUG;
+            case TOUT -> true;
+        };
     }
 
     @Override
@@ -183,6 +237,7 @@ public class MainActivity extends Activity {
 
         boolean moteurDisponible = installe != null;
         construireButton.setEnabled(moteurDisponible);
+        synchroniserButton.setEnabled(moteurDisponible);
         boutonDésinstaller.setVisibility(moteurDisponible
                 ? android.view.View.VISIBLE : android.view.View.GONE);
         boutonInstaller.setText(moteurDisponible
@@ -531,12 +586,14 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Lance le build du projet indiqué dans le moteur installé (processus séparé) et
-     * affiche le flux d'événements au fil de l'eau. Le moteur du build précédent est
-     * arrêté d'abord : un moteur oisif par build finirait par épuiser la mémoire de
-     * l'appareil et attirer le tueur de processus au pire moment.
+     * Lance le build (ou le sync : résolution des dépendances seule, protocole 2) du
+     * projet indiqué dans le moteur installé (processus séparé) et affiche le flux
+     * d'événements au fil de l'eau. Le moteur du build précédent est arrêté d'abord :
+     * un moteur oisif par build finirait par épuiser la mémoire de l'appareil et
+     * attirer le tueur de processus au pire moment. Un moteur trop ancien refuse le
+     * sync proprement — le message l'explique, le canal reste utilisable.
      */
-    private void lancerBuild() {
+    private void lancerBuild(boolean sync) {
         String chemin = cheminProjet.getText().toString().trim();
         if (chemin.isEmpty()) {
             afficherRésumé(getString(R.string.build_error_no_path));
@@ -549,9 +606,11 @@ public class MainActivity extends Activity {
             return;
         }
         construireButton.setEnabled(false);
+        synchroniserButton.setEnabled(false);
         annulerButton.setEnabled(true);
         installerButton.setEnabled(false);
         journalBuild.setText("");
+        téléchargementCourant = "";
         progression.setIndeterminate(true);
         afficherRésumé(getString(R.string.build_starting));
 
@@ -580,17 +639,20 @@ public class MainActivity extends Activity {
                         mémoireTotaleMo() < 2500, journal::ajouter);
                 moteurCourant.set(moteur);
                 dernierClient.set(moteur);
-                String buildId = "app-" + System.currentTimeMillis();
+                String buildId = (sync ? "sync-" : "app-") + System.currentTimeMillis();
                 dernierBuildId = buildId;
                 BuildRequest requête = new BuildRequest(buildId, chemin,
                         new BuildOptions(2, false, false, false, mémoireTotaleMo(),
                                 abiPrincipale()));
-                BuildStarted démarré = moteur.startBuild(requête).get();
-                runOnUiThread(() -> afficherRésumé(
-                        getString(R.string.build_started, démarré.buildId())));
+                BuildStarted démarré = sync
+                        ? moteur.sync(requête).get()
+                        : moteur.startBuild(requête).get();
+                runOnUiThread(() -> afficherRésumé(sync
+                        ? getString(R.string.sync_started, démarré.buildId())
+                        : getString(R.string.build_started, démarré.buildId())));
             } catch (Exception echec) {
                 runOnUiThread(() -> {
-                    afficherRésumé(getString(R.string.build_error,
+                    afficherRésumé(getString(sync ? R.string.sync_error : R.string.build_error,
                             echec.getMessage() == null
                                     ? echec.getClass().getSimpleName()
                                     : echec.getMessage()));
@@ -706,20 +768,26 @@ public class MainActivity extends Activity {
     }
 
     /**
-     * Affiche un événement de build dans le journal ; à la fin, rétablit les boutons
-     * et propose l'installation si un APK a été produit, puis libère la VM du moteur
-     * (un build terminé n'a plus besoin d'un processus de 512 Mo qui traîne).
+     * Affiche un événement de build dans le journal — le format des consoles de build
+     * classiques : une ligne par tâche avec son issue (exécutée, À JOUR, DU CACHE,
+     * SAUTÉE), la progression des téléchargements dans le résumé, et un verdict final
+     * décompté. À la fin, rétablit les boutons et propose l'installation si un APK a
+     * été produit, puis libère la VM du moteur (un build terminé n'a plus besoin
+     * d'un processus de 512 Mo qui traîne).
      */
     private void afficherÉvénement(BuildEvent événement) {
         if (événement instanceof BuildEvent.LogEvent journal) {
-            ajouterLigne(journal.message());
+            if (niveauAffiché(journal.level())) {
+                ajouterLigne(journal.message());
+            }
         } else if (événement instanceof BuildEvent.DiagnosticEvent diagnostic) {
             ajouterLigne(getString(R.string.build_diagnostic_line,
                     diagnostic.file().isEmpty() ? "?" : diagnostic.file(),
                     diagnostic.line(), diagnostic.message()));
         } else if (événement instanceof BuildEvent.TaskStateEvent tâche) {
-            ajouterLigne(getString(R.string.build_task_line, tâche.taskName(),
-                    nomÉtat(tâche.state())));
+            afficherTâche(tâche);
+        } else if (événement instanceof BuildEvent.DownloadEvent téléchargement) {
+            afficherTéléchargement(téléchargement);
         } else if (événement instanceof BuildEvent.ProgressEvent progression) {
             this.progression.setIndeterminate(false);
             this.progression.setMax(Math.max(1, progression.tasksTotal()));
@@ -732,20 +800,80 @@ public class MainActivity extends Activity {
             // build pourtant réussi — le journal s'arrêtait à la dernière tâche et
             // le verdict ne vivait que dans le résumé, effacé par la réimportation
             // des exemples (qui supprime aussi les traces du projet).
-            ajouterLigne(fin.success()
-                    ? getString(R.string.build_finished_ok, fin.durationMs())
+            String verdict = fin.success()
+                    ? getString(R.string.build_finished_ok,
+                            Math.max(1, fin.durationMs() / 1000))
                     : getString(R.string.build_finished_ko,
                             fin.failedTask() == null ? "?" : fin.failedTask(),
-                            fin.message()));
-            afficherRésumé(fin.success()
-                    ? getString(R.string.build_finished_ok, fin.durationMs())
-                    : getString(R.string.build_finished_ko,
-                            fin.failedTask() == null ? "?" : fin.failedTask(),
-                            fin.message()));
+                            fin.message());
+            ajouterLigne(verdict);
+            ajouterLigne(fin.message());
+            afficherRésumé(verdict + " — " + fin.message());
             réinitialiserBoutons();
             installerButton.setEnabled(fin.success() && dernierApkConstruit() != null);
             exécuteur.submit(this::arrêterMoteurCourant);
         }
+    }
+
+    /**
+     * Ligne d'une tâche, à la manière des consoles de build classiques : une ligne
+     * par tâche à son issue (rien au démarrage, rien pour une tâche exécutée —
+     * l'absence de badge VEUT dire « travail fait »).
+     */
+    private void afficherTâche(BuildEvent.TaskStateEvent tâche) {
+        String badge = badgeÉtat(tâche.state());
+        if (tâche.state() == BuildEvent.TaskState.STARTED) {
+            return; // Comme les consoles classiques : rien au démarrage.
+        }
+        ajouterLigne(getString(R.string.build_task_line, tâche.taskName(),
+                badge.isEmpty() ? "" : " " + badge));
+    }
+
+    /**
+     * Un téléchargement : la ligne vivante du résumé suit le fichier en cours (nom,
+     * octets reçus sur total), et le journal (niveau détaillé) garde une ligne par
+     * fichier terminé — le silence réseau long n'existe plus.
+     */
+    private void afficherTéléchargement(BuildEvent.DownloadEvent téléchargement) {
+        if (téléchargement.done()) {
+            if (verbosité != Verbosité.ESSENTIEL) {
+                ajouterLigne(getString(R.string.download_finished_line,
+                        téléchargement.resource(), tailleLisible(
+                        téléchargement.bytesDownloaded())));
+            }
+            afficherRésumé(getString(R.string.build_in_progress));
+            return;
+        }
+        if (!téléchargement.resource().isEmpty()) {
+            téléchargementCourant = téléchargement.resource();
+        }
+        if (téléchargementCourant.isEmpty()) {
+            return;
+        }
+        if (téléchargement.bytesTotal() >= 0) {
+            afficherRésumé(getString(R.string.download_progress_line,
+                    téléchargementCourant,
+                    tailleLisible(téléchargement.bytesDownloaded()),
+                    tailleLisible(téléchargement.bytesTotal())));
+        } else {
+            afficherRésumé(getString(R.string.download_progress_line_unknown,
+                    téléchargementCourant,
+                    tailleLisible(téléchargement.bytesDownloaded())));
+        }
+    }
+
+    /**
+     * Badge d'issue d'une tâche (vide pour une tâche exécutée — comme les consoles
+     * classiques, l'absence de badge est l'information).
+     */
+    private String badgeÉtat(BuildEvent.TaskState état) {
+        return switch (état) {
+            case STARTED, SUCCEEDED -> "";
+            case FAILED -> getString(R.string.task_state_failed);
+            case SKIPPED -> getString(R.string.task_state_skipped);
+            case UP_TO_DATE -> getString(R.string.task_state_up_to_date);
+            case FROM_CACHE -> getString(R.string.task_state_from_cache);
+        };
     }
 
     /**
@@ -867,21 +995,8 @@ public class MainActivity extends Activity {
 
     private void réinitialiserBoutons() {
         construireButton.setEnabled(true);
+        synchroniserButton.setEnabled(true);
         annulerButton.setEnabled(false);
-    }
-
-    /**
-     * Nom affichable d'un état de tâche.
-     */
-    private String nomÉtat(BuildEvent.TaskState état) {
-        int identifiant = switch (état) {
-            case STARTED -> R.string.task_state_started;
-            case SUCCEEDED -> R.string.task_state_succeeded;
-            case FAILED -> R.string.task_state_failed;
-            case SKIPPED -> R.string.task_state_skipped;
-            case UP_TO_DATE -> R.string.task_state_up_to_date;
-        };
-        return getString(identifiant);
     }
 
     /**

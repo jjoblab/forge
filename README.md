@@ -173,6 +173,21 @@ vers le SDK comme d'habitude.
   d'Android (rapport `v0.2.13`) — corrigé `v0.2.14` : le composant porte l'API
   JSR-173 standalone, son implémentation aalto, la surface javax de chargement
   (Icon, Notification*) et les shims `SwingUtilities`/`jdk.jfr` headless.
+- [x] Cache de résolution, téléchargements visibles et annulables, console de build,
+  sync (`v0.2.21`) — second niveau de cache à la Gradle : le RÉSULTAT de résolution
+  par module est mémorisé (`.forge/résolutions/`, clé = racines + dépôts + cible +
+  médiation ; les racines `-SNAPSHOT` contournent) : une résolution aux entrées
+  identiques, artefacts toujours en cache, se relit SANS marche ni réseau — la tâche
+  est alors rapportée `FROM_CACHE`. Chaque transfert est visible au fil de l'eau
+  (événement `DownloadEvent`, avancement borné, ligne vivante dans la coquille) et
+  annulable au tampon près (testé à chaque nœud de la marche). Le journal suit les
+  conventions des consoles de build : une ligne par tâche avec son issue
+  (`> Tâche app:compileKotlin À JOUR`), bouton de verbosité (essentiel / détaillé /
+  tout) et verdict final décompté (« build réussi — 24 tâches : 5 exécutées,
+  12 à jour, 2 du cache, 5 sautées »). Nouvelle trame `SYNC_BUILD` (protocole 2) et
+  bouton *Synchroniser* : résolution des dépendances seule, sans compilation — un
+  build suivant voit la résolution à jour. Décisions D-13 à D-15 dans
+  `docs/conception.md`.
 - [ ] Vérification sur appareil réel (ART) — reste : installation PackageInstaller de
   l'APK produit, validation appareil du `compileKotlin` corrigé (`kotlin-simple`,
   puis `application-kotlin`) ; procédure dans `docs/limites-et-suite.md`.

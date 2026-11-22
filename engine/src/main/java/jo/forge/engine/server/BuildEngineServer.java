@@ -75,7 +75,8 @@ import java.util.concurrent.atomic.AtomicReference;
 public final class BuildEngineServer {
 
     /** Capacités annoncées dans la poignée de main. */
-    public static final List<String> CAPABILITIES = List.of("ping", "status", "build");
+    public static final List<String> CAPABILITIES = List.of("ping", "status", "build",
+            "sync");
 
     private static final long START_TIME = System.nanoTime();
 
@@ -84,6 +85,9 @@ public final class BuildEngineServer {
     private final ExecutorService buildExecutor;
     private final Map<String, BuildEnCours> runningBuilds = new ConcurrentHashMap<>();
     private final RédacteurCanal canal;
+
+    /** Version de protocole négociée à la poignée de main (1 avant négociation). */
+    private volatile int protocoleNégocié = ProtocolVersions.PROTOCOL_MIN;
 
     /** Répertoire du moteur installé (composants aapt2, plate-forme), ou null.
      * Transmit par la coquille via la variable d'environnement FORGE_ENGINE_DIR. */
@@ -162,6 +166,7 @@ public final class BuildEngineServer {
                                             + hello.protocolVersion()));
                     return false;
                 }
+                protocoleNégocié = hello.protocolVersion();
                 reply(frame, FrameType.CLIENT_HELLO, out -> MessageIO.writeClientHello(out,
                         new ClientHello(EngineVersion.CURRENT, hello.protocolVersion())));
             }
@@ -177,7 +182,18 @@ public final class BuildEngineServer {
                 reply(frame, FrameType.BUILD_STARTED, out ->
                         MessageIO.writeBuildStarted(out,
                                 new BuildStarted(request.buildId())));
-                startBuild(request);
+                startBuild(request, false);
+            }
+            case SYNC_BUILD -> {
+                // Sync : le sous-ensemble du graphe qui prépare tout SAUF la
+                // compilation — aujourd'hui la résolution des dépendances de chaque
+                // module (l'équivalent du sync du moteur de référence : résoudre,
+                // télécharger, poser le modèle — jamais compiler).
+                BuildRequest request = decode(frame, MessageIO::readBuildRequest);
+                reply(frame, FrameType.BUILD_STARTED, out ->
+                        MessageIO.writeBuildStarted(out,
+                                new BuildStarted(request.buildId())));
+                startBuild(request, true);
             }
             case CANCEL_BUILD -> {
                 CancelRequest cancel = decode(frame, MessageIO::readCancelRequest);
@@ -197,10 +213,10 @@ public final class BuildEngineServer {
     /**
      * Lance le build demandé (un seul build actif par identifiant).
      */
-    private void startBuild(BuildRequest request) {
+    private void startBuild(BuildRequest request, boolean sync) {
         runningBuilds.computeIfAbsent(request.buildId(), id -> {
             CancellationFlag cancellation = new CancellationFlag();
-            Future<?> future = buildExecutor.submit(() -> runBuild(request, cancellation));
+            Future<?> future = buildExecutor.submit(() -> runBuild(request, cancellation, sync));
             return new BuildEnCours(future, cancellation);
         });
     }
@@ -209,18 +225,30 @@ public final class BuildEngineServer {
      * Déroule un build complet : modèle, tâches, graphe, exécution — tout échec
      * devient un {@code BuildFinished} propre.
      */
-    private void runBuild(BuildRequest request, CancellationFlag cancellation) {
+    private void runBuild(BuildRequest request, CancellationFlag cancellation, boolean sync) {
         String buildId = request.buildId();
         long debut = System.currentTimeMillis();
         Path root = Path.of(request.projectRoot());
-        EvenementsVersTrames events = new EvenementsVersTrames(buildId, root);
+        EvenementsVersTrames events = new EvenementsVersTrames(buildId, root,
+                protocoleNégocié);
         try {
             events.log(BuildEvent.LogEvent.LogLevel.INFO,
-                    "build de " + request.projectRoot());
+                    (sync ? "sync de " : "build de ") + request.projectRoot());
 
             ForgeModel model = ModelCodec.read(root);
             List<jo.forge.engine.tasks.Task> tasks = JavaPipeline.tasksFor(model, root,
                     request.options().offline(), request.options().abi(), engineHome);
+            if (sync) {
+                tasks = tasks.stream()
+                        .filter(tâche -> tâche.name().endsWith(":resolveDependencies"))
+                        .toList();
+                if (tasks.isEmpty()) {
+                    throw new ModelException("Aucune dépendance Maven à synchroniser"
+                            + " dans ce projet");
+                }
+                events.log(BuildEvent.LogEvent.LogLevel.INFO,
+                        "sync : " + tasks.size() + " module(s) à résoudre");
+            }
             TaskGraph graph = TaskGraph.of(tasks);
             ProjectLayout layout = new ProjectLayout(root);
             FingerprintStore store = new FingerprintStore(layout.stateDir(), root,
@@ -307,6 +335,7 @@ public final class BuildEngineServer {
 
         private final String buildId;
         private final Path racineProjet;
+        private final int protocole;
         private final AtomicReference<String> premierEchec = new AtomicReference<>();
         private final JournalBorné journal = new JournalBorné(JournalBorné.CAPACITÉ_PAR_DÉFAUT);
         private final Map<String, BuildEvent.TaskStateEvent> étatsTâches =
@@ -314,9 +343,10 @@ public final class BuildEngineServer {
         private final Map<String, Long> diagnosticsParSévérité =
                 new java.util.concurrent.ConcurrentHashMap<>();
 
-        EvenementsVersTrames(String buildId, Path racineProjet) {
+        EvenementsVersTrames(String buildId, Path racineProjet, int protocole) {
             this.buildId = buildId;
             this.racineProjet = racineProjet;
+            this.protocole = protocole;
         }
 
         @Override
@@ -326,8 +356,16 @@ public final class BuildEngineServer {
 
         @Override
         public void taskState(BuildEvent.TaskStateEvent event) {
-            étatsTâches.put(event.taskName(), event);
-            event(BuildEvent.TaskStateEvent.class, event);
+            // Dégradation protocole 1 : FROM_CACHE n'existe pas pour une coquille
+            // ancienne — SUCCEEDED dit la même chose à son vocabulaire.
+            BuildEvent.TaskStateEvent émis = event.state() == BuildEvent.TaskState.FROM_CACHE
+                    && protocole < 2
+                    ? new BuildEvent.TaskStateEvent(event.buildId(), event.timestamp(),
+                            event.taskName(), BuildEvent.TaskState.SUCCEEDED,
+                            event.durationMs())
+                    : event;
+            étatsTâches.put(event.taskName(), émis);
+            event(BuildEvent.TaskStateEvent.class, émis);
         }
 
         @Override
@@ -342,6 +380,30 @@ public final class BuildEngineServer {
         public void progress(int total, int done) {
             event(BuildEvent.ProgressEvent.class, new BuildEvent.ProgressEvent(buildId,
                     System.currentTimeMillis(), total, done));
+        }
+
+        @Override
+        public void téléchargement(BuildEvent.DownloadEvent événement) {
+            if (protocole >= 2) {
+                event(BuildEvent.DownloadEvent.class, événement);
+                return;
+            }
+            // Dégradation protocole 1 : pas d'événement structuré de téléchargement —
+            // le journal porte le début et la fin de chaque fichier (le moteur de
+            // référence affiche « Downloading … » en INFO, jamais plus finement).
+            if (événement.done()) {
+                journalEtTrame(BuildEvent.LogEvent.LogLevel.INFO,
+                        "téléchargé : " + événement.resource() + " ("
+                                + événement.bytesDownloaded() / 1024 + " Kio)");
+            }
+        }
+
+        /** Journalise ET émet une entrée de journal (réduction des secrets appliquée). */
+        private void journalEtTrame(BuildEvent.LogEvent.LogLevel niveau, String message) {
+            String nettoyé = jo.forge.engine.diag.SecretRedactor.rédiger(message);
+            journal.ajouter(niveau + " " + nettoyé);
+            event(BuildEvent.LogEvent.class, new BuildEvent.LogEvent(buildId,
+                    System.currentTimeMillis(), niveau, nettoyé));
         }
 
         @Override

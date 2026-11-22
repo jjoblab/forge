@@ -355,4 +355,90 @@ class TaskExecutorTest {
         assertEquals(BuildEvent.TaskState.UP_TO_DATE, journal.etatDe("y").state());
         assertTrue(journal.journaux.stream().noneMatch(l -> l.contains("ERROR")));
     }
+
+    @Test
+    @Timeout(30)
+    void tacheMarquéeDepuisCacheRapporteFromCacheEtLeRésuméCompte() {
+        // Oracle : SEULE la tâche « à-jour » est à jour.
+        UpToDateOracle sélectif = new UpToDateOracle() {
+            @Override
+            public boolean isUpToDate(Task task) {
+                return "à-jour".equals(task.name());
+            }
+
+            @Override
+            public void recordSuccess(Task task) {
+            }
+        };
+        Journal journal = new Journal("b-cache");
+        TaskExecutor executeur = new TaskExecutor(TaskGraph.of(List.of(
+                new TacheDepuisCache("du-cache"),
+                new TacheTest("exécutée", List.of(), () -> { }),
+                new TacheTest("à-jour", List.of(), () -> { }))),
+                journal, new CancellationFlag(), sélectif, 2);
+        TaskExecutor.BuildResult vraiRésultat = executeur.execute();
+
+        assertTrue(vraiRésultat.success());
+        assertEquals(BuildEvent.TaskState.FROM_CACHE, journal.etatDe("du-cache").state(),
+                "une tâche qui marque son contexte « depuis cache » est FROM_CACHE");
+        assertEquals(BuildEvent.TaskState.SUCCEEDED, journal.etatDe("exécutée").state());
+        assertEquals(BuildEvent.TaskState.UP_TO_DATE, journal.etatDe("à-jour").state());
+        assertTrue(journal.fin.message().contains("1 exécutée"),
+                "le résumé compte les exécutées : " + journal.fin.message());
+        assertTrue(journal.fin.message().contains("1 à jour"),
+                "le résumé compte les à jour : " + journal.fin.message());
+        assertTrue(journal.fin.message().contains("1 du cache"),
+                "le résumé compte les relues du cache : " + journal.fin.message());
+        assertTrue(journal.fin.message().contains("— 3 tâches"),
+                "les sautées n'entrent pas dans les actionnables : "
+                        + journal.fin.message());
+    }
+
+    @Test
+    @Timeout(30)
+    void résuméCompteLesSautéesCommeNonActionnables() {
+        Journal journal = new Journal("b-sautées");
+        List<Task> taches = List.of(
+                new TacheTest("fautive", List.of(),
+                        () -> {
+                            throw new IllegalStateException("échec volontaire");
+                        }),
+                new TacheTest("bloquée", List.of("fautive"), () -> { }));
+
+        TaskExecutor.BuildResult résultat = new TaskExecutor(TaskGraph.of(taches),
+                journal, new CancellationFlag(), UpToDateOracle.ALWAYS_RUN, 2).execute();
+
+        assertFalse(résultat.success());
+        assertEquals(BuildEvent.TaskState.FAILED, journal.etatDe("fautive").state());
+        assertEquals(BuildEvent.TaskState.SKIPPED, journal.etatDe("bloquée").state());
+        assertTrue(journal.fin.message().contains("1 échouée"),
+                "le résumé compte les échouées : " + journal.fin.message());
+        assertTrue(journal.fin.message().contains("1 sautée"),
+                "les bloquées sont dites sautées : " + journal.fin.message());
+    }
+
+    /** Une tâche qui marque son contexte « relu du cache ». */
+    private static final class TacheDepuisCache implements Task {
+
+        private final String nom;
+
+        TacheDepuisCache(String nom) {
+            this.nom = nom;
+        }
+
+        @Override
+        public String name() {
+            return nom;
+        }
+
+        @Override
+        public List<String> dependencies() {
+            return List.of();
+        }
+
+        @Override
+        public void execute(TaskContext context) {
+            context.marquerDepuisCache();
+        }
+    }
 }
