@@ -4,10 +4,22 @@
 
 plugins {
     id 'java-library'
+    // Publication Maven (demande F-01 de JoIDE) : le module se publie tel quel sur
+    // mavenLocal — les IDE consomment Forge comme bibliothèque versionnée
+    // (./gradlew publishToMavenLocal) sans script d'injection externe.
+    id 'maven-publish'
 }
 
 group = 'jo.forge'
 version = forgeVersion // source unique : gradle.properties (constat B-7)
+
+publishing {
+    publications {
+        maven(MavenPublication) {
+            from components.java
+        }
+    }
+}
 
 java {
     sourceCompatibility = JavaVersion.VERSION_17
