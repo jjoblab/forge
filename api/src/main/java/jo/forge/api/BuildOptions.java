@@ -19,8 +19,12 @@ import java.util.List;
  * de {@code gradlew} ({@code gradlew :app:compileJava assemble}) : la liste des tâches
  * demandées, la clôture de leurs dépendances se calcule côté MOTEUR. Vide ou nulle
  * (le défaut, la forme historique) : tout le graphe du projet, comme hier. Les noms
- * de cycle de vie ({@code assemble}, {@code clean}) sont acceptés et résolus par le
- * moteur ; un nom inconnu échoue proprement avec la liste des tâches disponibles.</p>
+ * de cycle de vie sont acceptés et résolus par le moteur : {@code assemble},
+ * {@code clean}, {@code build} (protocole 6 — l'alias honnête, sorties +
+ * vérifications existantes), les agrégats de vérification sous-tendus
+ * ({@code check}/{@code lint}/{@code test}) et les agrégats de module
+ * ({@code core:assemble}, {@code core:clean}) ; un nom inconnu échoue
+ * proprement avec la liste des tâches disponibles.</p>
  *
  * @param parallelism  nombre maximal de tâches exécutées en parallèle souhaité ;
  *                     le moteur peut le plafonner selon son propre budget.
@@ -35,7 +39,8 @@ import java.util.List;
  *                     {@code null} accepté pour le défaut {@code LIFECYCLE}.
  * @param tasks        tâches demandées (protocole 5) : noms complets
  *                     ({@code app:compileJava}) ou de cycle de vie ({@code assemble},
- *                     {@code clean}) ; {@code null} accepté pour le graphe complet.
+ *                     {@code clean}, {@code build}, {@code core:assemble}) ;
+ *                     {@code null} accepté pour le graphe complet.
  */
 public record BuildOptions(int parallelism, boolean lowMemory, boolean offline,
                            boolean verbose, long totalRamMb, String abi,

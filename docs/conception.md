@@ -654,6 +654,52 @@ lancer : ni l'un ni l'autre n'est un contrat.
   Le faux moteur suit (`FakeEngineServer` répond un répertoire honnête, cycle de
   vie marqué) — les tests de bout en bout valident le contrat réel.
 
+### D-23 — Des alias honnêtes et le répertoire par sous-ensembles (protocole 6, v0.2.28)
+
+Constat d'architecture : la D-22 laissait deux questions ouvertes, toutes deux
+expliquées par Gradle. « Que fait `build` ? » — Gradle répond `assemble + check`, et
+la D-22 refusait l'alias plutôt que de le mentir (`check` n'existait pas). « Peut-on
+regarder UNE partie du projet ? » — `gradlew :core:tasks` énumère le graphe de core
+seul. Forge n'avait ni l'un ni l'autre : pas d'alias, un répertoire monolithique.
+
+- **`build`, l'alias HONNÊTE** : il agrège les terminales ET les tâches de
+  vérification qui EXISTENT — aujourd'hui aucune, il vaut exactement `assemble`, et
+  ses dépendances le montrent (le répertoire les liste), sa description le DIT
+  (« aucune tâche de vérification n'existe aujourd'hui : assemble seul »). Le
+  modèle de Gradle sans mentir en avance : quand des vérifications existeront,
+  `build` grandira seul.
+- **`check`/`lint`/`test` SOUS-TENDUS, jamais promis** : ces agrégats n'apparaissent
+  dans le répertoire — et ne s'exécutent — SI ET SEULEMENT SI des tâches concrètes
+  de vérification (`module:lint`, `module:test`) existent dans le graphe. Le
+  vocabulaire des suffixes est LE point unique (`SUFFIXES_VÉRIFICATION` dans
+  `LifecycleTasks`) : ajouter une tâche `app:lint` à un pipeline suffit — `lint` et
+  `check` vivent d'eux-mêmes, aucun registre parallèle. Demander un alias sans
+  sous-tension est le refus honnête des noms inconnus (candidats cités).
+- **Le répertoire PAR SOUS-ENSEMBLE de modules** : `TasksRequest.modules` (liste en
+  fin de charge, trame bornée — un moteur 5 lit la racine et ignore l'excédent ;
+  un lecteur 6 sur une charge d'avant attrape la fin de flux : sous-ensemble vide,
+  tout le projet). La vue d'un sous-ensemble énumère les concrets des modules
+  demandés puis leurs agrégats PROPRES (`core:assemble` — les terminales de core,
+  pas celles du projet — et `core:clean`, qui supprime `build/core/` seul) :
+  l'équivalent de `gradlew :core:tasks`. Un module inconnu est refusé avec les
+  modules disponibles — le même refus honnête que pour un nom de tâche.
+- **Les agrégats de module sont des cibles** : `gradlew :core:assemble` a son
+  équivalent exact — `BuildOptions.tasks = [core:assemble]` injecte l'agrégat du
+  module, la clôture tire core complet mais JAMAIS app (le nom EST le périmètre).
+  `core:clean` nettoie `build/core/` seul.
+- **Un nom de cycle de vie ne masque JAMAIS un concret homonyme** : si un pipeline
+  définit un jour son propre `:assemble` concret, la cible du même nom exécute LE
+  concret — l'injection vérifie l'absence d'homonyme dans le graphe.
+- **Dégradations symétriques de la D-22** : coquille 6 vers moteur 5 : la
+  négociation tombe à 5, la liste de modules part quand même (fin de charge, trame
+  bornée) et le moteur 5 l'ignore — le répertoire COMPLET répond, la vue demandée
+  se dégrade sans échec. Coquille 5 vers moteur 6 : la charge s'arrête après la
+  racine, le lecteur 6 attrape la fin de flux — sous-ensemble vide, tout le projet.
+  Le faux moteur délègue au VRAI compositeur (`LifecycleTasks.descripteurs`) :
+  `assemble`, `build`, le sous-ensemble et le refus des modules inconnus se
+  comportent exactement comme chez le vrai moteur — les tests de bout en bout
+  valident le contrat réel.
+
 ## 4. Installateur (détail)
 
 Séquence du premier lancement (chaque exigence du cahier des charges y est visible) :

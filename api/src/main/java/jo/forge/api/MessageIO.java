@@ -348,6 +348,11 @@ public final class MessageIO {
     /**
      * Encode un {@link TasksRequest}.
      *
+     * <p>Les modules demandés (protocole 6) partent en fin de charge utile : un
+     * moteur plus ancien lit la racine et ignore l'excédent (la trame est bornée
+     * en longueur — pas de rupture) ; la liste vide reste la forme « tout le
+     * projet ».</p>
+     *
      * @param out    flux cible.
      * @param message message à encoder.
      * @throws IOException en cas d'erreur d'écriture.
@@ -355,17 +360,29 @@ public final class MessageIO {
     public static void writeTasksRequest(DataOutput out, TasksRequest message)
             throws IOException {
         writeString(out, message.projectRoot());
+        writeStringList(out, message.modules());
     }
 
     /**
      * Décode un {@link TasksRequest}.
+     *
+     * <p>Lecteur tolérant : une charge d'avant le protocole 6 s'arrête après la
+     * racine (fin de flux avant la liste de modules) — le sous-ensemble est
+     * alors vide, la forme « tout le projet » d'alors.</p>
      *
      * @param in flux source.
      * @return le message décodé.
      * @throws IOException en cas d'erreur de lecture.
      */
     public static TasksRequest readTasksRequest(DataInput in) throws IOException {
-        return new TasksRequest(readString(in));
+        String projectRoot = readString(in);
+        List<String> modules;
+        try {
+            modules = readStringList(in);
+        } catch (java.io.EOFException avantProtocoleSix) {
+            modules = List.of();
+        }
+        return new TasksRequest(projectRoot, modules);
     }
 
     /**

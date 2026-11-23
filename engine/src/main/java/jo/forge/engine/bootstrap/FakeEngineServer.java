@@ -19,7 +19,11 @@ import jo.forge.api.Status;
 import jo.forge.api.TaskDescription;
 import jo.forge.api.TasksRequest;
 import jo.forge.api.TasksResponse;
+import jo.forge.engine.graph.GraphException;
+import jo.forge.engine.pipeline.LifecycleTasks;
 import jo.forge.engine.server.ConsoleDeBuild;
+import jo.forge.engine.tasks.Task;
+import jo.forge.engine.tasks.TaskContext;
 
 import java.io.ByteArrayInputStream;
 import java.io.ByteArrayOutputStream;
@@ -144,9 +148,11 @@ public final class FakeEngineServer {
                 cancelBuild(frame, cancel.buildId());
             }
             case TASKS_REQUEST -> {
-                // Parité protocole 5 (D-22) avec le vrai moteur : répertoire fixe
-                // mais HONNÊTE (descripteurs complets, cycle de vie marqué) — la
-                // négociation protège les coquilles anciennes comme toujours.
+                // Parité protocole 5-6 (D-22/D-23) avec le vrai moteur : répertoire
+                // fixe mais HONNÊTE — délégué au VRAI compositeur (LifecycleTasks),
+                // donc assemble + build + refus des modules inconnus se
+                // comportent exactement comme chez le vrai moteur. La négociation
+                // protocole protège les coquilles anciennes comme toujours.
                 if (protocoleNégocié < 5) {
                     reply(frame, FrameType.PROTOCOL_ERROR, out ->
                             MessageIO.writeErrorMessage(out,
@@ -155,21 +161,17 @@ public final class FakeEngineServer {
                     return false;
                 }
                 TasksRequest demande = decode(frame, MessageIO::readTasksRequest);
-                reply(frame, FrameType.TASKS, out -> MessageIO.writeTasksResponse(out,
-                        new TasksResponse(demande.projectRoot(), List.of(
-                                new TaskDescription("app:compileJava", "compilation",
-                                        "Compile les sources Java du module",
-                                        List.of("app:resolveDependencies"), false),
-                                new TaskDescription("app:resolveDependencies",
-                                        "dépendances",
-                                        "Résout et télécharge les dépendances Maven du module",
-                                        List.of(), false),
-                                new TaskDescription("assemble", "cycle de vie",
-                                        "Assemble les sorties de tous les modules du projet",
-                                        List.of("app:jar"), true),
-                                new TaskDescription("clean", "cycle de vie",
-                                        "Supprime le répertoire build/ du projet",
-                                        List.of(), true)))));
+                try {
+                    List<TaskDescription> descripteurs = LifecycleTasks.descripteurs(
+                            tâchesFactices(), demande.modules());
+                    reply(frame, FrameType.TASKS, out ->
+                            MessageIO.writeTasksResponse(out,
+                                    new TasksResponse(demande.projectRoot(),
+                                            descripteurs)));
+                } catch (GraphException refus) {
+                    reply(frame, FrameType.INTERNAL_ERROR, out ->
+                            MessageIO.writeErrorMessage(out, refus.getMessage()));
+                }
             }
             case SHUTDOWN -> {
                 // Accusé avant de s'arrêter : la coquille sait que l'arrêt est pris en
@@ -189,6 +191,29 @@ public final class FakeEngineServer {
     private void startScriptedBuild(BuildRequest request) {
         runningBuilds.computeIfAbsent(request.buildId(), id ->
                 buildExecutor.submit(() -> runScriptedBuild(request)));
+    }
+
+    /**
+     * Le graphe concret du répertoire factice : un module {@code app} au
+     * vocabulaire du vrai pipeline ({@code resolveDependencies} →
+     * {@code compileJava} → {@code jar}) — le compositeur réel (D-22/D-23) y
+     * dérive le cycle de vie ({@code assemble}, {@code build}, {@code clean},
+     * agrégats de module) comme chez le vrai moteur.
+     */
+    private static List<Task> tâchesFactices() {
+        return List.of(
+                tâcheFactice("app:resolveDependencies", List.of()),
+                tâcheFactice("app:compileJava", List.of("app:resolveDependencies")),
+                tâcheFactice("app:jar", List.of("app:compileJava")));
+    }
+
+    /** Une tâche factice, purement nominale (le répertoire ne l'exécute jamais). */
+    private static Task tâcheFactice(String nom, List<String> dépendances) {
+        return new Task() {
+            @Override public String name() { return nom; }
+            @Override public List<String> dependencies() { return dépendances; }
+            @Override public void execute(TaskContext context) { }
+        };
     }
 
     /**

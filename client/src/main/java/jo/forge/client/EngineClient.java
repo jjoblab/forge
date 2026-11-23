@@ -270,6 +270,27 @@ public final class EngineClient {
      * @return le futur du répertoire.
      */
     public CompletableFuture<TasksResponse> tasks(String projectRoot) {
+        return tasks(projectRoot, null);
+    }
+
+    /**
+     * Demande le répertoire des tâches D'UN SOUS-ENSEMBLE de modules (protocole
+     * 6, décision D-23 — l'équivalent de {@code gradlew :core:tasks}) : le
+     * moteur filtre le graphe aux modules demandés et y dérive les agrégats
+     * propres ({@code core:assemble}, {@code core:clean}).
+     *
+     * <p>La liste part en fin de charge : un moteur plus ancien l'ignore (trame
+     * bornée), la forme reste « tout le projet » — le champ est sans risque
+     * même face à un protocole 5. Une liste vide ou nulle demande tout le
+     * projet ; un module inconnu est refusé proprement par le moteur.</p>
+     *
+     * @param projectRoot racine du projet (dossier contenant {@code forge.json}).
+     * @param modules     modules demandés (noms sans préfixe) ; vide ou nul =
+     *                    tout le projet.
+     * @return le futur du répertoire du sous-ensemble.
+     */
+    public CompletableFuture<TasksResponse> tasks(String projectRoot,
+                                                  List<String> modules) {
         // Garde-fou : une trame inconnue TUE le lecteur d'un moteur plus ancien —
         // le refus doit venir de la coquille, jamais du moteur.
         if (hello.protocolMax() < 5) {
@@ -282,7 +303,7 @@ public final class EngineClient {
         }
         return borné(connection.request(FrameType.TASKS_REQUEST,
                         out -> MessageIO.writeTasksRequest(out,
-                                new TasksRequest(projectRoot)))
+                                new TasksRequest(projectRoot, modules)))
                         .thenApply(frame -> {
                             if (frame.type() == FrameType.PROTOCOL_ERROR) {
                                 throw new EngineConnection.EngineConnectionException(

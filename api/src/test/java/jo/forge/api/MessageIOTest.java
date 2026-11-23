@@ -150,6 +150,16 @@ class MessageIOTest {
         TasksRequest demande = new TasksRequest("/projets/demo");
         assertEquals(demande, roundTrip(demande, MessageIO::writeTasksRequest,
                 MessageIO::readTasksRequest));
+        assertEquals(List.of(), roundTrip(demande, MessageIO::writeTasksRequest,
+                MessageIO::readTasksRequest).modules(),
+                "la forme historique reste « tout le projet »");
+
+        // Protocole 6 (D-23) : le sous-ensemble de modules survit intact.
+        TasksRequest sousEnsemble = new TasksRequest("/projets/demo",
+                List.of("app", "core"));
+        assertEquals(sousEnsemble, roundTrip(sousEnsemble,
+                MessageIO::writeTasksRequest, MessageIO::readTasksRequest),
+                "le répertoire par sous-ensemble doit survivre intact");
 
         TasksResponse répertoire = new TasksResponse("/projets/demo", List.of(
                 new TaskDescription("app:compileJava", "compilation",
@@ -165,6 +175,23 @@ class MessageIOTest {
         assertEquals(répertoire, relu, "le répertoire complet doit survivre intact");
         assertTrue(relu.tasks().stream().anyMatch(TaskDescription::lifecycle),
                 "les tâches de cycle de vie restent marquées");
+    }
+
+    @Test
+    void demandeDAvantSansModulesResteToutLeProjet() throws IOException {
+        // Une coquille d'avant le protocole 6 n'écrit PAS la liste de modules :
+        // le lecteur tolérant s'arrête après la racine — le sous-ensemble est
+        // vide, la vue reste « tout le projet ». Rien ne casse.
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(bytes);
+        MessageIO.writeString(out, "/projets/demo");
+        // Fin de charge : pas de liste de modules.
+
+        TasksRequest relue = MessageIO.readTasksRequest(new DataInputStream(
+                new ByteArrayInputStream(bytes.toByteArray())));
+        assertEquals("/projets/demo", relue.projectRoot());
+        assertEquals(List.of(), relue.modules(),
+                "sans liste écrite, la vue reste tout le projet");
     }
 
     @Test

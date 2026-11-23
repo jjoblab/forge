@@ -230,7 +230,7 @@ public final class BuildEngineServer {
     }
 
     /**
-     * Répond à une demande de répertoire de tâches (protocole 5) : lecture du
+     * Répond à une demande de répertoire de tâches (protocole 5-6) : lecture du
      * modèle, assemblage du pipeline pour ses NOMS, réponse en une trame
      * {@code TASKS}. Une erreur de modèle est une erreur de la DEMANDE (racine
      * illisible) : trame {@code INTERNAL_ERROR}, le moteur reste vivant — jamais
@@ -248,13 +248,20 @@ public final class BuildEngineServer {
             // d'instance pour l'assemblage (les descripteurs sont indifférents).
             List<jo.forge.engine.tasks.Task> tâches = JavaPipeline.tasksFor(model,
                     racine, false, "arm64-v8a", engineHome, cachesPartagés());
-            List<TaskDescription> descripteurs = LifecycleTasks.descripteurs(tâches);
+            // Protocole 6 (D-23) : le répertoire peut se demander PAR SOUS-ENSEMBLE
+            // de modules (l'équivalent de gradlew :core:tasks) ; un module
+            // inconnu est une erreur de la DEMANDE — refus honnête, moteur vivant.
+            List<TaskDescription> descripteurs = LifecycleTasks.descripteurs(tâches,
+                    demande.modules());
             reply(frame, FrameType.TASKS, out -> MessageIO.writeTasksResponse(out,
                     new TasksResponse(demande.projectRoot(), descripteurs)));
         } catch (ModelException modele) {
             reply(frame, FrameType.INTERNAL_ERROR, out ->
                     MessageIO.writeErrorMessage(out,
                             "Projet illisible : " + modele.getMessage()));
+        } catch (GraphException graphe) {
+            reply(frame, FrameType.INTERNAL_ERROR, out ->
+                    MessageIO.writeErrorMessage(out, graphe.getMessage()));
         } catch (Exception inattendu) {
             diagnostics.println("Échec du répertoire de tâches pour "
                     + demande.projectRoot() + " : " + inattendu);

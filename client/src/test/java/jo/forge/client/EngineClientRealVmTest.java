@@ -73,9 +73,10 @@ class EngineClientRealVmTest {
     @Test
     @Timeout(60)
     void répertoireDeTâchesDeBoutEnBout() throws Exception {
-        // Protocole 5 (D-22) : TASKS_REQUEST part du client, la réponse TASKS
-        // revient décodée — le moteur (factice, en VRAI processus séparé) est la
-        // source de vérité du répertoire, la coquille affiche.
+        // Protocole 5-6 (D-22/D-23) : TASKS_REQUEST part du client, la réponse
+        // TASKS revient décodée — le moteur (factice, en VRAI processus séparé,
+        // délégué au vrai compositeur) est la source de vérité du répertoire,
+        // la coquille affiche.
         EngineClient client = EngineClient.launch(new JavaVmLauncher(), moteurFactice(),
                 "0.1.0-test", evenement -> { }, () -> { });
         assertTrue(client.protocolVersion() >= 5,
@@ -85,12 +86,25 @@ class EngineClientRealVmTest {
         assertEquals("/projets/demo", répertoire.projectRoot());
         List<String> noms = répertoire.tasks().stream()
                 .map(TaskDescription::name).toList();
-        assertEquals(List.of("app:compileJava", "app:resolveDependencies",
-                "assemble", "clean"), noms);
+        assertEquals(List.of("app:jar", "app:compileJava", "app:resolveDependencies",
+                "assemble", "build", "clean"), noms);
         TaskDescription assemble = répertoire.tasks().stream()
                 .filter(t -> t.name().equals("assemble")).findFirst().orElseThrow();
         assertTrue(assemble.lifecycle(), "le cycle de vie est marqué honnêtement");
         assertEquals(List.of("app:jar"), assemble.dependencies());
+        TaskDescription build = répertoire.tasks().stream()
+                .filter(t -> t.name().equals("build")).findFirst().orElseThrow();
+        assertEquals(assemble.dependencies(), build.dependencies(),
+                "build, l'alias honnête : sans vérification il vaut assemble");
+
+        // Protocole 6 (D-23) : le sous-ensemble de modules — la vue de app
+        // (l'équivalent de gradlew :app:tasks) et ses agrégats propres.
+        TasksResponse vue = client.tasks("/projets/demo", List.of("app"))
+                .get(10, TimeUnit.SECONDS);
+        assertEquals(List.of("app:jar", "app:compileJava", "app:resolveDependencies",
+                "app:assemble", "app:clean"),
+                vue.tasks().stream().map(TaskDescription::name).toList(),
+                "la vue sous-ensemble expose les agrégats du module");
 
         client.shutdown().get(10, TimeUnit.SECONDS);
         assertEquals(0, client.awaitExit());

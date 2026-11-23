@@ -56,8 +56,23 @@ public final class ProtocolVersions {
      * ancienne négocie la version 4 : jamais de trame {@code TASKS_REQUEST} vers elle
      * (refus côté client avant émission), et une charge de build sans liste de
      * tâches reste le graphe complet — la forme d'alors (lecteur tolérant).</p>
+     *
+     * <p>Version 6 (additive) : le répertoire parle par sous-ensembles et les
+     * alias deviennent honnêtes (décision D-23). {@code TasksRequest} gagne
+     * {@code modules} (liste en fin de charge — lecteur tolérant, la forme d'avant
+     * reste « tout le projet » ; un moteur plus ancien ignore l'excédent, la trame
+     * est bornée) : la vue d'un sous-ensemble énumère les concrets des modules
+     * demandés et leurs agrégats propres {@code module:assemble} /
+     * {@code module:clean} — l'équivalent de {@code gradlew :core:tasks}. Nouvel
+     * alias {@code build}, HONNÊTE : il agrège les terminales ET les tâches de
+     * vérification qui EXISTENT (aujourd'hui aucune — ses dépendances et sa
+     * description le disent, il vaut exactement {@code assemble} et grandira seul
+     * quand les vérifications existeront). {@code check}/{@code lint}/{@code test}
+     * apparaissent dans le répertoire SI ET SEULEMENT SI des tâches de vérification
+     * ({@code :lint}/{@code :test}) existent dans le graphe — aucun alias
+     * prometteur ; un module inconnu est refusé avec les modules disponibles.</p>
      */
-    public static final int PROTOCOL_MAX = 5;
+    public static final int PROTOCOL_MAX = 6;
 
     private ProtocolVersions() {
         // Constantes uniquement : pas d'instanciation.

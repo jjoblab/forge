@@ -348,20 +348,23 @@ class BuildEngineServerTest {
     @Test
     @Timeout(60)
     void répertoireDeTâchesSurLeCanal() throws Exception {
-        // Protocole 5 (D-22) : TASKS_REQUEST → TASKS en une trame. Le moteur
-        // énumère CE QUI PEUT TOURNER — concrets (groupés, décrits) + cycle de
-        // vie (assemble, clean) — la coquille affiche sans deviner.
+        // Protocole 5-6 (D-22/D-23) : TASKS_REQUEST → TASKS en une trame. Le
+        // moteur énumère CE QUI PEUT TOURNER — concrets (groupés, décrits) +
+        // cycle de vie (assemble, build honnête, clean) — la coquille affiche
+        // sans deviner.
         Projets.projetDeuxModules(temporaire);
         try (Session session = Session.démarrer()) {
-            session.poignéeDeMain(5);
+            session.poignéeDeMain(6);
             TasksResponse répertoire = session.répertoire(temporaire);
             assertEquals(temporaire.toString(), répertoire.projectRoot());
             List<String> noms = répertoire.tasks().stream()
                     .map(TaskDescription::name).toList();
             assertEquals(List.of("app:jar", "core:jar", "app:compileJava",
                             "core:compileJava", "app:resolveDependencies",
-                            "core:resolveDependencies", "assemble", "clean"), noms,
-                    "six tâches concrètes (ordre : groupe puis nom) + cycle de vie en fin");
+                            "core:resolveDependencies", "assemble", "build",
+                            "clean"), noms,
+                    "six tâches concrètes (ordre : groupe puis nom) + cycle de vie "
+                            + "en fin (assemble, build, clean)");
             TaskDescription compile = répertoire.tasks().stream()
                     .filter(t -> t.name().equals("app:compileJava")).findFirst().orElseThrow();
             assertEquals("compilation", compile.group());
@@ -375,10 +378,116 @@ class BuildEngineServerTest {
             assertTrue(assemble.lifecycle());
             assertEquals(List.of("app:jar", "core:jar"), assemble.dependencies(),
                     "assemble agrège les sorties terminales des deux modules");
+            // build (protocole 6, D-23) : l'alias HONNÊTE — sans vérification il
+            // vaut assemble, ses dépendances le MONTRENT et sa description le DIT.
+            TaskDescription build = répertoire.tasks().stream()
+                    .filter(t -> t.name().equals("build")).findFirst().orElseThrow();
+            assertTrue(build.lifecycle());
+            assertEquals(assemble.dependencies(), build.dependencies(),
+                    "build = assemble aujourd'hui : les dépendances le disent, "
+                            + "pas la promesse");
+            assertTrue(build.description().contains("assemble"),
+                    "la description de build dit ce qu'il vaut : "
+                            + build.description());
+            assertTrue(répertoire.tasks().stream().noneMatch(t ->
+                            List.of("check", "lint", "test").contains(t.name())),
+                    "aucun alias de vérification n'est promis sans tâche");
             TaskDescription clean = répertoire.tasks().stream()
                     .filter(t -> t.name().equals("clean")).findFirst().orElseThrow();
             assertTrue(clean.lifecycle());
             assertEquals(List.of(), clean.dependencies());
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void répertoireParSousEnsembleDeModules() throws Exception {
+        // Protocole 6 (D-23) : TASKS_REQUEST porte des modules — la vue de core
+        // (l'équivalent de gradlew :core:tasks) expose ses concrets + SES
+        // agrégats (core:assemble, core:clean) ; jamais l'assemble global
+        // redéfini en silence.
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(6);
+            TasksResponse vue = session.répertoire(temporaire, List.of("core"));
+            List<String> noms = vue.tasks().stream()
+                    .map(TaskDescription::name).toList();
+            assertEquals(List.of("core:jar", "core:compileJava",
+                    "core:resolveDependencies", "core:assemble", "core:clean"), noms,
+                    "la vue sous-ensemble : les concrets du module + SES agrégats");
+            TaskDescription assembleCore = vue.tasks().stream()
+                    .filter(t -> t.name().equals("core:assemble")).findFirst().orElseThrow();
+            assertTrue(assembleCore.lifecycle());
+            assertEquals(List.of("core:jar"), assembleCore.dependencies(),
+                    "core:assemble agrège les sorties de core SEULEMENT");
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void moduleInconnuDansLeRépertoireRefuséSurLeCanal() throws Exception {
+        // Un module inconnu est une erreur de la DEMANDE : INTERNAL_ERROR honnête
+        // (modules disponibles cités), le moteur reste vivant.
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(6);
+            session.écrirePublique(FrameType.TASKS_REQUEST, out ->
+                    MessageIO.writeTasksRequest(out,
+                            new TasksRequest(temporaire.toString(), List.of("zork"))));
+            Frame réponse = session.lireTramePublique();
+            assertEquals(FrameType.INTERNAL_ERROR, réponse.type(),
+                    "le refus d'un module inconnu est une erreur de demande");
+            String message = MessageIO.readErrorMessage(new DataInputStream(
+                    new ByteArrayInputStream(réponse.payload())));
+            assertTrue(message.contains("zork") && message.contains("core"),
+                    "le refus cite le fautif et les modules disponibles : " + message);
+            // Le moteur reste vivant : le répertoire complet répond encore.
+            assertEquals(9, session.répertoire(temporaire).tasks().size(),
+                    "le canal a survécu à la mauvaise question");
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void buildCommeAliasConstruitToutSurLeCanal() throws Exception {
+        // build (protocole 6, D-23) : l'alias honnête — sans vérification il
+        // exécute la clôture d'assemble, l'agrégat réussit comme une tâche.
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(6);
+            List<BuildEvent> événements = session.build(temporaire,
+                    List.of("build"));
+            assertTrue(dernier(événements, BuildEvent.BuildFinished.class).success());
+            List<String> exécutées = tâchesRéussies(événements);
+            assertEquals(List.of("app:compileJava", "app:jar",
+                    "app:resolveDependencies", "build", "core:compileJava",
+                    "core:jar", "core:resolveDependencies"), exécutées,
+                    "build exécute tout le graphe + l'agrégat — comme assemble");
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void buildDUnModuleSeulNeConstruitQueCeModule() throws Exception {
+        // core:assemble (protocole 6) : le nom EST le périmètre — la clôture de
+        // core, jamais app.
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(6);
+            List<BuildEvent> événements = session.build(temporaire,
+                    List.of("core:assemble"));
+            assertTrue(dernier(événements, BuildEvent.BuildFinished.class).success());
+            assertEquals(List.of("core:assemble", "core:compileJava", "core:jar",
+                    "core:resolveDependencies"), tâchesRéussies(événements),
+                    "core:assemble construit core, rien d'autre");
+            assertTrue(Files.isDirectory(temporaire.resolve("build").resolve("core")
+                    .resolve("classes")), "les sorties de core existent");
+            assertFalse(Files.exists(temporaire.resolve("build").resolve("app")),
+                    "les sorties de app n'existent PAS");
             session.arrêt();
         }
     }
@@ -498,6 +607,14 @@ class BuildEngineServerTest {
     /**
      * Récupère le dernier événement du type demandé.
      */
+    /** Les noms des tâches réussies d'un build, triés — le décompte réel. */
+    private static List<String> tâchesRéussies(List<BuildEvent> événements) {
+        return événements.stream()
+                .filter(e -> e instanceof BuildEvent.TaskStateEvent t
+                        && t.state() == BuildEvent.TaskState.SUCCEEDED)
+                .map(e -> ((BuildEvent.TaskStateEvent) e).taskName()).sorted().toList();
+    }
+
     private static <T extends BuildEvent> T dernier(List<BuildEvent> événements,
                                                     Class<T> type) {
         T trouvé = null;
@@ -640,8 +757,15 @@ class BuildEngineServerTest {
 
         /** Demande le répertoire des tâches (protocole 5). */
         TasksResponse répertoire(Path racine) throws IOException {
+            return répertoire(racine, null);
+        }
+
+        /** Demande le répertoire PAR SOUS-ENSEMBLE de modules (protocole 6,
+         *  null ou vide : tout le projet). */
+        TasksResponse répertoire(Path racine, List<String> modules) throws IOException {
             écrire(FrameType.TASKS_REQUEST, out ->
-                    MessageIO.writeTasksRequest(out, new TasksRequest(racine.toString())));
+                    MessageIO.writeTasksRequest(out,
+                            new TasksRequest(racine.toString(), modules)));
             Frame réponse = lireTrame();
             assertEquals(FrameType.TASKS, réponse.type());
             return MessageIO.readTasksResponse(new DataInputStream(

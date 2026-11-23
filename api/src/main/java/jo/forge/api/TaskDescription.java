@@ -13,11 +13,17 @@ import java.util.List;
  * {@code BuildOptions.tasks()} (la clôture des dépendances se calcule côté
  * moteur, jamais côté coquille).</p>
  *
- * <p>Les tâches de cycle de vie ({@code assemble}, {@code clean}) sont des
- * descripteurs comme les autres, marqués {@code lifecycle} : elles n'ont pas
- * d'équivalent concret dans le graphe par défaut — elles s'y injectent à la
- * demande (une coquille qui affiche « assemble » honnêtement doit savoir qu'il
- * s'agit d'une tâche d'agrégation, pas d'une étape de compilation).</p>
+ * <p>Les tâches de cycle de vie sont des descripteurs comme les autres, marqués
+ * {@code lifecycle} : elles n'ont pas d'équivalent concret dans le graphe par
+ * défaut — elles s'y injectent à la demande. Le répertoire (protocole 6, D-23)
+ * expose {@code assemble}, {@code build} (l'alias HONNÊTE : ses dépendances et
+ * sa description disent ce qu'il vaut AUJOURD'HUI), {@code clean}, les agrégats
+ * de vérification SOUS-TENDUS ({@code check}/{@code lint}/{@code test} —
+ * absents tant qu'aucune tâche {@code :lint}/{@code :test} n'existe), et par
+ * sous-ensemble de modules les agrégats propres de chacun
+ * ({@code core:assemble}, {@code core:clean}) : une coquille qui affiche
+ * « assemble » honnêtement sait qu'il s'agit d'une tâche d'agrégation, pas
+ * d'une étape de compilation.</p>
  *
  * @param name         nom complet et unique de la tâche (ex. {@code app:compileJava},
  *                     {@code assemble}) — jamais nul ni vide.
