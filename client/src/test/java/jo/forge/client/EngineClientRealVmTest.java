@@ -7,6 +7,8 @@ import jo.forge.api.BuildStarted;
 import jo.forge.api.Cancelled;
 import jo.forge.api.EngineState;
 import jo.forge.api.Status;
+import jo.forge.api.TaskDescription;
+import jo.forge.api.TasksResponse;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
 
@@ -66,6 +68,32 @@ class EngineClientRealVmTest {
         client.shutdown().get(10, TimeUnit.SECONDS);
         int sortie = client.awaitExit();
         assertEquals(0, sortie, "le moteur factice doit s'arrêter proprement (code 0)");
+    }
+
+    @Test
+    @Timeout(60)
+    void répertoireDeTâchesDeBoutEnBout() throws Exception {
+        // Protocole 5 (D-22) : TASKS_REQUEST part du client, la réponse TASKS
+        // revient décodée — le moteur (factice, en VRAI processus séparé) est la
+        // source de vérité du répertoire, la coquille affiche.
+        EngineClient client = EngineClient.launch(new JavaVmLauncher(), moteurFactice(),
+                "0.1.0-test", evenement -> { }, () -> { });
+        assertTrue(client.protocolVersion() >= 5,
+                "le moteur factice doit négocier le protocole 5");
+
+        TasksResponse répertoire = client.tasks("/projets/demo").get(10, TimeUnit.SECONDS);
+        assertEquals("/projets/demo", répertoire.projectRoot());
+        List<String> noms = répertoire.tasks().stream()
+                .map(TaskDescription::name).toList();
+        assertEquals(List.of("app:compileJava", "app:resolveDependencies",
+                "assemble", "clean"), noms);
+        TaskDescription assemble = répertoire.tasks().stream()
+                .filter(t -> t.name().equals("assemble")).findFirst().orElseThrow();
+        assertTrue(assemble.lifecycle(), "le cycle de vie est marqué honnêtement");
+        assertEquals(List.of("app:jar"), assemble.dependencies());
+
+        client.shutdown().get(10, TimeUnit.SECONDS);
+        assertEquals(0, client.awaitExit());
     }
 
     @Test

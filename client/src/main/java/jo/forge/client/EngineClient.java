@@ -12,6 +12,8 @@ import jo.forge.api.Hello;
 import jo.forge.api.MessageIO;
 import jo.forge.api.ProtocolVersions;
 import jo.forge.api.Status;
+import jo.forge.api.TasksRequest;
+import jo.forge.api.TasksResponse;
 
 import java.io.ByteArrayInputStream;
 import java.io.DataInputStream;
@@ -256,6 +258,44 @@ public final class EngineClient {
                             return decode(frame, MessageIO::readBuildStarted);
                         }),
                 DÉLAI_DÉMARRAGE_S, "le sync");
+    }
+
+    /**
+     * Demande le répertoire des tâches d'un projet (protocole 5) : une LECTURE,
+     * jamais un build — l'équivalent de {@code gradlew tasks}. Le moteur répond
+     * en une trame : descripteurs (nom, groupe, description, dépendances, tâches
+     * de cycle de vie {@code assemble}/{@code clean}).
+     *
+     * @param projectRoot racine du projet (dossier contenant {@code forge.json}).
+     * @return le futur du répertoire.
+     */
+    public CompletableFuture<TasksResponse> tasks(String projectRoot) {
+        // Garde-fou : une trame inconnue TUE le lecteur d'un moteur plus ancien —
+        // le refus doit venir de la coquille, jamais du moteur.
+        if (hello.protocolMax() < 5) {
+            CompletableFuture<TasksResponse> refus = new CompletableFuture<>();
+            refus.completeExceptionally(new EngineConnection.EngineConnectionException(
+                    "Répertoire de tâches non supporté : le moteur installé est trop "
+                            + "ancien (protocole " + hello.protocolMax() + " < 5) — "
+                            + "mettez le moteur à jour"));
+            return refus;
+        }
+        return borné(connection.request(FrameType.TASKS_REQUEST,
+                        out -> MessageIO.writeTasksRequest(out,
+                                new TasksRequest(projectRoot)))
+                        .thenApply(frame -> {
+                            if (frame.type() == FrameType.PROTOCOL_ERROR) {
+                                throw new EngineConnection.EngineConnectionException(
+                                        "Répertoire de tâches refusé par le moteur : "
+                                                + decodeError(frame));
+                            }
+                            if (frame.type() == FrameType.INTERNAL_ERROR) {
+                                throw new EngineConnection.EngineConnectionException(
+                                        decodeError(frame));
+                            }
+                            return decode(frame, MessageIO::readTasksResponse);
+                        }),
+                DÉLAI_DÉMARRAGE_S, "le répertoire de tâches");
     }
 
     /**

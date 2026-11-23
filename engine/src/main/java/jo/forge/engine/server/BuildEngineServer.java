@@ -16,6 +16,9 @@ import jo.forge.api.MessageIO;
 import jo.forge.api.Pong;
 import jo.forge.api.ProtocolVersions;
 import jo.forge.api.Status;
+import jo.forge.api.TaskDescription;
+import jo.forge.api.TasksRequest;
+import jo.forge.api.TasksResponse;
 import jo.forge.engine.EngineVersion;
 import jo.forge.engine.diag.Diagnostic;
 import jo.forge.engine.diag.MessagesErreursGraves;
@@ -25,6 +28,7 @@ import jo.forge.engine.graph.TaskGraph;
 import jo.forge.engine.model.ForgeModel;
 import jo.forge.engine.model.ModelCodec;
 import jo.forge.engine.model.ModelException;
+import jo.forge.engine.pipeline.LifecycleTasks;
 import jo.forge.engine.pipeline.ProjectLayout;
 import jo.forge.engine.pipeline.java.JavaPipeline;
 import jo.forge.engine.state.FingerprintStore;
@@ -76,7 +80,7 @@ public final class BuildEngineServer {
 
     /** Capacités annoncées dans la poignée de main. */
     public static final List<String> CAPABILITIES = List.of("ping", "status", "build",
-            "sync");
+            "sync", "tasks");
 
     private static final long START_TIME = System.nanoTime();
 
@@ -195,6 +199,21 @@ public final class BuildEngineServer {
                                 new BuildStarted(request.buildId())));
                 startBuild(request, true);
             }
+            case TASKS_REQUEST -> {
+                // Répertoire des tâches (protocole 5, D-22) : une LECTURE, jamais un
+                // build — le modèle est lu, le pipeline assemblé pour ses noms, rien
+                // ne s'exécute. Une coquille qui n'a pas négocié le protocole 5 ne
+                // peut pas envoyer cette trame ; si elle le fait quand même, le canal
+                // est réputé désordonné et coupé (contrat PROTOCOL_ERROR).
+                if (protocoleNégocié < 5) {
+                    reply(frame, FrameType.PROTOCOL_ERROR, out ->
+                            MessageIO.writeErrorMessage(out,
+                                    "TASKS_REQUEST refusée : protocole négocié "
+                                            + protocoleNégocié + " < 5"));
+                    return false;
+                }
+                répondreTâches(frame, decode(frame, MessageIO::readTasksRequest));
+            }
             case CANCEL_BUILD -> {
                 CancelRequest cancel = decode(frame, MessageIO::readCancelRequest);
                 cancelBuild(frame, cancel.buildId());
@@ -208,6 +227,45 @@ public final class BuildEngineServer {
                             "Trame inattendue : " + frame.type()));
         }
         return true;
+    }
+
+    /**
+     * Répond à une demande de répertoire de tâches (protocole 5) : lecture du
+     * modèle, assemblage du pipeline pour ses NOMS, réponse en une trame
+     * {@code TASKS}. Une erreur de modèle est une erreur de la DEMANDE (racine
+     * illisible) : trame {@code INTERNAL_ERROR}, le moteur reste vivant — jamais
+     * un écroulement du canal pour une question.
+     *
+     * <p>Courant appelant : le fil lecteur (comme STATUS) — l'assemblage est une
+     * lecture de fichiers et des constructions d'objets, sans exécution ni
+     * réseau : assez court pour ne pas retarder les builds qui suivraient.</p>
+     */
+    private void répondreTâches(Frame frame, TasksRequest demande) {
+        java.nio.file.Path racine = Path.of(demande.projectRoot());
+        try {
+            ForgeModel model = ModelCodec.read(racine);
+            // L'ABI ne change PAS les noms de tâches : la valeur dominante sert
+            // d'instance pour l'assemblage (les descripteurs sont indifférents).
+            List<jo.forge.engine.tasks.Task> tâches = JavaPipeline.tasksFor(model,
+                    racine, false, "arm64-v8a", engineHome, cachesPartagés());
+            List<TaskDescription> descripteurs = LifecycleTasks.descripteurs(tâches);
+            reply(frame, FrameType.TASKS, out -> MessageIO.writeTasksResponse(out,
+                    new TasksResponse(demande.projectRoot(), descripteurs)));
+        } catch (ModelException modele) {
+            reply(frame, FrameType.INTERNAL_ERROR, out ->
+                    MessageIO.writeErrorMessage(out,
+                            "Projet illisible : " + modele.getMessage()));
+        } catch (Exception inattendu) {
+            diagnostics.println("Échec du répertoire de tâches pour "
+                    + demande.projectRoot() + " : " + inattendu);
+            inattendu.printStackTrace(diagnostics);
+            reply(frame, FrameType.INTERNAL_ERROR, out ->
+                    MessageIO.writeErrorMessage(out,
+                    "répertoire de tâches impossible : "
+                            + inattendu.getClass().getSimpleName()
+                            + (inattendu.getMessage() == null ? "" : " — "
+                            + inattendu.getMessage())));
+        }
     }
 
     /**
@@ -266,6 +324,16 @@ public final class BuildEngineServer {
                 }
                 events.log(BuildEvent.LogEvent.LogLevel.INFO,
                         "sync : " + tasks.size() + " module(s) à résoudre");
+            }
+            // Protocole 5 : la cible du build est un argument (les arguments de
+            // gradlew) — clôture des dépendances et injection des tâches de cycle
+            // de vie CÔTÉ MOTEUR ; demande vide : tout le graphe, la forme d'alors.
+            tasks = new ArrayList<>(LifecycleTasks.cible(root, tasks,
+                    request.options().tasks()));
+            if (!request.options().tasks().isEmpty()) {
+                events.log(BuildEvent.LogEvent.LogLevel.INFO,
+                        "cible demandée : " + request.options().tasks() + " — "
+                                + tasks.size() + " tâche(s) dans la clôture");
             }
             TaskGraph graph = TaskGraph.of(tasks);
             ProjectLayout layout = new ProjectLayout(root);

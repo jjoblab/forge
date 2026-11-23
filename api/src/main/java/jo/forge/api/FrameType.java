@@ -53,7 +53,17 @@ public enum FrameType {
     /** Demande d'un sync : résolution des dépendances et modèle, sans compilation
      *  (protocole 2 ; la charge utile est une requête de build, la réponse un flux
      *  d'événements terminé par {@code BuildFinished}). */
-    SYNC_BUILD(15);
+    SYNC_BUILD(15),
+
+    /** Demande de la liste des tâches d'un projet (protocole 5 ; charge utile :
+     *  {@code TasksRequest} — racine seule, jamais exécuté). Réponse en une trame
+     *  {@link #TASKS} : le moteur décrit CE QUI PEUT TOURNER, la coquille affiche. */
+    TASKS_REQUEST(16),
+
+    /** Réponse du moteur à {@link #TASKS_REQUEST} : les descripteurs de tâches
+     *  ({@code TasksResponse}) — noms, groupes, descriptions, dépendances, tâches
+     *  de cycle de vie ({@code assemble}, {@code clean}). */
+    TASKS(17);
 
     private final int wireCode;
 

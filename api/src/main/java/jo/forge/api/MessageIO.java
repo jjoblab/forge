@@ -214,7 +214,9 @@ public final class MessageIO {
      * Encode un {@link BuildRequest}.
      *
      * <p>Le niveau de console (protocole 4) part en fin de charge utile : un moteur
-     * plus ancien lit ses champs fixes et ignore l'excédent — pas de rupture.</p>
+     * plus ancien lit ses champs fixes et ignore l'excédent — pas de rupture. Les
+     * tâches demandées (protocole 5) suivent la même règle : écrites après le
+     * niveau, lues à défaut par un lecteur plus ancien qui s'arrête avant.</p>
      *
      * @param out    flux cible.
      * @param message message à encoder.
@@ -230,15 +232,17 @@ public final class MessageIO {
         out.writeLong(message.options().totalRamMb());
         writeString(out, message.options().abi());
         out.writeInt(message.options().consoleLevel().wireCode());
+        writeStringList(out, message.options().tasks());
     }
 
     /**
      * Décode un {@link BuildRequest}.
      *
-     * <p>Lecteur tolérant : une charge d'avant le protocole 4 s'arrête après l'ABI
-     * (fin de flux avant le niveau de console) — le niveau est alors dérivé du
-     * booléen {@code verbose} historique, comme si l'appelant avait utilisé le
-     * constructeur de compatibilité.</p>
+     * <p>Lecteur tolérant, deux paliers : une charge d'avant le protocole 4 s'arrête
+     * après l'ABI (fin de flux avant le niveau de console) — le niveau est alors
+     * dérivé du booléen {@code verbose} historique ; une charge d'avant le
+     * protocole 5 s'arrête après le niveau (fin de flux avant la liste de tâches)
+     * — la cible est alors le graphe complet, la forme d'alors.</p>
      *
      * @param in flux source.
      * @return le message décodé.
@@ -260,9 +264,15 @@ public final class MessageIO {
             consoleLevel = verbose ? BuildEvent.LogEvent.LogLevel.DEBUG
                     : BuildEvent.LogEvent.LogLevel.LIFECYCLE;
         }
+        List<String> tasks;
+        try {
+            tasks = readStringList(in);
+        } catch (java.io.EOFException avantProtocoleCinq) {
+            tasks = List.of();
+        }
         return new BuildRequest(buildId, projectRoot,
                 new BuildOptions(parallelism, lowMemory, offline, verbose, totalRamMb,
-                        abi, consoleLevel));
+                        abi, consoleLevel, tasks));
     }
 
     /**
@@ -331,6 +341,87 @@ public final class MessageIO {
      */
     public static Cancelled readCancelled(DataInput in) throws IOException {
         return new Cancelled(readString(in), in.readBoolean());
+    }
+
+    // ---- Tâches (protocole 5) ----------------------------------------------
+
+    /**
+     * Encode un {@link TasksRequest}.
+     *
+     * @param out    flux cible.
+     * @param message message à encoder.
+     * @throws IOException en cas d'erreur d'écriture.
+     */
+    public static void writeTasksRequest(DataOutput out, TasksRequest message)
+            throws IOException {
+        writeString(out, message.projectRoot());
+    }
+
+    /**
+     * Décode un {@link TasksRequest}.
+     *
+     * @param in flux source.
+     * @return le message décodé.
+     * @throws IOException en cas d'erreur de lecture.
+     */
+    public static TasksRequest readTasksRequest(DataInput in) throws IOException {
+        return new TasksRequest(readString(in));
+    }
+
+    /**
+     * Encode un {@link TasksResponse}.
+     *
+     * @param out    flux cible.
+     * @param message message à encoder.
+     * @throws IOException en cas d'erreur d'écriture.
+     */
+    public static void writeTasksResponse(DataOutput out, TasksResponse message)
+            throws IOException {
+        writeString(out, message.projectRoot());
+        out.writeInt(message.tasks().size());
+        for (TaskDescription tâche : message.tasks()) {
+            writeTaskDescription(out, tâche);
+        }
+    }
+
+    /**
+     * Décode un {@link TasksResponse}.
+     *
+     * @param in flux source.
+     * @return le message décodé.
+     * @throws IOException en cas d'erreur de lecture.
+     */
+    public static TasksResponse readTasksResponse(DataInput in) throws IOException {
+        String projectRoot = readString(in);
+        int nombre = in.readInt();
+        if (nombre < 0 || nombre > 10_000) {
+            throw new IOException("Nombre de tâches invraisemblable : " + nombre);
+        }
+        List<TaskDescription> tasks = new ArrayList<>(nombre);
+        for (int i = 0; i < nombre; i++) {
+            tasks.add(readTaskDescription(in));
+        }
+        return new TasksResponse(projectRoot, tasks);
+    }
+
+    /**
+     * Encode un descripteur de tâche.
+     */
+    private static void writeTaskDescription(DataOutput out, TaskDescription tâche)
+            throws IOException {
+        writeString(out, tâche.name());
+        writeString(out, tâche.group());
+        writeString(out, tâche.description());
+        writeStringList(out, tâche.dependencies());
+        out.writeBoolean(tâche.lifecycle());
+    }
+
+    /**
+     * Décode un descripteur de tâche.
+     */
+    private static TaskDescription readTaskDescription(DataInput in) throws IOException {
+        return new TaskDescription(readString(in), readString(in), readString(in),
+                readStringList(in), in.readBoolean());
     }
 
     // ---- Événements --------------------------------------------------------

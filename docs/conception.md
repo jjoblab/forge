@@ -614,6 +614,46 @@ sémantique, DICTE ses sorties depuis le moteur et offre leur tri par arguments
   coquilles protocole 4 — les tests de bout en bout (vrai processus) valident le
   contrat réel, pas un simulacre.
 
+### D-22 — Le répertoire des tâches appartient au moteur (protocole 5, v0.2.27)
+
+Constat d'architecture : la question « QUELLES tâches peut-on lancer ? » n'avait pas
+de réponse canonique. Gradle répond `gradlew tasks` — le moteur ÉNUMÈRE son graphe
+(groupes, descriptions, dépendances), la coquille affiche et laisse choisir ; la
+cible part en argument (`gradlew :app:compileJava assemble`), le moteur calcule la
+clôture. Chez Forge, la coquille ne pouvait que deviner (préfixer des noms) ou tout
+lancer : ni l'un ni l'autre n'est un contrat.
+
+- **`TASKS_REQUEST`/`TASKS`, une lecture jamais un build** : la coquille donne une
+  racine, le moteur lit le modèle, assemble le pipeline pour ses NOMS et répond en
+  une trame de descripteurs (`TaskDescription` : nom, groupe, description,
+  dépendances, marque de cycle de vie). Rien ne s'exécute, les empreintes ne bougent
+  pas — l'équivalent exact de `gradlew tasks`. Une racine illisible est une erreur de
+  la DEMANDE (`INTERNAL_ERROR`, le moteur reste vivant), jamais un écroulement.
+- **Les tâches de cycle de vie sont honnêtes** : `assemble` (agrégat des terminales
+  du graphe — les sorties de tous les modules) et `clean` (suppression du `build/`
+  du projet, jamais les sources ni l'état `.forge/`) vivent HORS du graphe concret
+  par défaut — un build complet ne doit pas nettoyer ce qu'il construit — et
+  s'injectent à la demande. Elles apparaissent dans le répertoire marquées
+  `lifecycle` : une coquille affiche « assemble » en sachant que c'est une tâche
+  d'agrégation, pas une étape de compilation. Pas de `build` (il vaudrait
+  `assemble + check` et `check` n'existe pas encore — aucun alias menteur).
+- **La cible est un argument, la clôture côté moteur** : `BuildOptions.tasks`
+  (protocole 5, liste en fin de charge — lecteur tolérant, la forme d'avant reste le
+  graphe complet). Demande vide : tout le graphe, la forme historique. Un nom
+  inconnu échoue proprement avec les candidats — le refus de Gradle (« Task 'xxx'
+  not found », liste des disponibles). La clôture des dépendances ne se calcule
+  JAMAIS côté coquille : elle y divergerait dès la première tâche conditionnelle.
+- **`clean` dans la même requête qu'une cible** : pas d'arête entre `clean` et le
+  reste — l'ordre est non garanti, exactement comme Gradle ; qui veut un rebuild
+  propre enchaîne deux requêtes (`clean`, puis le build).
+- **Dégradations symétriques de la D-21** : une coquille d'avant le protocole 5 ne
+  reçoit JAMAIS la trame (refus côté client avant émission — un type inconnu tuerait
+  le lecteur du moteur ancien) et ses charges de build restent lisibles (graphe
+  complet). Un moteur d'avant face à une coquille moderne : la négociation tombe à
+  4, la console composée reste, le répertoire est refusé proprement côté client.
+  Le faux moteur suit (`FakeEngineServer` répond un répertoire honnête, cycle de
+  vie marqué) — les tests de bout en bout valident le contrat réel.
+
 ## 4. Installateur (détail)
 
 Séquence du premier lancement (chaque exigence du cahier des charges y est visible) :

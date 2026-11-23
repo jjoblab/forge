@@ -13,6 +13,9 @@ import jo.forge.api.FrameWriter;
 import jo.forge.api.Hello;
 import jo.forge.api.MessageIO;
 import jo.forge.api.Status;
+import jo.forge.api.TaskDescription;
+import jo.forge.api.TasksRequest;
+import jo.forge.api.TasksResponse;
 import jo.forge.engine.testutil.Projets;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Timeout;
@@ -30,6 +33,7 @@ import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -341,6 +345,156 @@ class BuildEngineServerTest {
         }
     }
 
+    @Test
+    @Timeout(60)
+    void répertoireDeTâchesSurLeCanal() throws Exception {
+        // Protocole 5 (D-22) : TASKS_REQUEST → TASKS en une trame. Le moteur
+        // énumère CE QUI PEUT TOURNER — concrets (groupés, décrits) + cycle de
+        // vie (assemble, clean) — la coquille affiche sans deviner.
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(5);
+            TasksResponse répertoire = session.répertoire(temporaire);
+            assertEquals(temporaire.toString(), répertoire.projectRoot());
+            List<String> noms = répertoire.tasks().stream()
+                    .map(TaskDescription::name).toList();
+            assertEquals(List.of("app:jar", "core:jar", "app:compileJava",
+                            "core:compileJava", "app:resolveDependencies",
+                            "core:resolveDependencies", "assemble", "clean"), noms,
+                    "six tâches concrètes (ordre : groupe puis nom) + cycle de vie en fin");
+            TaskDescription compile = répertoire.tasks().stream()
+                    .filter(t -> t.name().equals("app:compileJava")).findFirst().orElseThrow();
+            assertEquals("compilation", compile.group());
+            assertTrue(compile.description().contains("Java"),
+                    "la description dit ce que fait la tâche : " + compile.description());
+            assertTrue(compile.dependencies().contains("app:resolveDependencies"));
+            assertTrue(compile.dependencies().contains("core:compileJava"),
+                    "les dépendances de projet sont citées");
+            TaskDescription assemble = répertoire.tasks().stream()
+                    .filter(t -> t.name().equals("assemble")).findFirst().orElseThrow();
+            assertTrue(assemble.lifecycle());
+            assertEquals(List.of("app:jar", "core:jar"), assemble.dependencies(),
+                    "assemble agrège les sorties terminales des deux modules");
+            TaskDescription clean = répertoire.tasks().stream()
+                    .filter(t -> t.name().equals("clean")).findFirst().orElseThrow();
+            assertTrue(clean.lifecycle());
+            assertEquals(List.of(), clean.dependencies());
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void tâcheRefuséeHorsProtocoleCinq() throws Exception {
+        // Une coquille qui n'a pas négocié le protocole 5 n'a pas à parler
+        // TASKS_REQUEST ; si elle le fait quand même, le canal est désordonné :
+        // PROTOCOL_ERROR puis fermeture (le contrat des trames inattendues).
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(4);
+            session.écrirePublique(FrameType.TASKS_REQUEST, out ->
+                    MessageIO.writeTasksRequest(out,
+                            new TasksRequest(temporaire.toString())));
+            Frame réponse = session.lireTramePublique();
+            assertEquals(FrameType.PROTOCOL_ERROR, réponse.type());
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void buildCibléSurUneTâcheNExécuteQueSaClôture() throws Exception {
+        // La cible du build est un ARGUMENT (protocole 5) : demander
+        // core:compileJava exécute resolveDependencies + compileJava — jamais le
+        // jar, jamais app. La clôture se calcule côté moteur.
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(5);
+            List<BuildEvent> événements = session.build(temporaire,
+                    List.of("core:compileJava"));
+            BuildEvent.BuildFinished fin = dernier(événements, BuildEvent.BuildFinished.class);
+            assertTrue(fin.success(), "le build ciblé doit réussir : " + fin.message());
+            List<String> exécutées = événements.stream()
+                    .filter(e -> e instanceof BuildEvent.TaskStateEvent t
+                            && t.state() == BuildEvent.TaskState.SUCCEEDED)
+                    .map(e -> ((BuildEvent.TaskStateEvent) e).taskName()).sorted().toList();
+            assertEquals(List.of("core:compileJava", "core:resolveDependencies"), exécutées,
+                    "seule la clôture demandée s'exécute");
+            assertTrue(Files.isDirectory(temporaire.resolve("build").resolve("core")
+                            .resolve("classes")),
+                    "les sorties de la cible existent");
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void buildAssembleConstruitToutesLesSorties() throws Exception {
+        // assemble = la clôture des terminales + l'agrégat : tout le graphe concret
+        // s'exécute et la tâche de cycle de vie elle-même réussit (elle ne fait
+        // rien : son travail est ses dépendances).
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(5);
+            List<BuildEvent> événements = session.build(temporaire,
+                    List.of("assemble"));
+            assertTrue(dernier(événements, BuildEvent.BuildFinished.class).success());
+            List<String> réussies = événements.stream()
+                    .filter(e -> e instanceof BuildEvent.TaskStateEvent t
+                            && t.state() == BuildEvent.TaskState.SUCCEEDED)
+                    .map(e -> ((BuildEvent.TaskStateEvent) e).taskName()).sorted().toList();
+            assertEquals(List.of("app:compileJava", "app:jar", "app:resolveDependencies",
+                            "assemble", "core:compileJava", "core:jar",
+                            "core:resolveDependencies"), réussies,
+                    "toutes les tâches + l'agrégat ont tourné");
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void buildCleanSupprimeLesSortiesPasLesSources() throws Exception {
+        // clean demandé seul : le build/ du projet disparaît, les sources et
+        // l'état .forge/ (empreintes) restent — le modèle du clean de Gradle.
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(5);
+            assertTrue(dernier(session.build(temporaire),
+                    BuildEvent.BuildFinished.class).success());
+            assertTrue(Files.isDirectory(temporaire.resolve("build")),
+                    "le premier build a produit des sorties");
+            List<BuildEvent> nettoyage = session.build(temporaire, List.of("clean"));
+            assertTrue(dernier(nettoyage, BuildEvent.BuildFinished.class).success());
+            assertFalse(Files.exists(temporaire.resolve("build")),
+                    "le répertoire build/ doit disparaître");
+            assertTrue(Files.exists(temporaire.resolve("core").resolve("src")
+                            .resolve("main").resolve("java").resolve("demo")
+                            .resolve("core").resolve("Textes.java")),
+                    "les sources ne sont jamais touchées");
+            assertTrue(Files.isDirectory(temporaire.resolve(".forge")),
+                    "l'état .forge/ (empreintes) survit au clean");
+            session.arrêt();
+        }
+    }
+
+    @Test
+    @Timeout(60)
+    void tâcheInconnueÉchoueProprementAvecLesCandidats() throws Exception {
+        // Le refus de Gradle : le nom fautif est cité, les candidats suivent —
+        // jamais un écroulement du canal.
+        Projets.projetDeuxModules(temporaire);
+        try (Session session = Session.démarrer()) {
+            session.poignéeDeMain(5);
+            List<BuildEvent> événements = session.build(temporaire,
+                    List.of("app:dex"));
+            BuildEvent.BuildFinished fin = dernier(événements, BuildEvent.BuildFinished.class);
+            assertFalse(fin.success(), "une cible inconnue échoue");
+            assertTrue(fin.message().contains("app:dex"),
+                    "le nom fautif est cité : " + fin.message());
+            assertTrue(fin.message().contains("app:jar"),
+                    "les candidats disponibles accompagnent le refus");
+            session.arrêt();
+        }
+    }
+
     /**
      * Récupère le dernier événement du type demandé.
      */
@@ -420,13 +574,19 @@ class BuildEngineServerTest {
 
         /** Lance un build et collecte tous les événements jusqu'à la fin. */
         List<BuildEvent> build(Path racine) throws IOException {
-            return build(racine, null);
+            return build(racine, (BuildEvent.LogEvent.LogLevel) null);
         }
 
         /** Lance un build au niveau de console demandé et collecte les événements. */
         List<BuildEvent> build(Path racine, BuildEvent.LogEvent.LogLevel consoleLevel)
                 throws IOException {
             return requête(FrameType.START_BUILD, racine, consoleLevel);
+        }
+
+        /** Lance un build CIBLÉ (protocole 5) : la liste des tâches demandées
+         *  part avec la requête — la clôture se calcule côté moteur. */
+        List<BuildEvent> build(Path racine, List<String> tâches) throws IOException {
+            return requêteCiblée(FrameType.START_BUILD, racine, tâches);
         }
 
         /** Lance un sync (protocole 2) et collecte les événements jusqu'à la fin. */
@@ -437,9 +597,24 @@ class BuildEngineServerTest {
         /** Envoie START_BUILD ou SYNC_BUILD au niveau de console donné (null : défaut). */
         List<BuildEvent> requête(FrameType type, Path racine,
                                  BuildEvent.LogEvent.LogLevel consoleLevel) throws IOException {
+            return requêteCiblée(type, racine, null, consoleLevel);
+        }
+
+        /** Envoie une requête de build avec une cible (protocole 5, null : graphe
+         *  complet) au niveau de console défaut. */
+        List<BuildEvent> requêteCiblée(FrameType type, Path racine, List<String> tâches)
+                throws IOException {
+            return requêteCiblée(type, racine, tâches, null);
+        }
+
+        /** Requête complète : cible + niveau de console. */
+        List<BuildEvent> requêteCiblée(FrameType type, Path racine, List<String> tâches,
+                                       BuildEvent.LogEvent.LogLevel consoleLevel)
+                throws IOException {
             BuildRequest requête = new BuildRequest("b" + (++corrélation),
                     racine.toString(),
-                    new BuildOptions(2, false, false, false, 4096, "x86_64", consoleLevel));
+                    new BuildOptions(2, false, false, false, 4096, "x86_64",
+                            consoleLevel, tâches));
             écrire(type,
                     out -> MessageIO.writeBuildRequest(out, requête));
             Frame accusé = lireTrame();
@@ -461,6 +636,27 @@ class BuildEngineServerTest {
                     return événements;
                 }
             }
+        }
+
+        /** Demande le répertoire des tâches (protocole 5). */
+        TasksResponse répertoire(Path racine) throws IOException {
+            écrire(FrameType.TASKS_REQUEST, out ->
+                    MessageIO.writeTasksRequest(out, new TasksRequest(racine.toString())));
+            Frame réponse = lireTrame();
+            assertEquals(FrameType.TASKS, réponse.type());
+            return MessageIO.readTasksResponse(new DataInputStream(
+                    new ByteArrayInputStream(réponse.payload())));
+        }
+
+        /** Écrit une trame brute (tests de contrat, hors helpers dédiés). */
+        void écrirePublique(FrameType type, FrameWriter.PayloadWriter charge)
+                throws IOException {
+            écrire(type, charge);
+        }
+
+        /** Lit une trame brute (tests de contrat, hors helpers dédiés). */
+        Frame lireTramePublique() throws IOException {
+            return lireTrame();
         }
 
         /** Demande l'état du moteur. */

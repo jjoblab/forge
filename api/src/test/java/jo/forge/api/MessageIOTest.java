@@ -103,6 +103,71 @@ class MessageIOTest {
     }
 
     @Test
+    void buildRequestAvecTâches() throws IOException {
+        // La cible du build (protocole 5) survit à l'aller-retour : noms complets
+        // ET tâches de cycle de vie.
+        BuildRequest message = new BuildRequest("b-cible", "/projets/demo",
+                new BuildOptions(2, false, false, false, 4096, "arm64-v8a", null,
+                        List.of("app:compileJava", "assemble")));
+        BuildRequest relue = roundTrip(message, MessageIO::writeBuildRequest,
+                MessageIO::readBuildRequest);
+        assertEquals(List.of("app:compileJava", "assemble"), relue.options().tasks(),
+                "la cible demandée doit survivre à l'aller-retour");
+        assertEquals(List.of(), new BuildRequest("b-vide", "/p",
+                new BuildOptions(2, false, false, false, 4096, "x86_64", null, null))
+                .options().tasks(),
+                "null devient la liste vide (le graphe complet)");
+    }
+
+    @Test
+    void chargeDAvantSansTâchesResteLeGrapheComplet() throws IOException {
+        // Une coquille d'avant le protocole 5 n'écrit PAS la liste de tâches : le
+        // lecteur tolérant s'arrête après le niveau de console — la cible est le
+        // graphe complet, la forme d'alors. Rien ne casse.
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        DataOutputStream out = new DataOutputStream(bytes);
+        MessageIO.writeString(out, "b-avant-cinq");
+        MessageIO.writeString(out, "/projets/demo");
+        out.writeInt(2);
+        out.writeBoolean(false);
+        out.writeBoolean(false);
+        out.writeBoolean(false);
+        out.writeLong(4096);
+        MessageIO.writeString(out, "arm64-v8a");
+        out.writeInt(BuildEvent.LogEvent.LogLevel.LIFECYCLE.wireCode());
+        // Fin de charge : pas de liste de tâches.
+
+        BuildRequest relue = MessageIO.readBuildRequest(new DataInputStream(
+                new ByteArrayInputStream(bytes.toByteArray())));
+        assertEquals(List.of(), relue.options().tasks(),
+                "sans liste écrite, la cible reste le graphe complet");
+    }
+
+    @Test
+    void demandeEtRépertoireDeTâches() throws IOException {
+        // Le répertoire (protocole 5) : racine, descripteurs complets (groupe,
+        // description, dépendances, marque de cycle de vie) — aller-retour exact.
+        TasksRequest demande = new TasksRequest("/projets/demo");
+        assertEquals(demande, roundTrip(demande, MessageIO::writeTasksRequest,
+                MessageIO::readTasksRequest));
+
+        TasksResponse répertoire = new TasksResponse("/projets/demo", List.of(
+                new TaskDescription("app:compileJava", "compilation",
+                        "Compile les sources Java du module",
+                        List.of("app:resolveDependencies"), false),
+                new TaskDescription("assemble", "cycle de vie",
+                        "Assemble les sorties de tous les modules du projet",
+                        List.of("app:signApk"), true),
+                new TaskDescription("clean", "cycle de vie",
+                        "Supprime le répertoire build/ du projet", List.of(), true)));
+        TasksResponse relu = roundTrip(répertoire, MessageIO::writeTasksResponse,
+                MessageIO::readTasksResponse);
+        assertEquals(répertoire, relu, "le répertoire complet doit survivre intact");
+        assertTrue(relu.tasks().stream().anyMatch(TaskDescription::lifecycle),
+                "les tâches de cycle de vie restent marquées");
+    }
+
+    @Test
     void chaineAuDelaDe64Kio() throws IOException {
         String grande = "é".repeat(70_000); // 2 octets par caractère : 140 000 octets.
         ByteArrayOutputStream bytes = new ByteArrayOutputStream();

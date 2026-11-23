@@ -16,6 +16,9 @@ import jo.forge.api.MessageIO;
 import jo.forge.api.Pong;
 import jo.forge.api.ProtocolVersions;
 import jo.forge.api.Status;
+import jo.forge.api.TaskDescription;
+import jo.forge.api.TasksRequest;
+import jo.forge.api.TasksResponse;
 import jo.forge.engine.server.ConsoleDeBuild;
 
 import java.io.ByteArrayInputStream;
@@ -139,6 +142,34 @@ public final class FakeEngineServer {
             case CANCEL_BUILD -> {
                 CancelRequest cancel = decode(frame, MessageIO::readCancelRequest);
                 cancelBuild(frame, cancel.buildId());
+            }
+            case TASKS_REQUEST -> {
+                // Parité protocole 5 (D-22) avec le vrai moteur : répertoire fixe
+                // mais HONNÊTE (descripteurs complets, cycle de vie marqué) — la
+                // négociation protège les coquilles anciennes comme toujours.
+                if (protocoleNégocié < 5) {
+                    reply(frame, FrameType.PROTOCOL_ERROR, out ->
+                            MessageIO.writeErrorMessage(out,
+                                    "TASKS_REQUEST refusée : protocole "
+                                            + protocoleNégocié + " < 5"));
+                    return false;
+                }
+                TasksRequest demande = decode(frame, MessageIO::readTasksRequest);
+                reply(frame, FrameType.TASKS, out -> MessageIO.writeTasksResponse(out,
+                        new TasksResponse(demande.projectRoot(), List.of(
+                                new TaskDescription("app:compileJava", "compilation",
+                                        "Compile les sources Java du module",
+                                        List.of("app:resolveDependencies"), false),
+                                new TaskDescription("app:resolveDependencies",
+                                        "dépendances",
+                                        "Résout et télécharge les dépendances Maven du module",
+                                        List.of(), false),
+                                new TaskDescription("assemble", "cycle de vie",
+                                        "Assemble les sorties de tous les modules du projet",
+                                        List.of("app:jar"), true),
+                                new TaskDescription("clean", "cycle de vie",
+                                        "Supprime le répertoire build/ du projet",
+                                        List.of(), true)))));
             }
             case SHUTDOWN -> {
                 // Accusé avant de s'arrêter : la coquille sait que l'arrêt est pris en

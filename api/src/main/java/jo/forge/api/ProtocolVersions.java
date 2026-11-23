@@ -44,8 +44,20 @@ public final class ProtocolVersions {
      * ligne (elle les composait elle-même hier — rien ne double), le niveau
      * {@code LIFECYCLE} ne part jamais sur le canal, et une charge de requête sans
      * niveau de console reste lisible (lecteur tolérant, {@code verbose} dérivé).</p>
+     *
+     * <p>Version 5 (additive) : le répertoire des tâches appartient au moteur
+     * (décision D-22). Nouvelles trames {@code TASKS_REQUEST}/{@code TASKS} : le
+     * moteur énumère ce qui peut tourner (descripteurs : nom, groupe, description,
+     * dépendances, tâches de cycle de vie {@code assemble}/{@code clean}) — la
+     * coquille affiche, elle ne devine plus. La CIBLE du build devient un argument
+     * ({@code BuildOptions.tasks}, l'équivalent des arguments de {@code gradlew}) :
+     * le moteur calcule la clôture des dépendances, résout les noms de cycle de vie
+     * et échoue proprement sur un nom inconnu avec les candidats. Une coquille plus
+     * ancienne négocie la version 4 : jamais de trame {@code TASKS_REQUEST} vers elle
+     * (refus côté client avant émission), et une charge de build sans liste de
+     * tâches reste le graphe complet — la forme d'alors (lecteur tolérant).</p>
      */
-    public static final int PROTOCOL_MAX = 4;
+    public static final int PROTOCOL_MAX = 5;
 
     private ProtocolVersions() {
         // Constantes uniquement : pas d'instanciation.
